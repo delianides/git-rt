@@ -1,0 +1,217 @@
+use anyhow::Result;
+use crossterm::{
+    execute,
+    terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen},
+};
+use ratatui::{
+    backend::CrosstermBackend,
+    layout::{Constraint, Direction, Layout, Rect},
+    style::{Color, Modifier, Style},
+    text::{Line, Span},
+    widgets::{Block, Borders, List, ListItem, ListState, Paragraph},
+    Frame,
+};
+use std::io;
+
+use crate::git::{DiffLineKind, FileStatus};
+use crate::state::AppState;
+
+pub struct Terminal {
+    terminal: ratatui::Terminal<CrosstermBackend<io::Stdout>>,
+}
+
+impl Terminal {
+    pub fn new() -> Result<Self> {
+        let backend = CrosstermBackend::new(io::stdout());
+        let terminal = ratatui::Terminal::new(backend)?;
+        Ok(Self { terminal })
+    }
+
+    pub fn setup(&mut self) -> Result<()> {
+        enable_raw_mode()?;
+        execute!(io::stdout(), EnterAlternateScreen)?;
+        self.terminal.clear()?;
+        Ok(())
+    }
+
+    pub fn teardown(&mut self) -> Result<()> {
+        disable_raw_mode()?;
+        execute!(io::stdout(), LeaveAlternateScreen)?;
+        Ok(())
+    }
+
+    pub fn draw(&mut self, state: &AppState) -> Result<()> {
+        self.terminal.draw(|frame| {
+            render(frame, state);
+        })?;
+        Ok(())
+    }
+}
+
+/// Main render function
+fn render(frame: &mut Frame, state: &AppState) {
+    let area = frame.area();
+
+    // Layout: file list takes up available space, status bar at bottom
+    let chunks = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([Constraint::Min(1), Constraint::Length(1)])
+        .split(area);
+
+    render_file_list(frame, state, chunks[0]);
+    render_status_bar(frame, state, chunks[1]);
+}
+
+/// Render the file list with optional expanded diff
+fn render_file_list(frame: &mut Frame, state: &AppState, area: Rect) {
+    let files = state.files();
+
+    if files.is_empty() {
+        let msg = Paragraph::new("  No changes detected. Watching for file changes...")
+            .style(Style::default().fg(Color::DarkGray));
+        frame.render_widget(msg, area);
+        return;
+    }
+
+    // Build list items, inserting diff lines after the expanded file
+    let mut items: Vec<ListItem> = Vec::new();
+    let mut list_index_to_file_index: Vec<Option<usize>> = Vec::new();
+
+    for (i, file) in files.iter().enumerate() {
+        let is_selected = i == state.selected_index();
+        let is_expanded = state.is_expanded(&file.path);
+
+        // File line
+        let marker = if is_expanded { "▼" } else { " " };
+        let status_char = match file.status {
+            FileStatus::Modified => "M",
+            FileStatus::Added => "A",
+            FileStatus::Deleted => "D",
+            FileStatus::Renamed => "R",
+            FileStatus::Untracked => "?",
+            FileStatus::Staged => "S",
+            FileStatus::Conflicted => "C",
+        };
+
+        let line = Line::from(vec![
+            Span::raw(format!("{marker} ")),
+            Span::styled(
+                format!("{status_char} "),
+                Style::default().fg(status_color(&file.status)),
+            ),
+            Span::styled(
+                format!("{:<40}", &file.path),
+                if is_selected {
+                    Style::default()
+                        .fg(Color::White)
+                        .add_modifier(Modifier::BOLD)
+                } else {
+                    Style::default().fg(Color::White)
+                },
+            ),
+            Span::styled(
+                format!("-{}", file.deletions),
+                Style::default().fg(Color::Red),
+            ),
+            Span::raw("  "),
+            Span::styled(
+                format!("+{}", file.insertions),
+                Style::default().fg(Color::Green),
+            ),
+        ]);
+
+        items.push(ListItem::new(line));
+        list_index_to_file_index.push(Some(i));
+
+        // If this file is expanded, insert diff lines
+        if is_expanded {
+            if let Some(diff) = state.expanded_diff() {
+                for hunk in &diff.hunks {
+                    // Hunk header
+                    let header_line = Line::from(vec![
+                        Span::raw("│  "),
+                        Span::styled(
+                            hunk.header.clone(),
+                            Style::default().fg(Color::Cyan),
+                        ),
+                    ]);
+                    items.push(ListItem::new(header_line));
+                    list_index_to_file_index.push(None);
+
+                    // Diff lines
+                    for diff_line in &hunk.lines {
+                        let (prefix, color) = match diff_line.kind {
+                            DiffLineKind::Addition => ("+", Color::Green),
+                            DiffLineKind::Deletion => ("-", Color::Red),
+                            DiffLineKind::Context => (" ", Color::DarkGray),
+                            DiffLineKind::HunkHeader => ("@", Color::Cyan),
+                        };
+
+                        let line = Line::from(vec![
+                            Span::raw("│  "),
+                            Span::styled(
+                                format!("{prefix} {}", &diff_line.content),
+                                Style::default().fg(color),
+                            ),
+                        ]);
+                        items.push(ListItem::new(line));
+                        list_index_to_file_index.push(None);
+                    }
+                }
+            }
+        }
+    }
+
+    // Figure out which list index corresponds to the selected file
+    let selected_list_index = list_index_to_file_index
+        .iter()
+        .position(|idx| *idx == Some(state.selected_index()))
+        .unwrap_or(0);
+
+    let list = List::new(items)
+        .block(Block::default().borders(Borders::NONE))
+        .highlight_style(Style::default().bg(Color::DarkGray));
+
+    let mut list_state = ListState::default();
+    list_state.select(Some(selected_list_index));
+
+    frame.render_stateful_widget(list, area, &mut list_state);
+}
+
+/// Render the bottom status bar
+fn render_status_bar(frame: &mut Frame, state: &AppState, area: Rect) {
+    let file_count = state.files().len();
+    let total_ins: usize = state.files().iter().map(|f| f.insertions).sum();
+    let total_del: usize = state.files().iter().map(|f| f.deletions).sum();
+
+    let status = Line::from(vec![
+        Span::styled(
+            format!(" {file_count} files changed"),
+            Style::default().fg(Color::White),
+        ),
+        Span::raw("  "),
+        Span::styled(format!("-{total_del}"), Style::default().fg(Color::Red)),
+        Span::raw("  "),
+        Span::styled(format!("+{total_ins}"), Style::default().fg(Color::Green)),
+        Span::raw("  │  "),
+        Span::styled(
+            "j/k:nav  enter:expand  q:quit",
+            Style::default().fg(Color::DarkGray),
+        ),
+    ]);
+
+    let bar = Paragraph::new(status).style(Style::default().bg(Color::Rgb(30, 30, 30)));
+    frame.render_widget(bar, area);
+}
+
+/// Color for file status indicator
+fn status_color(status: &FileStatus) -> Color {
+    match status {
+        FileStatus::Modified => Color::Yellow,
+        FileStatus::Added | FileStatus::Untracked => Color::Green,
+        FileStatus::Deleted => Color::Red,
+        FileStatus::Renamed => Color::Cyan,
+        FileStatus::Staged => Color::Green,
+        FileStatus::Conflicted => Color::Magenta,
+    }
+}

@@ -1,0 +1,52 @@
+[package]
+name = "git-rt"
+version = "0.1.0"
+edition = "2021"
+description = "A real-time terminal dashboard for git changes with configurable actions"
+license = "MIT"
+repository = "https://github.com/OWNER/git-rt"
+readme = "README.md"
+keywords = ["git", "tui", "terminal", "dashboard", "developer-tools"]
+categories = ["command-line-utilities", "development-tools"]
+
+[dependencies]
+# TUI
+ratatui = "0.29"
+crossterm = "0.28"
+
+# Git
+gix = { version = "0.68", default-features = false, features = [
+    "basic",
+    "index",
+    "worktree-mutation",
+    "blob-diff",
+    "status",
+] }
+
+# File watching
+notify = "7.0"
+notify-debouncer-full = "0.4"
+
+# Config
+serde = { version = "1", features = ["derive"] }
+toml = "0.8"
+dirs = "5"
+
+# Async / channels
+crossbeam-channel = "0.5"
+
+# CLI
+clap = { version = "4", features = ["derive"] }
+
+# Error handling
+anyhow = "1"
+thiserror = "2"
+
+# Logging (optional, for debugging)
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+
+[profile.release]
+lto = true
+strip = true
+codegen-units = 1

@@ -39,6 +39,12 @@ pub struct DisplayConfig {
     pub show_status: bool,
     /// Maximum number of diff context lines to show around changes
     pub context_lines: usize,
+    /// Show refresh counter and last-updated time in the status bar
+    pub show_refresh_counter: bool,
+    /// Flash the background of a file row when its diff stats change
+    pub flash_on_change: bool,
+    /// Duration in milliseconds for the flash effect
+    pub flash_duration_ms: u64,
 }
 
 impl Default for DisplayConfig {
@@ -46,6 +52,9 @@ impl Default for DisplayConfig {
         Self {
             show_status: true,
             context_lines: 3,
+            show_refresh_counter: false,
+            flash_on_change: true,
+            flash_duration_ms: 600,
         }
     }
 }
@@ -117,11 +126,17 @@ impl AppConfig {
     /// Load config from a file path, or from the default XDG location,
     /// falling back to built-in defaults if no config file exists.
     pub fn load(path: Option<&Path>) -> Result<Self> {
-        let config_path = path
-            .map(PathBuf::from)
-            .or_else(|| {
+        let config_path = path.map(PathBuf::from).or_else(|| {
+            // Check ~/.config first (XDG convention, common on macOS for CLI tools)
+            let xdg_path = dirs::home_dir()
+                .map(|h| h.join(".config").join("git-rt").join("config.toml"))
+                .filter(|p| p.exists());
+
+            // Fall back to platform config dir (~/Library/Application Support on macOS)
+            xdg_path.or_else(|| {
                 dirs::config_dir().map(|d| d.join("git-rt").join("config.toml"))
-            });
+            })
+        });
 
         match config_path {
             Some(ref p) if p.exists() => {
@@ -193,4 +208,195 @@ fn default_actions() -> HashMap<String, ActionConfig> {
     );
 
     actions
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_default_config() {
+        let config = AppConfig::default();
+        assert_eq!(config.debounce_ms, 200);
+        assert!(config.display.show_status);
+        assert_eq!(config.display.context_lines, 3);
+        assert!(!config.display.show_refresh_counter);
+        assert!(config.display.flash_on_change);
+        assert_eq!(config.display.flash_duration_ms, 600);
+    }
+
+    #[test]
+    fn test_default_keys() {
+        let keys = KeyConfig::default();
+        assert_eq!(keys.quit, "q");
+        assert_eq!(keys.up, "k");
+        assert_eq!(keys.down, "j");
+        assert_eq!(keys.expand, "l");
+        assert_eq!(keys.collapse, "h");
+        assert_eq!(keys.refresh, "r");
+    }
+
+    #[test]
+    fn test_default_actions_present() {
+        let config = AppConfig::default();
+        assert!(config.actions.contains_key("open_editor"));
+        assert!(config.actions.contains_key("diff_view"));
+    }
+
+    #[test]
+    fn test_multiplexer_detect_none() {
+        // In a test environment, none of the multiplexer env vars should be set
+        // (unless the test runner is inside one, so we just check it doesn't panic)
+        let mux = Multiplexer::detect();
+        // Should return one of the valid variants
+        matches!(mux, Multiplexer::Tmux | Multiplexer::Zellij | Multiplexer::Wezterm | Multiplexer::None);
+    }
+
+    #[test]
+    fn test_resolve_action_command_tmux() {
+        let config = AppConfig::default();
+        let cmd = config.resolve_action_command(
+            "open_editor",
+            "src/main.rs",
+            "/home/user/repo/src/main.rs",
+            &Multiplexer::Tmux,
+        );
+        assert!(cmd.is_some());
+        let cmd = cmd.unwrap();
+        assert!(cmd.contains("tmux"));
+        assert!(cmd.contains("src/main.rs"));
+    }
+
+    #[test]
+    fn test_resolve_action_command_fallback() {
+        let config = AppConfig::default();
+        let cmd = config.resolve_action_command(
+            "open_editor",
+            "src/main.rs",
+            "/home/user/repo/src/main.rs",
+            &Multiplexer::None,
+        );
+        assert!(cmd.is_some());
+        let cmd = cmd.unwrap();
+        assert!(cmd.contains("nvim"));
+        assert!(cmd.contains("src/main.rs"));
+    }
+
+    #[test]
+    fn test_resolve_action_command_unknown_action() {
+        let config = AppConfig::default();
+        let cmd = config.resolve_action_command(
+            "nonexistent",
+            "file.rs",
+            "/abs/file.rs",
+            &Multiplexer::None,
+        );
+        assert!(cmd.is_none());
+    }
+
+    #[test]
+    fn test_resolve_action_abs_file_template() {
+        let mut config = AppConfig::default();
+        config.actions.insert(
+            "test_action".to_string(),
+            ActionConfig {
+                key: "t".to_string(),
+                tmux: None,
+                zellij: None,
+                wezterm: None,
+                fallback: Some("open {abs_file}".to_string()),
+            },
+        );
+        let cmd = config.resolve_action_command(
+            "test_action",
+            "src/main.rs",
+            "/home/user/repo/src/main.rs",
+            &Multiplexer::None,
+        );
+        assert_eq!(cmd.unwrap(), "open /home/user/repo/src/main.rs");
+    }
+
+    #[test]
+    fn test_resolve_action_no_fallback() {
+        let mut config = AppConfig::default();
+        config.actions.insert(
+            "tmux_only".to_string(),
+            ActionConfig {
+                key: "t".to_string(),
+                tmux: Some("tmux cmd".to_string()),
+                zellij: None,
+                wezterm: None,
+                fallback: None,
+            },
+        );
+        // No fallback for plain terminal
+        let cmd = config.resolve_action_command(
+            "tmux_only",
+            "file.rs",
+            "/abs/file.rs",
+            &Multiplexer::None,
+        );
+        assert!(cmd.is_none());
+
+        // But works for tmux
+        let cmd = config.resolve_action_command(
+            "tmux_only",
+            "file.rs",
+            "/abs/file.rs",
+            &Multiplexer::Tmux,
+        );
+        assert!(cmd.is_some());
+    }
+
+    #[test]
+    fn test_load_nonexistent_config_uses_defaults() {
+        let config = AppConfig::load(Some(Path::new("/tmp/nonexistent-git-rt-config.toml")));
+        assert!(config.is_ok());
+        let config = config.unwrap();
+        assert_eq!(config.debounce_ms, 200);
+    }
+
+    #[test]
+    fn test_load_valid_toml() {
+        let dir = std::env::temp_dir().join("git-rt-test-config");
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("config.toml");
+        std::fs::write(
+            &path,
+            r#"
+debounce_ms = 500
+
+[display]
+show_status = false
+flash_on_change = true
+flash_duration_ms = 1000
+"#,
+        )
+        .unwrap();
+
+        let config = AppConfig::load(Some(&path)).unwrap();
+        assert_eq!(config.debounce_ms, 500);
+        assert!(!config.display.show_status);
+        assert!(config.display.flash_on_change);
+        assert_eq!(config.display.flash_duration_ms, 1000);
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn test_load_partial_toml_fills_defaults() {
+        let dir = std::env::temp_dir().join("git-rt-test-config-partial");
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("config.toml");
+        std::fs::write(&path, "debounce_ms = 100\n").unwrap();
+
+        let config = AppConfig::load(Some(&path)).unwrap();
+        assert_eq!(config.debounce_ms, 100);
+        // Defaults should fill in
+        assert!(config.display.show_status);
+        assert_eq!(config.display.context_lines, 3);
+        assert!(config.display.flash_on_change);
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
 }

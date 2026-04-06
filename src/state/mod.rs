@@ -1,4 +1,5 @@
 use std::collections::HashMap;
+use std::time::{Duration, Instant};
 
 use crate::git::{FileDiff, FileEntry};
 
@@ -14,16 +15,35 @@ pub struct AppState {
     diff_cache: HashMap<String, FileDiff>,
     /// Scroll offset within the expanded diff
     diff_scroll: usize,
+    /// Number of times the file list has been refreshed
+    refresh_count: usize,
+    /// When the app started (for computing "last updated N seconds ago")
+    start_time: Instant,
+    /// When the last refresh happened
+    last_refresh: Instant,
+    /// Tracks when each file last changed (for flash effect)
+    flash_times: HashMap<String, Instant>,
+    /// How long the flash lasts
+    flash_duration: Duration,
+    /// Whether the terminal window is currently focused
+    focused: bool,
 }
 
 impl AppState {
-    pub fn new(files: Vec<FileEntry>) -> Self {
+    pub fn new(files: Vec<FileEntry>, flash_duration: Duration) -> Self {
+        let now = Instant::now();
         Self {
             files,
             selected: 0,
             expanded: None,
             diff_cache: HashMap::new(),
             diff_scroll: 0,
+            refresh_count: 0,
+            start_time: now,
+            last_refresh: now,
+            flash_times: HashMap::new(),
+            flash_duration,
+            focused: true,
         }
     }
 
@@ -57,6 +77,29 @@ impl AppState {
 
     pub fn diff_scroll(&self) -> usize {
         self.diff_scroll
+    }
+
+    pub fn refresh_count(&self) -> usize {
+        self.refresh_count
+    }
+
+    pub fn last_refresh_secs(&self) -> u64 {
+        self.last_refresh.elapsed().as_secs()
+    }
+
+    /// Returns true if the file at the given path is currently flashing
+    pub fn is_flashing(&self, path: &str) -> bool {
+        self.flash_times
+            .get(path)
+            .is_some_and(|t| t.elapsed() < self.flash_duration)
+    }
+
+    pub fn is_focused(&self) -> bool {
+        self.focused
+    }
+
+    pub fn set_focused(&mut self, focused: bool) {
+        self.focused = focused;
     }
 
     // -- Navigation --
@@ -106,6 +149,13 @@ impl AppState {
         // Try to preserve the selected file by path
         let selected_path = self.selected_path();
 
+        // Build a snapshot of old file stats for flash detection
+        let old_stats: HashMap<&str, (usize, usize)> = self
+            .files
+            .iter()
+            .map(|f| (f.path.as_str(), (f.insertions, f.deletions)))
+            .collect();
+
         // Invalidate diff cache for files that are no longer present
         // or whose stats have changed
         let new_paths: std::collections::HashSet<&str> =
@@ -122,7 +172,27 @@ impl AppState {
             }
         }
 
+        // Detect changed files and record flash times
+        let now = Instant::now();
+        for file in &new_files {
+            let changed = match old_stats.get(file.path.as_str()) {
+                Some(&(old_ins, old_del)) => {
+                    old_ins != file.insertions || old_del != file.deletions
+                }
+                None => true, // new file
+            };
+            if changed {
+                self.flash_times.insert(file.path.clone(), now);
+            }
+        }
+
+        // Clean up expired flash times
+        self.flash_times
+            .retain(|_, t| t.elapsed() < self.flash_duration);
+
         self.files = new_files;
+        self.refresh_count += 1;
+        self.last_refresh = now;
 
         // Restore selection by path, or clamp to valid range
         if let Some(prev_path) = selected_path {
@@ -158,7 +228,7 @@ mod tests {
             make_entry("b.rs", 2, 1),
             make_entry("c.rs", 0, 3),
         ];
-        let mut state = AppState::new(files);
+        let mut state = AppState::new(files, Duration::from_millis(600));
 
         assert_eq!(state.selected_index(), 0);
         state.select_next();
@@ -178,7 +248,7 @@ mod tests {
             make_entry("b.rs", 2, 1),
             make_entry("c.rs", 0, 3),
         ];
-        let mut state = AppState::new(files);
+        let mut state = AppState::new(files, Duration::from_millis(600));
         state.select_next(); // select b.rs
 
         let new_files = vec![
@@ -195,7 +265,7 @@ mod tests {
     #[test]
     fn test_expand_collapse() {
         let files = vec![make_entry("a.rs", 1, 0)];
-        let mut state = AppState::new(files);
+        let mut state = AppState::new(files, Duration::from_millis(600));
 
         assert!(state.expanded_path().is_none());
 
@@ -204,5 +274,183 @@ mod tests {
 
         state.collapse_selected();
         assert!(state.expanded_path().is_none());
+    }
+
+    #[test]
+    fn test_accessors() {
+        let files = vec![
+            make_entry("a.rs", 1, 0),
+            make_entry("b.rs", 2, 1),
+        ];
+        let state = AppState::new(files, Duration::from_millis(600));
+
+        assert_eq!(state.files().len(), 2);
+        assert_eq!(state.files()[0].path, "a.rs");
+        assert_eq!(state.selected_index(), 0);
+        assert_eq!(state.selected_path(), Some("a.rs".to_string()));
+        assert!(!state.is_expanded("a.rs"));
+        assert_eq!(state.diff_scroll(), 0);
+        assert_eq!(state.refresh_count(), 0);
+    }
+
+    #[test]
+    fn test_expanded_diff_returns_cached() {
+        let files = vec![make_entry("a.rs", 1, 0)];
+        let mut state = AppState::new(files, Duration::from_millis(600));
+
+        assert!(state.expanded_diff().is_none());
+
+        let diff = FileDiff {
+            hunks: vec![crate::git::DiffHunk {
+                header: "@@ test @@".to_string(),
+                lines: vec![],
+            }],
+        };
+        state.expand_selected(diff);
+
+        let cached = state.expanded_diff().unwrap();
+        assert_eq!(cached.hunks.len(), 1);
+        assert_eq!(cached.hunks[0].header, "@@ test @@");
+    }
+
+    #[test]
+    fn test_scroll_diff() {
+        let files = vec![make_entry("a.rs", 1, 0)];
+        let mut state = AppState::new(files, Duration::from_millis(600));
+
+        assert_eq!(state.diff_scroll(), 0);
+        state.scroll_diff_down();
+        assert_eq!(state.diff_scroll(), 1);
+        state.scroll_diff_down();
+        assert_eq!(state.diff_scroll(), 2);
+        state.scroll_diff_up();
+        assert_eq!(state.diff_scroll(), 1);
+        state.scroll_diff_up();
+        assert_eq!(state.diff_scroll(), 0);
+        state.scroll_diff_up(); // should clamp at 0
+        assert_eq!(state.diff_scroll(), 0);
+    }
+
+    #[test]
+    fn test_navigation_empty_list() {
+        let mut state = AppState::new(vec![], Duration::from_millis(600));
+        assert_eq!(state.selected_index(), 0);
+        assert!(state.selected_path().is_none());
+        state.select_next(); // should not panic
+        state.select_previous();
+        assert_eq!(state.selected_index(), 0);
+    }
+
+    #[test]
+    fn test_update_clamps_selection_when_list_shrinks() {
+        let files = vec![
+            make_entry("a.rs", 1, 0),
+            make_entry("b.rs", 2, 1),
+            make_entry("c.rs", 0, 3),
+        ];
+        let mut state = AppState::new(files, Duration::from_millis(600));
+        state.select_next();
+        state.select_next(); // select c.rs (index 2)
+
+        // Shrink to 1 file — selection should clamp
+        state.update_files(vec![make_entry("x.rs", 1, 1)]);
+        assert_eq!(state.selected_index(), 0);
+    }
+
+    #[test]
+    fn test_update_collapses_when_expanded_file_removed() {
+        let files = vec![make_entry("a.rs", 1, 0)];
+        let mut state = AppState::new(files, Duration::from_millis(600));
+        state.expand_selected(FileDiff::default());
+        assert!(state.expanded_path().is_some());
+
+        // Update with a list that doesn't contain a.rs
+        state.update_files(vec![make_entry("b.rs", 2, 0)]);
+        assert!(state.expanded_path().is_none());
+    }
+
+    #[test]
+    fn test_update_increments_refresh_count() {
+        let mut state = AppState::new(vec![], Duration::from_millis(600));
+        assert_eq!(state.refresh_count(), 0);
+
+        state.update_files(vec![make_entry("a.rs", 1, 0)]);
+        assert_eq!(state.refresh_count(), 1);
+
+        state.update_files(vec![]);
+        assert_eq!(state.refresh_count(), 2);
+    }
+
+    #[test]
+    fn test_flash_on_new_file() {
+        let mut state = AppState::new(vec![], Duration::from_millis(600));
+        assert!(!state.is_flashing("a.rs"));
+
+        state.update_files(vec![make_entry("a.rs", 1, 0)]);
+        assert!(state.is_flashing("a.rs"));
+    }
+
+    #[test]
+    fn test_flash_on_changed_stats() {
+        let files = vec![make_entry("a.rs", 1, 0)];
+        let mut state = AppState::new(files, Duration::from_millis(600));
+        // Initial load doesn't flash (no previous state to compare)
+        assert!(!state.is_flashing("a.rs"));
+
+        // Update with changed stats — should flash
+        state.update_files(vec![make_entry("a.rs", 5, 2)]);
+        assert!(state.is_flashing("a.rs"));
+    }
+
+    #[test]
+    fn test_no_flash_on_unchanged_stats() {
+        let files = vec![make_entry("a.rs", 1, 0)];
+        let mut state = AppState::new(files, Duration::from_millis(600));
+
+        // Update with same stats — should not flash
+        state.update_files(vec![make_entry("a.rs", 1, 0)]);
+        assert!(!state.is_flashing("a.rs"));
+    }
+
+    #[test]
+    fn test_flash_expires() {
+        let files = vec![make_entry("a.rs", 1, 0)];
+        let mut state = AppState::new(files, Duration::from_millis(1)); // 1ms flash
+
+        state.update_files(vec![make_entry("a.rs", 5, 2)]);
+        // Sleep just past the flash duration
+        std::thread::sleep(Duration::from_millis(5));
+        assert!(!state.is_flashing("a.rs"));
+    }
+
+    #[test]
+    fn test_diff_cache_invalidated_on_file_removal() {
+        let files = vec![
+            make_entry("a.rs", 1, 0),
+            make_entry("b.rs", 2, 1),
+        ];
+        let mut state = AppState::new(files, Duration::from_millis(600));
+
+        // Expand a.rs to populate cache
+        state.expand_selected(FileDiff::default());
+        assert!(state.expanded_diff().is_some());
+
+        // Remove a.rs from file list
+        state.update_files(vec![make_entry("b.rs", 2, 1)]);
+        // expanded should be collapsed and diff cache cleared for a.rs
+        assert!(state.expanded_path().is_none());
+    }
+
+    #[test]
+    fn test_focus_state() {
+        let state = AppState::new(vec![], Duration::from_millis(600));
+        assert!(state.is_focused()); // focused by default
+
+        let mut state = state;
+        state.set_focused(false);
+        assert!(!state.is_focused());
+
+        state.set_focused(true);
+        assert!(state.is_focused());
     }
 }

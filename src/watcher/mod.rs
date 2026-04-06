@@ -24,16 +24,10 @@ impl FsWatcher {
                 Ok(events) => {
                     // Filter out .git directory changes (except index)
                     let relevant = events.iter().any(|e| {
-                        e.event.paths.iter().any(|p| {
-                            let path_str = p.to_string_lossy();
-                            if path_str.contains("/.git/") {
-                                // Only care about index changes (staging)
-                                path_str.ends_with("/.git/index")
-                            } else {
-                                true
-                            }
-                        })
+                        e.event.paths.iter().any(|p| is_relevant_path(p))
                     });
+
+                    tracing::debug!(event_count = events.len(), relevant, "Debouncer callback fired");
 
                     if relevant {
                         // Non-blocking send — drop if channel is full
@@ -65,5 +59,54 @@ impl FsWatcher {
         Ok((rx, Self {
             _debouncer: debouncer,
         }))
+    }
+}
+
+/// Returns true if the given path represents a relevant change
+/// (i.e., not inside .git/ except for .git/index)
+fn is_relevant_path(path: &Path) -> bool {
+    let path_str = path.to_string_lossy();
+    if path_str.contains("/.git/") {
+        path_str.ends_with("/.git/index")
+    } else {
+        true
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_regular_file_is_relevant() {
+        assert!(is_relevant_path(Path::new("/repo/src/main.rs")));
+        assert!(is_relevant_path(Path::new("/repo/Cargo.toml")));
+        assert!(is_relevant_path(Path::new("/repo/README.md")));
+    }
+
+    #[test]
+    fn test_git_internal_files_not_relevant() {
+        assert!(!is_relevant_path(Path::new("/repo/.git/objects/ab/cd1234")));
+        assert!(!is_relevant_path(Path::new("/repo/.git/refs/heads/main")));
+        assert!(!is_relevant_path(Path::new("/repo/.git/HEAD")));
+        assert!(!is_relevant_path(Path::new("/repo/.git/COMMIT_EDITMSG")));
+        assert!(!is_relevant_path(Path::new("/repo/.git/logs/HEAD")));
+    }
+
+    #[test]
+    fn test_git_index_is_relevant() {
+        assert!(is_relevant_path(Path::new("/repo/.git/index")));
+    }
+
+    #[test]
+    fn test_git_index_lock_not_relevant() {
+        assert!(!is_relevant_path(Path::new("/repo/.git/index.lock")));
+    }
+
+    #[test]
+    fn test_file_named_git_outside_dotgit_is_relevant() {
+        // A file that happens to have "git" in the name but isn't in .git/
+        assert!(is_relevant_path(Path::new("/repo/src/git/mod.rs")));
+        assert!(is_relevant_path(Path::new("/repo/.gitignore")));
     }
 }

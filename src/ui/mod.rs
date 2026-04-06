@@ -1,5 +1,6 @@
 use anyhow::Result;
 use crossterm::{
+    event::{DisableFocusChange, EnableFocusChange},
     execute,
     terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen},
 };
@@ -13,6 +14,7 @@ use ratatui::{
 };
 use std::io;
 
+use crate::config::DisplayConfig;
 use crate::git::{DiffLineKind, FileStatus};
 use crate::state::AppState;
 
@@ -29,27 +31,27 @@ impl Terminal {
 
     pub fn setup(&mut self) -> Result<()> {
         enable_raw_mode()?;
-        execute!(io::stdout(), EnterAlternateScreen)?;
+        execute!(io::stdout(), EnterAlternateScreen, EnableFocusChange)?;
         self.terminal.clear()?;
         Ok(())
     }
 
     pub fn teardown(&mut self) -> Result<()> {
         disable_raw_mode()?;
-        execute!(io::stdout(), LeaveAlternateScreen)?;
+        execute!(io::stdout(), DisableFocusChange, LeaveAlternateScreen)?;
         Ok(())
     }
 
-    pub fn draw(&mut self, state: &AppState) -> Result<()> {
+    pub fn draw(&mut self, state: &AppState, display: &DisplayConfig) -> Result<()> {
         self.terminal.draw(|frame| {
-            render(frame, state);
+            render(frame, state, display);
         })?;
         Ok(())
     }
 }
 
 /// Main render function
-fn render(frame: &mut Frame, state: &AppState) {
+fn render(frame: &mut Frame, state: &AppState, display: &DisplayConfig) {
     let area = frame.area();
 
     // Layout: file list takes up available space, status bar at bottom
@@ -58,12 +60,12 @@ fn render(frame: &mut Frame, state: &AppState) {
         .constraints([Constraint::Min(1), Constraint::Length(1)])
         .split(area);
 
-    render_file_list(frame, state, chunks[0]);
-    render_status_bar(frame, state, chunks[1]);
+    render_file_list(frame, state, display, chunks[0]);
+    render_status_bar(frame, state, display, chunks[1]);
 }
 
 /// Render the file list with optional expanded diff
-fn render_file_list(frame: &mut Frame, state: &AppState, area: Rect) {
+fn render_file_list(frame: &mut Frame, state: &AppState, display: &DisplayConfig, area: Rect) {
     let files = state.files();
 
     if files.is_empty() {
@@ -120,7 +122,11 @@ fn render_file_list(frame: &mut Frame, state: &AppState, area: Rect) {
             ),
         ]);
 
-        items.push(ListItem::new(line));
+        let mut item = ListItem::new(line);
+        if display.flash_on_change && state.is_flashing(&file.path) {
+            item = item.style(Style::default().bg(Color::Rgb(100, 100, 30)));
+        }
+        items.push(item);
         list_index_to_file_index.push(Some(i));
 
         // If this file is expanded, insert diff lines
@@ -168,9 +174,15 @@ fn render_file_list(frame: &mut Frame, state: &AppState, area: Rect) {
         .position(|idx| *idx == Some(state.selected_index()))
         .unwrap_or(0);
 
+    let highlight = if state.is_focused() {
+        Style::default().bg(Color::DarkGray)
+    } else {
+        Style::default()
+    };
+
     let list = List::new(items)
         .block(Block::default().borders(Borders::NONE))
-        .highlight_style(Style::default().bg(Color::DarkGray));
+        .highlight_style(highlight);
 
     let mut list_state = ListState::default();
     list_state.select(Some(selected_list_index));
@@ -179,12 +191,12 @@ fn render_file_list(frame: &mut Frame, state: &AppState, area: Rect) {
 }
 
 /// Render the bottom status bar
-fn render_status_bar(frame: &mut Frame, state: &AppState, area: Rect) {
+fn render_status_bar(frame: &mut Frame, state: &AppState, display: &DisplayConfig, area: Rect) {
     let file_count = state.files().len();
     let total_ins: usize = state.files().iter().map(|f| f.insertions).sum();
     let total_del: usize = state.files().iter().map(|f| f.deletions).sum();
 
-    let status = Line::from(vec![
+    let mut spans = vec![
         Span::styled(
             format!(" {file_count} files changed"),
             Style::default().fg(Color::White),
@@ -193,12 +205,25 @@ fn render_status_bar(frame: &mut Frame, state: &AppState, area: Rect) {
         Span::styled(format!("-{total_del}"), Style::default().fg(Color::Red)),
         Span::raw("  "),
         Span::styled(format!("+{total_ins}"), Style::default().fg(Color::Green)),
-        Span::raw("  │  "),
-        Span::styled(
-            "j/k:nav  enter:expand  q:quit",
+    ];
+
+    if display.show_refresh_counter {
+        let last_secs = state.last_refresh_secs();
+        let refresh_count = state.refresh_count();
+        spans.push(Span::raw("  │  "));
+        spans.push(Span::styled(
+            format!("updated {last_secs}s ago (#{refresh_count})"),
             Style::default().fg(Color::DarkGray),
-        ),
-    ]);
+        ));
+    }
+
+    spans.push(Span::raw("  │  "));
+    spans.push(Span::styled(
+        "j/k:nav  enter:expand  q:quit",
+        Style::default().fg(Color::DarkGray),
+    ));
+
+    let status = Line::from(spans);
 
     let bar = Paragraph::new(status).style(Style::default().bg(Color::Rgb(30, 30, 30)));
     frame.render_widget(bar, area);

@@ -292,4 +292,96 @@ index abc1234..def5678 100644
         assert_eq!(diff.hunks[0].lines[1].kind, DiffLineKind::Deletion);
         assert_eq!(diff.hunks[0].lines[2].kind, DiffLineKind::Addition);
     }
+
+    #[test]
+    fn test_parse_empty_diff() {
+        let diff = parse_unified_diff("");
+        assert!(diff.hunks.is_empty());
+    }
+
+    #[test]
+    fn test_parse_diff_only_headers() {
+        let raw = "diff --git a/file b/file\nindex abc..def 100644\n--- a/file\n+++ b/file\n";
+        let diff = parse_unified_diff(raw);
+        assert!(diff.hunks.is_empty());
+    }
+
+    #[test]
+    fn test_parse_multiple_hunks() {
+        let raw = r#"diff --git a/file b/file
+--- a/file
++++ b/file
+@@ -1,3 +1,3 @@
+ line1
+-old2
++new2
+ line3
+@@ -10,3 +10,4 @@
+ line10
++added
+ line11
+ line12
+"#;
+        let diff = parse_unified_diff(raw);
+        assert_eq!(diff.hunks.len(), 2);
+        assert_eq!(diff.hunks[0].header, "@@ -1,3 +1,3 @@");
+        assert_eq!(diff.hunks[1].header, "@@ -10,3 +10,4 @@");
+
+        // First hunk: context, deletion, addition, context
+        assert_eq!(diff.hunks[0].lines.len(), 4);
+        assert_eq!(diff.hunks[0].lines[0].kind, DiffLineKind::Context);
+        assert_eq!(diff.hunks[0].lines[1].kind, DiffLineKind::Deletion);
+        assert_eq!(diff.hunks[0].lines[2].kind, DiffLineKind::Addition);
+        assert_eq!(diff.hunks[0].lines[3].kind, DiffLineKind::Context);
+
+        // Second hunk: context, addition, context, context
+        assert_eq!(diff.hunks[1].lines.len(), 4);
+        assert_eq!(diff.hunks[1].lines[1].kind, DiffLineKind::Addition);
+    }
+
+    #[test]
+    fn test_parse_diff_line_content_strips_prefix() {
+        let raw = "diff --git a/f b/f\n--- a/f\n+++ b/f\n@@ -1 +1 @@\n-removed line\n+added line\n";
+        let diff = parse_unified_diff(raw);
+        assert_eq!(diff.hunks[0].lines[0].content, "removed line");
+        assert_eq!(diff.hunks[0].lines[1].content, "added line");
+    }
+
+    #[test]
+    fn test_file_diff_default_is_empty() {
+        let diff = FileDiff::default();
+        assert!(diff.hunks.is_empty());
+    }
+
+    #[test]
+    fn test_file_status_variants() {
+        // Ensure all variants are constructible and cloneable
+        let statuses = vec![
+            FileStatus::Modified,
+            FileStatus::Added,
+            FileStatus::Deleted,
+            FileStatus::Renamed,
+            FileStatus::Untracked,
+            FileStatus::Staged,
+            FileStatus::Conflicted,
+        ];
+        for s in &statuses {
+            let cloned = s.clone();
+            assert_eq!(s, &cloned);
+        }
+    }
+
+    #[test]
+    fn test_file_entry_clone() {
+        let entry = FileEntry {
+            path: "test.rs".to_string(),
+            status: FileStatus::Modified,
+            insertions: 5,
+            deletions: 3,
+        };
+        let cloned = entry.clone();
+        assert_eq!(cloned.path, "test.rs");
+        assert_eq!(cloned.insertions, 5);
+        assert_eq!(cloned.deletions, 3);
+    }
 }

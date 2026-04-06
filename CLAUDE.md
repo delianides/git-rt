@@ -29,6 +29,7 @@ src/
 ## Core Concepts
 
 ### Default View (zero-config)
+
 ```
  src/main.rs          -3  +12
  src/watcher.rs       -0  +45
@@ -46,36 +47,44 @@ src/
 - `q` quits
 
 ### Event Loop
+
 The main loop multiplexes three event sources via crossbeam channels:
+
 1. **Terminal events** (key presses, mouse, resize) from crossterm
 2. **Filesystem events** from notify (debounced ~200ms)
 3. **Tick events** for periodic UI refresh (~250ms)
 
 When a filesystem event fires:
+
 1. Watcher sends `Event::FsChange` to the app
 2. App triggers git status recomputation
 3. State updates the file list and invalidates stale diff caches
 4. UI re-renders on the next tick
 
 ### Git Integration
+
 Using `gix` (gitoxide) for all git operations — no shelling out to `git`.
+
 - **File status**: Equivalent to `git status --porcelain` — untracked, modified, staged, deleted, renamed, conflicted
 - **Diff numstat**: Insertions/deletions per file for the compact view
 - **Diff hunks**: Full unified diff for the expanded view, computed lazily and cached by file content hash
 
 ### Diff Caching Strategy
+
 - Diffs are computed lazily — only when a file is expanded
 - Cache key is `(file_path, content_hash)` where content_hash is a fast hash of the working tree version
 - Cache is invalidated when a new FS event touches that file path
 - This keeps large repos responsive since we only compute diffs for visible content
 
 ### Filesystem Watching
+
 - Uses `notify` with `notify-debouncer-full` for cross-platform support (inotify/FSEvents/kqueue)
 - Watches the entire working tree, filters out `.git/` directory changes (except `.git/index` for staged changes)
 - Debounce window: 200ms default, configurable
 - On debounce fire: full git status recomputation (fast with gix)
 
 ### Action System (configurable, future phase)
+
 Actions are shell command templates triggered by keybindings on a selected file. The tool detects the runtime environment and resolves the appropriate command variant.
 
 Environment detection order: `$TMUX` → `$ZELLIJ` → `$WEZTERM_PANE` → fallback (plain terminal)
@@ -146,6 +155,7 @@ RUST_LOG=debug cargo run       # Run with debug logging
 ## Implementation Priority
 
 ### Phase 1 — MVP (current)
+
 - [x] Project scaffold and module structure
 - [ ] Git status computation via gix (file list with status)
 - [ ] Diff numstat computation (insertions/deletions per file)
@@ -156,6 +166,7 @@ RUST_LOG=debug cargo run       # Run with debug logging
 - [ ] Wire up event loop (terminal + fs + tick)
 
 ### Phase 2 — Polish
+
 - [ ] Syntax-colored diff output (red/green/cyan)
 - [ ] Scrollable diff within expanded region
 - [ ] Handle edge cases (index.lock, mid-rebase, empty repo)
@@ -164,6 +175,7 @@ RUST_LOG=debug cargo run       # Run with debug logging
 - [ ] Respect .gitignore for watch filtering
 
 ### Phase 3 — Actions & Config
+
 - [ ] Config file loading (TOML, XDG paths)
 - [ ] Multiplexer detection
 - [ ] Action system with template resolution
@@ -171,6 +183,7 @@ RUST_LOG=debug cargo run       # Run with debug logging
 - [ ] Custom keybinding configuration
 
 ### Phase 4 — Advanced
+
 - [ ] Tree view mode (directory structure)
 - [ ] Staged vs unstaged split view
 - [ ] Multiple display modes (compact, expanded, tree)
@@ -195,3 +208,12 @@ RUST_LOG=debug cargo run       # Run with debug logging
 - Keep git operations off the main thread — run in a background thread, send results via channel
 - All public functions should have doc comments
 - Module-level `mod.rs` files should re-export the public API cleanly
+
+## Testing
+
+- **All new work MUST include test cases that cover the new functionality.** No exceptions.
+- Tests live in `#[cfg(test)] mod tests` blocks at the bottom of each module
+- Use `cargo test` to run the full suite
+- Unit tests should cover: state transitions, config parsing/defaults, git output parsing, and any pure logic
+- Integration tests requiring a real git repo should use `tempfile` to create disposable repos
+- TUI/rendering code is exempt from unit tests but should be validated manually

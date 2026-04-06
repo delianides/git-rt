@@ -136,10 +136,7 @@ fn render_file_list(frame: &mut Frame, state: &AppState, display: &DisplayConfig
                     // Hunk header
                     let header_line = Line::from(vec![
                         Span::raw("│  "),
-                        Span::styled(
-                            hunk.header.clone(),
-                            Style::default().fg(Color::Cyan),
-                        ),
+                        Span::styled(hunk.header.clone(), Style::default().fg(Color::Cyan)),
                     ]);
                     items.push(ListItem::new(header_line));
                     list_index_to_file_index.push(None);

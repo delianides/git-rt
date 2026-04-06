@@ -19,28 +19,36 @@ impl FsWatcher {
         let (tx, rx) = bounded::<()>(16);
 
         let sender = tx.clone();
-        let mut debouncer = new_debouncer(debounce, None, move |result: Result<Vec<DebouncedEvent>, Vec<notify::Error>>| {
-            match result {
-                Ok(events) => {
-                    // Filter out .git directory changes (except index)
-                    let relevant = events.iter().any(|e| {
-                        e.event.paths.iter().any(|p| is_relevant_path(p))
-                    });
+        let mut debouncer = new_debouncer(
+            debounce,
+            None,
+            move |result: Result<Vec<DebouncedEvent>, Vec<notify::Error>>| {
+                match result {
+                    Ok(events) => {
+                        // Filter out .git directory changes (except index)
+                        let relevant = events
+                            .iter()
+                            .any(|e| e.event.paths.iter().any(|p| is_relevant_path(p)));
 
-                    tracing::debug!(event_count = events.len(), relevant, "Debouncer callback fired");
+                        tracing::debug!(
+                            event_count = events.len(),
+                            relevant,
+                            "Debouncer callback fired"
+                        );
 
-                    if relevant {
-                        // Non-blocking send — drop if channel is full
-                        let _ = sender.try_send(());
+                        if relevant {
+                            // Non-blocking send — drop if channel is full
+                            let _ = sender.try_send(());
+                        }
+                    }
+                    Err(errors) => {
+                        for e in errors {
+                            tracing::warn!("Filesystem watch error: {e}");
+                        }
                     }
                 }
-                Err(errors) => {
-                    for e in errors {
-                        tracing::warn!("Filesystem watch error: {e}");
-                    }
-                }
-            }
-        })
+            },
+        )
         .context("Failed to create filesystem debouncer")?;
 
         debouncer
@@ -50,15 +58,17 @@ impl FsWatcher {
         // Also watch .git/index specifically for staging changes
         let git_index = repo_path.join(".git/index");
         if git_index.exists() {
-            let _ = debouncer
-                .watch(&git_index, RecursiveMode::NonRecursive);
+            let _ = debouncer.watch(&git_index, RecursiveMode::NonRecursive);
         }
 
         tracing::info!(?repo_path, "Filesystem watcher started");
 
-        Ok((rx, Self {
-            _debouncer: debouncer,
-        }))
+        Ok((
+            rx,
+            Self {
+                _debouncer: debouncer,
+            },
+        ))
     }
 }
 

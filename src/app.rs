@@ -40,8 +40,7 @@ impl App {
         let flash_duration = Duration::from_millis(config.display.flash_duration_ms);
         let state = AppState::new(files, flash_duration);
 
-        let (fs_rx, watcher) =
-            FsWatcher::new(&repo_path, Duration::from_millis(debounce_ms))?;
+        let (fs_rx, watcher) = FsWatcher::new(&repo_path, Duration::from_millis(debounce_ms))?;
 
         Ok(Self {
             state,

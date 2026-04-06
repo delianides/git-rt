@@ -133,9 +133,7 @@ impl AppConfig {
                 .filter(|p| p.exists());
 
             // Fall back to platform config dir (~/Library/Application Support on macOS)
-            xdg_path.or_else(|| {
-                dirs::config_dir().map(|d| d.join("git-rt").join("config.toml"))
-            })
+            xdg_path.or_else(|| dirs::config_dir().map(|d| d.join("git-rt").join("config.toml")))
         });
 
         match config_path {
@@ -199,9 +197,7 @@ fn default_actions() -> HashMap<String, ActionConfig> {
         ActionConfig {
             key: "d".to_string(),
             tmux: Some("tmux popup -w 80% -h 80% 'git diff -- {file} | delta'".to_string()),
-            zellij: Some(
-                "zellij run --floating -- sh -c 'git diff -- {file} | delta'".to_string(),
-            ),
+            zellij: Some("zellij run --floating -- sh -c 'git diff -- {file} | delta'".to_string()),
             wezterm: None,
             fallback: Some("git diff -- {file} | delta".to_string()),
         },
@@ -249,7 +245,10 @@ mod tests {
         // (unless the test runner is inside one, so we just check it doesn't panic)
         let mux = Multiplexer::detect();
         // Should return one of the valid variants
-        matches!(mux, Multiplexer::Tmux | Multiplexer::Zellij | Multiplexer::Wezterm | Multiplexer::None);
+        matches!(
+            mux,
+            Multiplexer::Tmux | Multiplexer::Zellij | Multiplexer::Wezterm | Multiplexer::None
+        );
     }
 
     #[test]

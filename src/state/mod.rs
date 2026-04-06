@@ -278,10 +278,7 @@ mod tests {
 
     #[test]
     fn test_accessors() {
-        let files = vec![
-            make_entry("a.rs", 1, 0),
-            make_entry("b.rs", 2, 1),
-        ];
+        let files = vec![make_entry("a.rs", 1, 0), make_entry("b.rs", 2, 1)];
         let state = AppState::new(files, Duration::from_millis(600));
 
         assert_eq!(state.files().len(), 2);
@@ -425,10 +422,7 @@ mod tests {
 
     #[test]
     fn test_diff_cache_invalidated_on_file_removal() {
-        let files = vec![
-            make_entry("a.rs", 1, 0),
-            make_entry("b.rs", 2, 1),
-        ];
+        let files = vec![make_entry("a.rs", 1, 0), make_entry("b.rs", 2, 1)];
         let mut state = AppState::new(files, Duration::from_millis(600));
 
         // Expand a.rs to populate cache

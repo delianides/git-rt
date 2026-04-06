@@ -1,12 +1,12 @@
 #![allow(dead_code)]
 
+mod actions;
 mod app;
-mod watcher;
+mod config;
 mod git;
 mod state;
 mod ui;
-mod actions;
-mod config;
+mod watcher;
 
 use std::path::PathBuf;
 
@@ -15,7 +15,11 @@ use clap::Parser;
 use tracing_subscriber::EnvFilter;
 
 #[derive(Parser, Debug)]
-#[command(name = "git-rt", version, about = "Real-time terminal dashboard for git changes")]
+#[command(
+    name = "git-rt",
+    version,
+    about = "Real-time terminal dashboard for git changes"
+)]
 struct Cli {
     /// Path to git repository (defaults to current directory)
     #[arg(default_value = ".")]
@@ -42,10 +46,7 @@ fn main() -> Result<()> {
         let log_file = std::fs::File::create("/tmp/git-rt.log")
             .context("Failed to create log file at /tmp/git-rt.log")?;
         tracing_subscriber::fmt()
-            .with_env_filter(
-                EnvFilter::try_new(level)
-                    .unwrap_or_else(|_| EnvFilter::new("info")),
-            )
+            .with_env_filter(EnvFilter::try_new(level).unwrap_or_else(|_| EnvFilter::new("info")))
             .with_target(false)
             .with_writer(log_file)
             .with_ansi(false)

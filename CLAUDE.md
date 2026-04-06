@@ -157,21 +157,21 @@ RUST_LOG=debug cargo run       # Run with debug logging
 ### Phase 1 — MVP (current)
 
 - [x] Project scaffold and module structure
-- [ ] Git status computation via gix (file list with status)
-- [ ] Diff numstat computation (insertions/deletions per file)
-- [ ] Basic ratatui rendering (file list with diff stats)
-- [ ] Keyboard navigation (j/k, arrows, q to quit)
-- [ ] Expand/collapse single file diff (Enter/l/h)
-- [ ] Filesystem watching with debounce
-- [ ] Wire up event loop (terminal + fs + tick)
+- [x] Git status computation via gix (file list with status)
+- [x] Diff numstat computation (insertions/deletions per file)
+- [x] Basic ratatui rendering (file list with diff stats)
+- [x] Keyboard navigation (j/k, arrows, q to quit)
+- [x] Expand/collapse single file diff (Enter/l/h)
+- [x] Filesystem watching with debounce
+- [x] Wire up event loop (terminal + fs + tick)
 
 ### Phase 2 — Polish
 
-- [ ] Syntax-colored diff output (red/green/cyan)
+- [x] Syntax-colored diff output (red/green/cyan)
 - [ ] Scrollable diff within expanded region
 - [ ] Handle edge cases (index.lock, mid-rebase, empty repo)
 - [ ] Mouse support (click to select/expand)
-- [ ] Status bar (branch name, total changes, last update time)
+- [x] Status bar (branch name, total changes, last update time)
 - [ ] Respect .gitignore for watch filtering
 
 ### Phase 3 — Actions & Config
@@ -208,6 +208,16 @@ RUST_LOG=debug cargo run       # Run with debug logging
 - Keep git operations off the main thread — run in a background thread, send results via channel
 - All public functions should have doc comments
 - Module-level `mod.rs` files should re-export the public API cleanly
+
+## Commit Guidelines
+
+Use conventional commits:
+
+- feat: new features
+- fix: bug fixes
+- docs: documentation
+- refactor: code refactoring
+- chore: maintenance
 
 ## Testing
 

@@ -87,7 +87,7 @@ fn render_file_list(frame: &mut Frame, state: &AppState, display: &DisplayConfig
         let is_expanded = state.is_expanded(&file.path);
 
         // Build the file line from the format string
-        let mut line = format::render_file_line(&segments, file, state.branch(), &widths);
+        let mut line = format::render_file_line(&segments, file, state.branch(), &widths, area.width);
 
         // Prepend expand marker if enabled
         if display.show_expand_marker {

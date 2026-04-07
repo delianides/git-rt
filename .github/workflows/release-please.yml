@@ -35,7 +35,7 @@ jobs:
             runner: ubuntu-latest
             artifact: git-rt-aarch64-linux
           - target: x86_64-apple-darwin
-            runner: macos-13
+            runner: macos-latest
             artifact: git-rt-x86_64-macos
           - target: aarch64-apple-darwin
             runner: macos-latest

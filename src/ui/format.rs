@@ -281,10 +281,7 @@ mod tests {
     #[test]
     fn test_parse_escaped_percent() {
         let segments = parse_format("%%done");
-        assert_eq!(
-            segments,
-            vec![FormatSegment::Literal("%done".to_string())]
-        );
+        assert_eq!(segments, vec![FormatSegment::Literal("%done".to_string())]);
     }
 
     #[test]
@@ -292,10 +289,7 @@ mod tests {
         let segments = parse_format("%s%f");
         assert_eq!(
             segments,
-            vec![
-                FormatSegment::Token('s'),
-                FormatSegment::Token('f'),
-            ]
+            vec![FormatSegment::Token('s'), FormatSegment::Token('f'),]
         );
     }
 

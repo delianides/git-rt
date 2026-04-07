@@ -111,7 +111,11 @@ impl GitRepo {
             .context("Failed to run git rev-parse")?;
 
         let name = String::from_utf8_lossy(&output.stdout).trim().to_string();
-        Ok(if name.is_empty() { "HEAD".to_string() } else { name })
+        Ok(if name.is_empty() {
+            "HEAD".to_string()
+        } else {
+            name
+        })
     }
 
     /// Compute the current status of all changed files with numstat.

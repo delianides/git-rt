@@ -148,7 +148,10 @@ impl App {
     fn handle_fs_change(&mut self) -> Result<()> {
         tracing::debug!("Filesystem change detected, recomputing status");
         let files = self.git.status()?;
-        let branch = self.git.branch_name().unwrap_or_else(|_| "HEAD".to_string());
+        let branch = self
+            .git
+            .branch_name()
+            .unwrap_or_else(|_| "HEAD".to_string());
         tracing::debug!(file_count = files.len(), "Git status returned");
         for f in &files {
             tracing::debug!(path = %f.path, ins = f.insertions, del = f.deletions, "  file");

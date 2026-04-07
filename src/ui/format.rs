@@ -247,33 +247,58 @@ pub fn render_file_line<'a>(
 }
 
 /// Render a file line as a plain string (for testing). Pads token columns to given widths.
+/// When a `%=` right-align marker is present, the right section is rendered flush-right
+/// using a space-filled gap sized to `available_width`.
 pub fn render_file_line_plain(
     segments: &[FormatSegment],
     entry: &FileEntry,
     branch: &str,
     widths: &[usize],
+    available_width: u16,
 ) -> String {
-    let mut result = String::new();
-    let mut token_idx = 0;
+    let right_align_pos = segments
+        .iter()
+        .position(|s| matches!(s, FormatSegment::RightAlign));
 
-    for segment in segments {
+    let (left_segments, right_segments) = match right_align_pos {
+        Some(pos) => (&segments[..pos], &segments[pos + 1..]),
+        None => (segments, &[] as &[FormatSegment]),
+    };
+
+    let mut left = String::new();
+    let mut token_idx = 0;
+    for segment in left_segments {
         match segment {
-            FormatSegment::Literal(text) => {
-                result.push_str(text);
-            }
+            FormatSegment::Literal(text) => left.push_str(text),
             FormatSegment::Token(ch) => {
                 let value = resolve_token(*ch, entry, branch);
                 let width = widths.get(token_idx).copied().unwrap_or(value.len());
-                result.push_str(&format!("{:<width$}", value));
+                left.push_str(&format!("{:<width$}", value));
                 token_idx += 1;
             }
-            FormatSegment::RightAlign => {
-                // No-op for now; right-align rendering handled in a later task
-            }
+            FormatSegment::RightAlign => {}
         }
     }
 
-    result
+    if right_segments.is_empty() {
+        return left;
+    }
+
+    let mut right = String::new();
+    for segment in right_segments {
+        match segment {
+            FormatSegment::Literal(text) => right.push_str(text),
+            FormatSegment::Token(ch) => {
+                let value = resolve_token(*ch, entry, branch);
+                right.push_str(&value);
+            }
+            FormatSegment::RightAlign => {}
+        }
+    }
+
+    let total_content = left.len() + right.len();
+    let spacer = (available_width as usize).saturating_sub(total_content);
+    format!("{}{}{}", left, " ".repeat(spacer), right)
 }
 
 #[cfg(test)]
@@ -569,8 +594,55 @@ mod tests {
             deletions: 2,
         };
         let widths = vec![1, 7, 2, 2];
-        let text = render_file_line_plain(&segments, &entry, "main", &widths);
+        let text = render_file_line_plain(&segments, &entry, "main", &widths, 80);
         assert_eq!(text, "M main.rs -2 +5");
+    }
+
+    #[test]
+    fn test_render_file_line_plain_right_align() {
+        let segments = parse_format("%s %f %= %- %+");
+        let entry = FileEntry {
+            path: "main.rs".to_string(),
+            status: FileStatus::Modified,
+            insertions: 5,
+            deletions: 2,
+        };
+        let widths = compute_column_widths(&segments, &[entry.clone()], "main");
+        let text = render_file_line_plain(&segments, &entry, "main", &widths, 40);
+        // "M main.rs" = 9 chars left, " -2 +5" = 6 chars right, spacer = 40-9-6 = 25
+        assert_eq!(text.len(), 40);
+        assert!(text.starts_with("M main.rs"));
+        assert!(text.ends_with("-2 +5"));
+    }
+
+    #[test]
+    fn test_render_file_line_plain_no_right_align_unchanged() {
+        let segments = parse_format("%s %f %- %+");
+        let entry = FileEntry {
+            path: "main.rs".to_string(),
+            status: FileStatus::Modified,
+            insertions: 5,
+            deletions: 2,
+        };
+        let widths = vec![1, 7, 2, 2];
+        let text = render_file_line_plain(&segments, &entry, "main", &widths, 80);
+        assert_eq!(text, "M main.rs -2 +5");
+    }
+
+    #[test]
+    fn test_render_file_line_plain_right_align_overflow() {
+        let segments = parse_format("%f %= %- %+");
+        let entry = FileEntry {
+            path: "very/long/path/that/exceeds/width.rs".to_string(),
+            status: FileStatus::Modified,
+            insertions: 5,
+            deletions: 2,
+        };
+        let widths = compute_column_widths(&segments, &[entry.clone()], "main");
+        // Content exceeds width — spacer should be 0, no panic
+        let text = render_file_line_plain(&segments, &entry, "main", &widths, 20);
+        assert!(text.starts_with("very/long/path/that/exceeds/width.rs"));
+        assert!(text.ends_with("-2 +5"));
     }
 
     #[test]

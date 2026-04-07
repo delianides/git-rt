@@ -1,5 +1,7 @@
 /target
-Cargo.lock
+# Cargo.lock is tracked for reproducible nix builds
 *.swp
 *.swo
 .DS_Store
+/result
+.direnv

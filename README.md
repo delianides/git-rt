@@ -8,17 +8,7 @@ A real-time terminal dashboard for git changes. Watch your working tree update l
 
 Run `git-rt` in a terminal pane alongside your editor. It shows a live-updating view of all changed files with insertion/deletion counts, and lets you expand any file to see its diff inline.
 
-```
-  M src/main.rs          -3   +12
-  M src/watcher.rs       -0   +45
-▼ M src/config.rs        -10  +2
-│  @@ -14,10 +14,2 @@
-│  -  let old_config = parse(raw);
-│  +  let config = Config::from_toml(raw);
-  ? tests/integration.rs -1   +1
-
- 4 files changed  -14  +60  │  j/k:nav  enter:expand  q:quit
-```
+![git-rt screenshot](assets/screenshot.png)
 
 ## Install
 
@@ -71,6 +61,40 @@ fallback = "nvim {file}"
 key = "d"
 tmux = "tmux popup -w 80% -h 80% 'git diff -- {file} | delta'"
 fallback = "git diff -- {file} | delta"
+```
+
+## Development
+
+### Prerequisites
+
+- [Rust](https://rustup.rs/) (pinned via `rust-toolchain.toml`)
+- Or [Nix](https://nixos.org/) + [direnv](https://direnv.net/) for a reproducible dev environment
+
+### With Nix (recommended)
+
+```bash
+direnv allow  # one-time setup, auto-activates on cd
+cargo run     # run the app
+cargo test    # run tests
+```
+
+### Without Nix
+
+```bash
+rustup show           # installs toolchain from rust-toolchain.toml
+cargo run             # run the app
+cargo test            # run tests
+cargo clippy          # lint
+cargo fmt             # format
+```
+
+### Nix commands
+
+```bash
+nix flake check       # build + clippy + fmt
+nix build             # build the package (output in ./result)
+nix run               # build and run
+nix flake update      # update pinned dependencies
 ```
 
 ## License

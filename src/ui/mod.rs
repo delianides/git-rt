@@ -9,7 +9,7 @@ use crossterm::{
 use ratatui::{
     backend::CrosstermBackend,
     layout::{Constraint, Direction, Layout, Rect},
-    style::{Color, Modifier, Style},
+    style::{Color, Style},
     text::{Line, Span},
     widgets::{Block, Borders, List, ListItem, ListState, Paragraph},
     Frame,
@@ -17,7 +17,7 @@ use ratatui::{
 use std::io;
 
 use crate::config::DisplayConfig;
-use crate::git::{DiffLineKind, FileStatus};
+use crate::git::DiffLineKind;
 use crate::state::AppState;
 
 pub struct Terminal {
@@ -77,52 +77,23 @@ fn render_file_list(frame: &mut Frame, state: &AppState, display: &DisplayConfig
         return;
     }
 
-    // Build list items, inserting diff lines after the expanded file
+    let segments = format::parse_format(&display.file_line);
+    let widths = format::compute_column_widths(&segments, files, state.branch());
+
     let mut items: Vec<ListItem> = Vec::new();
     let mut list_index_to_file_index: Vec<Option<usize>> = Vec::new();
 
     for (i, file) in files.iter().enumerate() {
-        let is_selected = i == state.selected_index();
         let is_expanded = state.is_expanded(&file.path);
 
-        // File line
-        let marker = if is_expanded { "▼" } else { " " };
-        let status_char = match file.status {
-            FileStatus::Modified => "M",
-            FileStatus::Added => "A",
-            FileStatus::Deleted => "D",
-            FileStatus::Renamed => "R",
-            FileStatus::Untracked => "?",
-            FileStatus::Staged => "S",
-            FileStatus::Conflicted => "C",
-        };
+        // Build the file line from the format string
+        let mut line = format::render_file_line(&segments, file, state.branch(), &widths);
 
-        let line = Line::from(vec![
-            Span::raw(format!("{marker} ")),
-            Span::styled(
-                format!("{status_char} "),
-                Style::default().fg(status_color(&file.status)),
-            ),
-            Span::styled(
-                format!("{:<40}", &file.path),
-                if is_selected {
-                    Style::default()
-                        .fg(Color::White)
-                        .add_modifier(Modifier::BOLD)
-                } else {
-                    Style::default().fg(Color::White)
-                },
-            ),
-            Span::styled(
-                format!("-{}", file.deletions),
-                Style::default().fg(Color::Red),
-            ),
-            Span::raw("  "),
-            Span::styled(
-                format!("+{}", file.insertions),
-                Style::default().fg(Color::Green),
-            ),
-        ]);
+        // Prepend expand marker if enabled
+        if display.show_expand_marker {
+            let marker = if is_expanded { "▼ " } else { "  " };
+            line.spans.insert(0, Span::raw(marker.to_string()));
+        }
 
         let mut item = ListItem::new(line);
         if display.flash_on_change && state.is_flashing(&file.path) {
@@ -135,7 +106,6 @@ fn render_file_list(frame: &mut Frame, state: &AppState, display: &DisplayConfig
         if is_expanded {
             if let Some(diff) = state.expanded_diff() {
                 for hunk in &diff.hunks {
-                    // Hunk header
                     let header_line = Line::from(vec![
                         Span::raw("│  "),
                         Span::styled(hunk.header.clone(), Style::default().fg(Color::Cyan)),
@@ -143,7 +113,6 @@ fn render_file_list(frame: &mut Frame, state: &AppState, display: &DisplayConfig
                     items.push(ListItem::new(header_line));
                     list_index_to_file_index.push(None);
 
-                    // Diff lines
                     for diff_line in &hunk.lines {
                         let (prefix, color) = match diff_line.kind {
                             DiffLineKind::Addition => ("+", Color::Green),
@@ -167,7 +136,6 @@ fn render_file_list(frame: &mut Frame, state: &AppState, display: &DisplayConfig
         }
     }
 
-    // Figure out which list index corresponds to the selected file
     let selected_list_index = list_index_to_file_index
         .iter()
         .position(|idx| *idx == Some(state.selected_index()))
@@ -226,16 +194,4 @@ fn render_status_bar(frame: &mut Frame, state: &AppState, display: &DisplayConfi
 
     let bar = Paragraph::new(status).style(Style::default().bg(Color::Rgb(30, 30, 30)));
     frame.render_widget(bar, area);
-}
-
-/// Color for file status indicator
-fn status_color(status: &FileStatus) -> Color {
-    match status {
-        FileStatus::Modified => Color::Yellow,
-        FileStatus::Added | FileStatus::Untracked => Color::Green,
-        FileStatus::Deleted => Color::Red,
-        FileStatus::Renamed => Color::Cyan,
-        FileStatus::Staged => Color::Green,
-        FileStatus::Conflicted => Color::Magenta,
-    }
 }

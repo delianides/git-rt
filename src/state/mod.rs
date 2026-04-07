@@ -27,10 +27,12 @@ pub struct AppState {
     flash_duration: Duration,
     /// Whether the terminal window is currently focused
     focused: bool,
+    /// Current branch name
+    branch: String,
 }
 
 impl AppState {
-    pub fn new(files: Vec<FileEntry>, flash_duration: Duration) -> Self {
+    pub fn new(files: Vec<FileEntry>, flash_duration: Duration, branch: String) -> Self {
         let now = Instant::now();
         Self {
             files,
@@ -44,6 +46,7 @@ impl AppState {
             flash_times: HashMap::new(),
             flash_duration,
             focused: true,
+            branch,
         }
     }
 
@@ -100,6 +103,14 @@ impl AppState {
 
     pub fn set_focused(&mut self, focused: bool) {
         self.focused = focused;
+    }
+
+    pub fn branch(&self) -> &str {
+        &self.branch
+    }
+
+    pub fn set_branch(&mut self, branch: String) {
+        self.branch = branch;
     }
 
     // -- Navigation --
@@ -228,7 +239,7 @@ mod tests {
             make_entry("b.rs", 2, 1),
             make_entry("c.rs", 0, 3),
         ];
-        let mut state = AppState::new(files, Duration::from_millis(600));
+        let mut state = AppState::new(files, Duration::from_millis(600), "main".to_string());
 
         assert_eq!(state.selected_index(), 0);
         state.select_next();
@@ -248,7 +259,7 @@ mod tests {
             make_entry("b.rs", 2, 1),
             make_entry("c.rs", 0, 3),
         ];
-        let mut state = AppState::new(files, Duration::from_millis(600));
+        let mut state = AppState::new(files, Duration::from_millis(600), "main".to_string());
         state.select_next(); // select b.rs
 
         let new_files = vec![
@@ -265,7 +276,7 @@ mod tests {
     #[test]
     fn test_expand_collapse() {
         let files = vec![make_entry("a.rs", 1, 0)];
-        let mut state = AppState::new(files, Duration::from_millis(600));
+        let mut state = AppState::new(files, Duration::from_millis(600), "main".to_string());
 
         assert!(state.expanded_path().is_none());
 
@@ -279,7 +290,7 @@ mod tests {
     #[test]
     fn test_accessors() {
         let files = vec![make_entry("a.rs", 1, 0), make_entry("b.rs", 2, 1)];
-        let state = AppState::new(files, Duration::from_millis(600));
+        let state = AppState::new(files, Duration::from_millis(600), "main".to_string());
 
         assert_eq!(state.files().len(), 2);
         assert_eq!(state.files()[0].path, "a.rs");
@@ -293,7 +304,7 @@ mod tests {
     #[test]
     fn test_expanded_diff_returns_cached() {
         let files = vec![make_entry("a.rs", 1, 0)];
-        let mut state = AppState::new(files, Duration::from_millis(600));
+        let mut state = AppState::new(files, Duration::from_millis(600), "main".to_string());
 
         assert!(state.expanded_diff().is_none());
 
@@ -313,7 +324,7 @@ mod tests {
     #[test]
     fn test_scroll_diff() {
         let files = vec![make_entry("a.rs", 1, 0)];
-        let mut state = AppState::new(files, Duration::from_millis(600));
+        let mut state = AppState::new(files, Duration::from_millis(600), "main".to_string());
 
         assert_eq!(state.diff_scroll(), 0);
         state.scroll_diff_down();
@@ -330,7 +341,7 @@ mod tests {
 
     #[test]
     fn test_navigation_empty_list() {
-        let mut state = AppState::new(vec![], Duration::from_millis(600));
+        let mut state = AppState::new(vec![], Duration::from_millis(600), "main".to_string());
         assert_eq!(state.selected_index(), 0);
         assert!(state.selected_path().is_none());
         state.select_next(); // should not panic
@@ -345,7 +356,7 @@ mod tests {
             make_entry("b.rs", 2, 1),
             make_entry("c.rs", 0, 3),
         ];
-        let mut state = AppState::new(files, Duration::from_millis(600));
+        let mut state = AppState::new(files, Duration::from_millis(600), "main".to_string());
         state.select_next();
         state.select_next(); // select c.rs (index 2)
 
@@ -357,7 +368,7 @@ mod tests {
     #[test]
     fn test_update_collapses_when_expanded_file_removed() {
         let files = vec![make_entry("a.rs", 1, 0)];
-        let mut state = AppState::new(files, Duration::from_millis(600));
+        let mut state = AppState::new(files, Duration::from_millis(600), "main".to_string());
         state.expand_selected(FileDiff::default());
         assert!(state.expanded_path().is_some());
 
@@ -368,7 +379,7 @@ mod tests {
 
     #[test]
     fn test_update_increments_refresh_count() {
-        let mut state = AppState::new(vec![], Duration::from_millis(600));
+        let mut state = AppState::new(vec![], Duration::from_millis(600), "main".to_string());
         assert_eq!(state.refresh_count(), 0);
 
         state.update_files(vec![make_entry("a.rs", 1, 0)]);
@@ -380,7 +391,7 @@ mod tests {
 
     #[test]
     fn test_flash_on_new_file() {
-        let mut state = AppState::new(vec![], Duration::from_millis(600));
+        let mut state = AppState::new(vec![], Duration::from_millis(600), "main".to_string());
         assert!(!state.is_flashing("a.rs"));
 
         state.update_files(vec![make_entry("a.rs", 1, 0)]);
@@ -390,7 +401,7 @@ mod tests {
     #[test]
     fn test_flash_on_changed_stats() {
         let files = vec![make_entry("a.rs", 1, 0)];
-        let mut state = AppState::new(files, Duration::from_millis(600));
+        let mut state = AppState::new(files, Duration::from_millis(600), "main".to_string());
         // Initial load doesn't flash (no previous state to compare)
         assert!(!state.is_flashing("a.rs"));
 
@@ -402,7 +413,7 @@ mod tests {
     #[test]
     fn test_no_flash_on_unchanged_stats() {
         let files = vec![make_entry("a.rs", 1, 0)];
-        let mut state = AppState::new(files, Duration::from_millis(600));
+        let mut state = AppState::new(files, Duration::from_millis(600), "main".to_string());
 
         // Update with same stats — should not flash
         state.update_files(vec![make_entry("a.rs", 1, 0)]);
@@ -412,7 +423,7 @@ mod tests {
     #[test]
     fn test_flash_expires() {
         let files = vec![make_entry("a.rs", 1, 0)];
-        let mut state = AppState::new(files, Duration::from_millis(1)); // 1ms flash
+        let mut state = AppState::new(files, Duration::from_millis(1), "main".to_string()); // 1ms flash
 
         state.update_files(vec![make_entry("a.rs", 5, 2)]);
         // Sleep just past the flash duration
@@ -423,7 +434,7 @@ mod tests {
     #[test]
     fn test_diff_cache_invalidated_on_file_removal() {
         let files = vec![make_entry("a.rs", 1, 0), make_entry("b.rs", 2, 1)];
-        let mut state = AppState::new(files, Duration::from_millis(600));
+        let mut state = AppState::new(files, Duration::from_millis(600), "main".to_string());
 
         // Expand a.rs to populate cache
         state.expand_selected(FileDiff::default());
@@ -437,7 +448,7 @@ mod tests {
 
     #[test]
     fn test_focus_state() {
-        let state = AppState::new(vec![], Duration::from_millis(600));
+        let state = AppState::new(vec![], Duration::from_millis(600), "main".to_string());
         assert!(state.is_focused()); // focused by default
 
         let mut state = state;

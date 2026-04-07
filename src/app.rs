@@ -36,9 +36,10 @@ impl App {
 
         // Initial git status computation
         let files = git.status()?;
+        let branch = git.branch_name().unwrap_or_else(|_| "HEAD".to_string());
 
         let flash_duration = Duration::from_millis(config.display.flash_duration_ms);
-        let state = AppState::new(files, flash_duration);
+        let state = AppState::new(files, flash_duration, branch);
 
         let (fs_rx, watcher) = FsWatcher::new(&repo_path, Duration::from_millis(debounce_ms))?;
 
@@ -147,10 +148,12 @@ impl App {
     fn handle_fs_change(&mut self) -> Result<()> {
         tracing::debug!("Filesystem change detected, recomputing status");
         let files = self.git.status()?;
+        let branch = self.git.branch_name().unwrap_or_else(|_| "HEAD".to_string());
         tracing::debug!(file_count = files.len(), "Git status returned");
         for f in &files {
             tracing::debug!(path = %f.path, ins = f.insertions, del = f.deletions, "  file");
         }
+        self.state.set_branch(branch);
         self.state.update_files(files);
         Ok(())
     }

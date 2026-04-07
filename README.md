@@ -31,14 +31,14 @@ git-rt --debounce 500
 
 ### Default keybindings
 
-| Key | Action |
-|---|---|
-| `j` / `↓` | Move down |
-| `k` / `↑` | Move up |
-| `Enter` / `l` | Expand file diff |
-| `h` | Collapse file diff |
-| `r` | Refresh |
-| `q` | Quit |
+| Key           | Action             |
+| ------------- | ------------------ |
+| `j` / `↓`     | Move down          |
+| `k` / `↑`     | Move up            |
+| `Enter` / `l` | Expand file diff   |
+| `h`           | Collapse file diff |
+| `r`           | Refresh            |
+| `q`           | Quit               |
 
 ## Configuration
 

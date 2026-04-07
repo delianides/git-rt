@@ -14,6 +14,8 @@ pub enum FormatSegment {
     Token(char),
     /// Literal text between tokens
     Literal(String),
+    /// Right-align marker (%=) — everything after this is right-aligned
+    RightAlign,
 }
 
 /// Parse a vim-style format string into segments
@@ -21,6 +23,7 @@ pub fn parse_format(fmt: &str) -> Vec<FormatSegment> {
     let mut segments = Vec::new();
     let mut chars = fmt.chars().peekable();
     let mut literal = String::new();
+    let mut seen_right_align = false;
 
     while let Some(ch) = chars.next() {
         if ch == '%' {
@@ -28,6 +31,19 @@ pub fn parse_format(fmt: &str) -> Vec<FormatSegment> {
                 Some('%') => {
                     chars.next();
                     literal.push('%');
+                }
+                Some(&'=') => {
+                    chars.next();
+                    if !seen_right_align {
+                        if !literal.is_empty() {
+                            segments.push(FormatSegment::Literal(literal.clone()));
+                            literal.clear();
+                        }
+                        segments.push(FormatSegment::RightAlign);
+                        seen_right_align = true;
+                    } else {
+                        literal.push_str("%=");
+                    }
                 }
                 Some(&token) => {
                     if !literal.is_empty() {
@@ -123,7 +139,8 @@ fn render_change_graph(insertions: usize, deletions: usize) -> String {
 }
 
 /// Compute the max width for each token column across all file entries.
-/// Returns a Vec with one width per Token segment (Literals are skipped).
+/// Returns a Vec with one width per Token segment (both left and right of
+/// any `RightAlign` marker), so all columns align across rows.
 pub fn compute_column_widths(
     segments: &[FormatSegment],
     entries: &[FileEntry],
@@ -179,29 +196,38 @@ pub fn render_file_line<'a>(
     entry: &FileEntry,
     branch: &str,
     widths: &[usize],
+    available_width: u16,
 ) -> Line<'a> {
-    let mut spans: Vec<Span<'a>> = Vec::new();
+    let right_align_pos = segments
+        .iter()
+        .position(|s| matches!(s, FormatSegment::RightAlign));
+
+    let (left_segments, right_segments) = match right_align_pos {
+        Some(pos) => (&segments[..pos], &segments[pos + 1..]),
+        None => (segments, &[] as &[FormatSegment]),
+    };
+
+    let mut left_spans: Vec<Span<'a>> = Vec::new();
     let mut token_idx = 0;
 
-    for segment in segments {
+    for segment in left_segments {
         match segment {
             FormatSegment::Literal(text) => {
-                spans.push(Span::raw(text.to_string()));
+                left_spans.push(Span::raw(text.to_string()));
             }
             FormatSegment::Token(ch) => {
                 let value = resolve_token(*ch, entry, branch);
                 let width = widths.get(token_idx).copied().unwrap_or(value.len());
 
                 if *ch == 'g' {
-                    // Change graph gets split into colored + and - spans
                     let ins_count = value.chars().take_while(|c| *c == '+').count();
                     let (ins_part, del_part) = value.split_at(ins_count);
                     let pad_needed = width.saturating_sub(value.len());
-                    spans.push(Span::styled(
+                    left_spans.push(Span::styled(
                         ins_part.to_string(),
                         Style::default().fg(Color::Green),
                     ));
-                    spans.push(Span::styled(
+                    left_spans.push(Span::styled(
                         format!("{}{}", del_part, " ".repeat(pad_needed)),
                         Style::default().fg(Color::Red),
                     ));
@@ -211,41 +237,121 @@ pub fn render_file_line<'a>(
                         Some(color) => Style::default().fg(color),
                         None => Style::default(),
                     };
-                    spans.push(Span::styled(padded, style));
+                    left_spans.push(Span::styled(padded, style));
                 }
                 token_idx += 1;
             }
+            FormatSegment::RightAlign => {}
         }
     }
+
+    if right_segments.is_empty() {
+        return Line::from(left_spans);
+    }
+
+    let mut right_spans: Vec<Span<'a>> = Vec::new();
+
+    for segment in right_segments {
+        match segment {
+            FormatSegment::Literal(text) => {
+                right_spans.push(Span::raw(text.to_string()));
+            }
+            FormatSegment::Token(ch) => {
+                let value = resolve_token(*ch, entry, branch);
+                let width = widths.get(token_idx).copied().unwrap_or(value.len());
+
+                if *ch == 'g' {
+                    let ins_count = value.chars().take_while(|c| *c == '+').count();
+                    let (ins_part, del_part) = value.split_at(ins_count);
+                    let pad_needed = width.saturating_sub(value.len());
+                    right_spans.push(Span::styled(
+                        ins_part.to_string(),
+                        Style::default().fg(Color::Green),
+                    ));
+                    right_spans.push(Span::styled(
+                        format!("{}{}", del_part, " ".repeat(pad_needed)),
+                        Style::default().fg(Color::Red),
+                    ));
+                } else {
+                    let padded = format!("{:<width$}", value);
+                    let style = match token_color(*ch, entry) {
+                        Some(color) => Style::default().fg(color),
+                        None => Style::default(),
+                    };
+                    right_spans.push(Span::styled(padded, style));
+                }
+                token_idx += 1;
+            }
+            FormatSegment::RightAlign => {}
+        }
+    }
+
+    let left_width: usize = left_spans.iter().map(|s| s.content.len()).sum();
+    let right_width: usize = right_spans.iter().map(|s| s.content.len()).sum();
+    let spacer = (available_width as usize).saturating_sub(left_width + right_width);
+
+    let mut spans = left_spans;
+    spans.push(Span::raw(" ".repeat(spacer)));
+    spans.extend(right_spans);
 
     Line::from(spans)
 }
 
 /// Render a file line as a plain string (for testing). Pads token columns to given widths.
+/// When a `%=` right-align marker is present, the right section is rendered flush-right
+/// using a space-filled gap sized to `available_width`.
 pub fn render_file_line_plain(
     segments: &[FormatSegment],
     entry: &FileEntry,
     branch: &str,
     widths: &[usize],
+    available_width: u16,
 ) -> String {
-    let mut result = String::new();
-    let mut token_idx = 0;
+    let right_align_pos = segments
+        .iter()
+        .position(|s| matches!(s, FormatSegment::RightAlign));
 
-    for segment in segments {
+    let (left_segments, right_segments) = match right_align_pos {
+        Some(pos) => (&segments[..pos], &segments[pos + 1..]),
+        None => (segments, &[] as &[FormatSegment]),
+    };
+
+    let mut left = String::new();
+    let mut token_idx = 0;
+    for segment in left_segments {
         match segment {
-            FormatSegment::Literal(text) => {
-                result.push_str(text);
-            }
+            FormatSegment::Literal(text) => left.push_str(text),
             FormatSegment::Token(ch) => {
                 let value = resolve_token(*ch, entry, branch);
                 let width = widths.get(token_idx).copied().unwrap_or(value.len());
-                result.push_str(&format!("{:<width$}", value));
+                left.push_str(&format!("{:<width$}", value));
                 token_idx += 1;
             }
+            FormatSegment::RightAlign => {}
         }
     }
 
-    result
+    if right_segments.is_empty() {
+        return left;
+    }
+
+    let mut right = String::new();
+    for segment in right_segments {
+        match segment {
+            FormatSegment::Literal(text) => right.push_str(text),
+            FormatSegment::Token(ch) => {
+                let value = resolve_token(*ch, entry, branch);
+                let width = widths.get(token_idx).copied().unwrap_or(value.len());
+                right.push_str(&format!("{:<width$}", value));
+                token_idx += 1;
+            }
+            FormatSegment::RightAlign => {}
+        }
+    }
+
+    let total_content = left.len() + right.len();
+    let spacer = (available_width as usize).saturating_sub(total_content);
+    format!("{}{}{}", left, " ".repeat(spacer), right)
 }
 
 #[cfg(test)]
@@ -510,7 +616,7 @@ mod tests {
             deletions: 2,
         };
         let widths = vec![1, 7, 2, 2];
-        let line = render_file_line(&segments, &entry, "main", &widths);
+        let line = render_file_line(&segments, &entry, "main", &widths, 80);
         // Expect spans: status, literal " ", path, literal " ", deletions, literal " ", insertions
         assert_eq!(line.spans.len(), 7);
     }
@@ -525,7 +631,7 @@ mod tests {
             deletions: 2,
         };
         let widths = vec![2, 2];
-        let line = render_file_line(&segments, &entry, "main", &widths);
+        let line = render_file_line(&segments, &entry, "main", &widths, 80);
         // First span is deletions (red), then literal, then insertions (green)
         assert_eq!(line.spans[0].style.fg, Some(Color::Red));
         assert_eq!(line.spans[2].style.fg, Some(Color::Green));
@@ -541,7 +647,165 @@ mod tests {
             deletions: 2,
         };
         let widths = vec![1, 7, 2, 2];
-        let text = render_file_line_plain(&segments, &entry, "main", &widths);
+        let text = render_file_line_plain(&segments, &entry, "main", &widths, 80);
         assert_eq!(text, "M main.rs -2 +5");
+    }
+
+    #[test]
+    fn test_render_file_line_plain_right_align() {
+        let segments = parse_format("%s %f %= %- %+");
+        let entry = FileEntry {
+            path: "main.rs".to_string(),
+            status: FileStatus::Modified,
+            insertions: 5,
+            deletions: 2,
+        };
+        let widths = compute_column_widths(&segments, std::slice::from_ref(&entry), "main");
+        let text = render_file_line_plain(&segments, &entry, "main", &widths, 40);
+        // "M main.rs" = 9 chars left, " -2 +5" = 6 chars right, spacer = 40-9-6 = 25
+        assert_eq!(text.len(), 40);
+        assert!(text.starts_with("M main.rs"));
+        assert!(text.ends_with("-2 +5"));
+    }
+
+    #[test]
+    fn test_render_file_line_plain_no_right_align_unchanged() {
+        let segments = parse_format("%s %f %- %+");
+        let entry = FileEntry {
+            path: "main.rs".to_string(),
+            status: FileStatus::Modified,
+            insertions: 5,
+            deletions: 2,
+        };
+        let widths = vec![1, 7, 2, 2];
+        let text = render_file_line_plain(&segments, &entry, "main", &widths, 80);
+        assert_eq!(text, "M main.rs -2 +5");
+    }
+
+    #[test]
+    fn test_render_file_line_plain_right_align_overflow() {
+        let segments = parse_format("%f %= %- %+");
+        let entry = FileEntry {
+            path: "very/long/path/that/exceeds/width.rs".to_string(),
+            status: FileStatus::Modified,
+            insertions: 5,
+            deletions: 2,
+        };
+        let widths = compute_column_widths(&segments, std::slice::from_ref(&entry), "main");
+        // Content exceeds width — spacer should be 0, no panic
+        let text = render_file_line_plain(&segments, &entry, "main", &widths, 20);
+        assert!(text.starts_with("very/long/path/that/exceeds/width.rs"));
+        assert!(text.ends_with("-2 +5"));
+    }
+
+    #[test]
+    fn test_parse_right_align_marker() {
+        let segments = parse_format("%s %f %= %- %+");
+        assert_eq!(
+            segments,
+            vec![
+                FormatSegment::Token('s'),
+                FormatSegment::Literal(" ".to_string()),
+                FormatSegment::Token('f'),
+                FormatSegment::Literal(" ".to_string()),
+                FormatSegment::RightAlign,
+                FormatSegment::Literal(" ".to_string()),
+                FormatSegment::Token('-'),
+                FormatSegment::Literal(" ".to_string()),
+                FormatSegment::Token('+'),
+            ]
+        );
+    }
+
+    #[test]
+    fn test_parse_multiple_right_align_only_first() {
+        let segments = parse_format("%f %= %- %= %+");
+        assert_eq!(
+            segments,
+            vec![
+                FormatSegment::Token('f'),
+                FormatSegment::Literal(" ".to_string()),
+                FormatSegment::RightAlign,
+                FormatSegment::Literal(" ".to_string()),
+                FormatSegment::Token('-'),
+                FormatSegment::Literal(" %= ".to_string()),
+                FormatSegment::Token('+'),
+            ]
+        );
+    }
+
+    #[test]
+    fn test_parse_right_align_at_start() {
+        let segments = parse_format("%= %f");
+        assert_eq!(
+            segments,
+            vec![
+                FormatSegment::RightAlign,
+                FormatSegment::Literal(" ".to_string()),
+                FormatSegment::Token('f'),
+            ]
+        );
+    }
+
+    #[test]
+    fn test_render_file_line_styled_right_align_span_structure() {
+        let segments = parse_format("%s %f %= %- %+");
+        let entry = FileEntry {
+            path: "main.rs".to_string(),
+            status: FileStatus::Modified,
+            insertions: 5,
+            deletions: 2,
+        };
+        let widths = compute_column_widths(&segments, std::slice::from_ref(&entry), "main");
+        let line = render_file_line(&segments, &entry, "main", &widths, 60);
+        // Left: status, " ", path, " " = 4 spans
+        // Spacer: 1 span
+        // Right: " ", deletions, " ", insertions = 4 spans
+        // Total: 9 spans
+        assert_eq!(line.spans.len(), 9);
+        // Verify spacer span exists and is spaces
+        let spacer = &line.spans[4];
+        assert!(spacer.content.chars().all(|c| c == ' '));
+    }
+
+    #[test]
+    fn test_render_file_line_styled_no_right_align_unchanged() {
+        let segments = parse_format("%s %f %- %+");
+        let entry = FileEntry {
+            path: "main.rs".to_string(),
+            status: FileStatus::Modified,
+            insertions: 5,
+            deletions: 2,
+        };
+        let widths = vec![1, 7, 2, 2];
+        let line = render_file_line(&segments, &entry, "main", &widths, 80);
+        // Same as before: 7 spans, no spacer
+        assert_eq!(line.spans.len(), 7);
+    }
+
+    #[test]
+    fn test_compute_column_widths_includes_right_side() {
+        let segments = parse_format("%s %f %= %- %+");
+        let entries = vec![
+            FileEntry {
+                path: "short.rs".to_string(),
+                status: FileStatus::Modified,
+                insertions: 1,
+                deletions: 0,
+            },
+            FileEntry {
+                path: "very/long/path/file.rs".to_string(),
+                status: FileStatus::Added,
+                insertions: 100,
+                deletions: 50,
+            },
+        ];
+        let widths = compute_column_widths(&segments, &entries, "main");
+        // All tokens get widths: 's', 'f', '-', '+'
+        assert_eq!(widths.len(), 4);
+        assert_eq!(widths[0], 1); // 's': max("M", "A") = 1
+        assert_eq!(widths[1], 22); // 'f': max("short.rs", "very/long/path/file.rs") = 22
+        assert_eq!(widths[2], 3); // '-': max("-0", "-50") = 3
+        assert_eq!(widths[3], 4); // '+': max("+1", "+100") = 4
     }
 }

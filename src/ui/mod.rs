@@ -68,6 +68,16 @@ fn render(frame: &mut Frame, state: &AppState, display: &DisplayConfig) {
 
 /// Render the file list with optional expanded diff
 fn render_file_list(frame: &mut Frame, state: &AppState, display: &DisplayConfig, area: Rect) {
+    let pad = &display.padding;
+    // Apply vertical padding to the area, but keep full width for highlight bar
+    let area = Rect {
+        x: area.x,
+        y: area.y + pad.top,
+        width: area.width,
+        height: area.height.saturating_sub(pad.top + pad.bottom),
+    };
+    let left_pad = " ".repeat(pad.left as usize);
+
     let files = state.files();
 
     if files.is_empty() {
@@ -87,12 +97,23 @@ fn render_file_list(frame: &mut Frame, state: &AppState, display: &DisplayConfig
         let is_expanded = state.is_expanded(&file.path);
 
         // Build the file line from the format string
-        let mut line = format::render_file_line(&segments, file, state.branch(), &widths);
+        // Subtract horizontal padding + marker from content width
+        let marker_width: u16 = if display.show_expand_marker { 2 } else { 0 };
+        let line_width = area
+            .width
+            .saturating_sub(marker_width + pad.left + pad.right);
+        let mut line =
+            format::render_file_line(&segments, file, state.branch(), &widths, line_width);
 
-        // Prepend expand marker if enabled
+        // Prepend expand marker (after left padding)
         if display.show_expand_marker {
             let marker = if is_expanded { "▼ " } else { "  " };
             line.spans.insert(0, Span::raw(marker.to_string()));
+        }
+
+        // Prepend left padding
+        if pad.left > 0 {
+            line.spans.insert(0, Span::raw(left_pad.clone()));
         }
 
         let mut item = ListItem::new(line);
@@ -107,7 +128,7 @@ fn render_file_list(frame: &mut Frame, state: &AppState, display: &DisplayConfig
             if let Some(diff) = state.expanded_diff() {
                 for hunk in &diff.hunks {
                     let header_line = Line::from(vec![
-                        Span::raw("│  "),
+                        Span::raw(format!("{}│  ", left_pad)),
                         Span::styled(hunk.header.clone(), Style::default().fg(Color::Cyan)),
                     ]);
                     items.push(ListItem::new(header_line));
@@ -122,7 +143,7 @@ fn render_file_list(frame: &mut Frame, state: &AppState, display: &DisplayConfig
                         };
 
                         let line = Line::from(vec![
-                            Span::raw("│  "),
+                            Span::raw(format!("{}│  ", left_pad)),
                             Span::styled(
                                 format!("{prefix} {}", &diff_line.content),
                                 Style::default().fg(color),

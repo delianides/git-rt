@@ -76,6 +76,7 @@
             cargo-edit
             cargo-outdated
             git
+            pre-commit
           ];
         };
       }

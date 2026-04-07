@@ -53,14 +53,11 @@ context_lines = 3
 
 [actions.open_editor]
 key = "e"
-tmux = "tmux split-window -h 'nvim {file}'"
-zellij = "zellij run --direction right -- nvim {file}"
-fallback = "nvim {file}"
+command = "nvim {file}"
 
 [actions.diff_view]
 key = "d"
-tmux = "tmux popup -w 80% -h 80% 'git diff -- {file} | delta'"
-fallback = "git diff -- {file} | delta"
+command = "git diff -- {file} | delta"
 ```
 
 ## Development

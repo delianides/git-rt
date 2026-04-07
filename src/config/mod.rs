@@ -27,7 +27,7 @@ impl Default for AppConfig {
             debounce_ms: 200,
             display: DisplayConfig::default(),
             keys: KeyConfig::default(),
-            actions: default_actions(),
+            actions: HashMap::new(),
         }
     }
 }
@@ -88,38 +88,8 @@ impl Default for KeyConfig {
 pub struct ActionConfig {
     /// Keybinding to trigger this action
     pub key: String,
-    /// Command template for tmux environment
-    pub tmux: Option<String>,
-    /// Command template for zellij environment
-    pub zellij: Option<String>,
-    /// Command template for wezterm environment
-    pub wezterm: Option<String>,
-    /// Fallback command for plain terminal
-    pub fallback: Option<String>,
-}
-
-/// Detected terminal multiplexer environment
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum Multiplexer {
-    Tmux,
-    Zellij,
-    Wezterm,
-    None,
-}
-
-impl Multiplexer {
-    /// Detect the current multiplexer from environment variables
-    pub fn detect() -> Self {
-        if std::env::var("TMUX").is_ok() {
-            Self::Tmux
-        } else if std::env::var("ZELLIJ").is_ok() {
-            Self::Zellij
-        } else if std::env::var("WEZTERM_PANE").is_ok() {
-            Self::Wezterm
-        } else {
-            Self::None
-        }
-    }
+    /// Command template to execute (supports {file} and {abs_file} placeholders)
+    pub command: String,
 }
 
 impl AppConfig {
@@ -152,58 +122,22 @@ impl AppConfig {
         }
     }
 
-    /// Resolve the command for an action given the current multiplexer
+    /// Resolve the command for an action by substituting template variables
     pub fn resolve_action_command(
         &self,
         action_name: &str,
         file_path: &str,
         abs_file_path: &str,
-        mux: &Multiplexer,
     ) -> Option<String> {
         let action = self.actions.get(action_name)?;
 
-        let template = match mux {
-            Multiplexer::Tmux => action.tmux.as_ref().or(action.fallback.as_ref()),
-            Multiplexer::Zellij => action.zellij.as_ref().or(action.fallback.as_ref()),
-            Multiplexer::Wezterm => action.wezterm.as_ref().or(action.fallback.as_ref()),
-            Multiplexer::None => action.fallback.as_ref(),
-        }?;
-
         Some(
-            template
+            action
+                .command
                 .replace("{file}", file_path)
                 .replace("{abs_file}", abs_file_path),
         )
     }
-}
-
-/// Built-in default actions
-fn default_actions() -> HashMap<String, ActionConfig> {
-    let mut actions = HashMap::new();
-
-    actions.insert(
-        "open_editor".to_string(),
-        ActionConfig {
-            key: "e".to_string(),
-            tmux: Some("tmux split-window -h 'nvim {file}'".to_string()),
-            zellij: Some("zellij run --direction right -- nvim {file}".to_string()),
-            wezterm: Some("wezterm cli split-pane --right -- nvim {file}".to_string()),
-            fallback: Some("nvim {file}".to_string()),
-        },
-    );
-
-    actions.insert(
-        "diff_view".to_string(),
-        ActionConfig {
-            key: "d".to_string(),
-            tmux: Some("tmux popup -w 80% -h 80% 'git diff -- {file} | delta'".to_string()),
-            zellij: Some("zellij run --floating -- sh -c 'git diff -- {file} | delta'".to_string()),
-            wezterm: None,
-            fallback: Some("git diff -- {file} | delta".to_string()),
-        },
-    );
-
-    actions
 }
 
 #[cfg(test)]
@@ -233,63 +167,33 @@ mod tests {
     }
 
     #[test]
-    fn test_default_actions_present() {
+    fn test_default_actions_empty() {
         let config = AppConfig::default();
-        assert!(config.actions.contains_key("open_editor"));
-        assert!(config.actions.contains_key("diff_view"));
+        assert!(config.actions.is_empty());
     }
 
     #[test]
-    fn test_multiplexer_detect_none() {
-        // In a test environment, none of the multiplexer env vars should be set
-        // (unless the test runner is inside one, so we just check it doesn't panic)
-        let mux = Multiplexer::detect();
-        // Should return one of the valid variants
-        matches!(
-            mux,
-            Multiplexer::Tmux | Multiplexer::Zellij | Multiplexer::Wezterm | Multiplexer::None
+    fn test_resolve_action_command() {
+        let mut config = AppConfig::default();
+        config.actions.insert(
+            "open_editor".to_string(),
+            ActionConfig {
+                key: "e".to_string(),
+                command: "nvim {file}".to_string(),
+            },
         );
-    }
-
-    #[test]
-    fn test_resolve_action_command_tmux() {
-        let config = AppConfig::default();
         let cmd = config.resolve_action_command(
             "open_editor",
             "src/main.rs",
             "/home/user/repo/src/main.rs",
-            &Multiplexer::Tmux,
         );
-        assert!(cmd.is_some());
-        let cmd = cmd.unwrap();
-        assert!(cmd.contains("tmux"));
-        assert!(cmd.contains("src/main.rs"));
+        assert_eq!(cmd.unwrap(), "nvim src/main.rs");
     }
 
     #[test]
-    fn test_resolve_action_command_fallback() {
+    fn test_resolve_action_command_unknown() {
         let config = AppConfig::default();
-        let cmd = config.resolve_action_command(
-            "open_editor",
-            "src/main.rs",
-            "/home/user/repo/src/main.rs",
-            &Multiplexer::None,
-        );
-        assert!(cmd.is_some());
-        let cmd = cmd.unwrap();
-        assert!(cmd.contains("nvim"));
-        assert!(cmd.contains("src/main.rs"));
-    }
-
-    #[test]
-    fn test_resolve_action_command_unknown_action() {
-        let config = AppConfig::default();
-        let cmd = config.resolve_action_command(
-            "nonexistent",
-            "file.rs",
-            "/abs/file.rs",
-            &Multiplexer::None,
-        );
+        let cmd = config.resolve_action_command("nonexistent", "file.rs", "/abs/file.rs");
         assert!(cmd.is_none());
     }
 
@@ -300,51 +204,15 @@ mod tests {
             "test_action".to_string(),
             ActionConfig {
                 key: "t".to_string(),
-                tmux: None,
-                zellij: None,
-                wezterm: None,
-                fallback: Some("open {abs_file}".to_string()),
+                command: "open {abs_file}".to_string(),
             },
         );
         let cmd = config.resolve_action_command(
             "test_action",
             "src/main.rs",
             "/home/user/repo/src/main.rs",
-            &Multiplexer::None,
         );
         assert_eq!(cmd.unwrap(), "open /home/user/repo/src/main.rs");
-    }
-
-    #[test]
-    fn test_resolve_action_no_fallback() {
-        let mut config = AppConfig::default();
-        config.actions.insert(
-            "tmux_only".to_string(),
-            ActionConfig {
-                key: "t".to_string(),
-                tmux: Some("tmux cmd".to_string()),
-                zellij: None,
-                wezterm: None,
-                fallback: None,
-            },
-        );
-        // No fallback for plain terminal
-        let cmd = config.resolve_action_command(
-            "tmux_only",
-            "file.rs",
-            "/abs/file.rs",
-            &Multiplexer::None,
-        );
-        assert!(cmd.is_none());
-
-        // But works for tmux
-        let cmd = config.resolve_action_command(
-            "tmux_only",
-            "file.rs",
-            "/abs/file.rs",
-            &Multiplexer::Tmux,
-        );
-        assert!(cmd.is_some());
     }
 
     #[test]

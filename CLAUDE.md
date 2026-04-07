@@ -85,26 +85,21 @@ Using `gix` (gitoxide) for all git operations — no shelling out to `git`.
 
 ### Action System (configurable, future phase)
 
-Actions are shell command templates triggered by keybindings on a selected file. The tool detects the runtime environment and resolves the appropriate command variant.
-
-Environment detection order: `$TMUX` → `$ZELLIJ` → `$WEZTERM_PANE` → fallback (plain terminal)
+Actions are user-defined shell command templates triggered by keybindings on a selected file. No default actions are shipped — actions are purely user-configured.
 
 Config file location: `~/.config/git-rt/config.toml`
 
 ```toml
 [actions.open_editor]
 key = "e"
-tmux = "tmux split-window -h 'nvim {file}'"
-zellij = "zellij run --direction right -- nvim {file}"
-fallback = "nvim {file}"
+command = "nvim {file}"
 
 [actions.diff_view]
 key = "d"
-tmux = "tmux popup -w 80% -h 80% 'delta {file}'"
-fallback = "delta {file}"
+command = "git diff -- {file} | delta"
 ```
 
-Template variables: `{file}` (relative path), `{abs_file}` (absolute path), `{diff}` (temp file with diff output)
+Template variables: `{file}` (relative path), `{abs_file}` (absolute path)
 
 ## Key Design Decisions
 
@@ -112,7 +107,7 @@ Template variables: `{file}` (relative path), `{abs_file}` (absolute path), `{di
 - **Single expanded file**: Accordion pattern keeps the UI predictable and avoids layout complexity
 - **Lazy diffs**: Only compute what's visible to stay responsive in large repos
 - **Zero-config useful**: Works immediately with sensible defaults, config only needed for actions/customization
-- **Multiplexer-agnostic**: Works in plain terminal, enhances when tmux/zellij/wezterm detected
+- **Environment-agnostic**: Works in any terminal, user configures their own action commands
 - **Pure Rust git**: gitoxide over shelling out to git CLI for speed and reliability
 
 ## Build & Run
@@ -177,9 +172,7 @@ RUST_LOG=debug cargo run       # Run with debug logging
 ### Phase 3 — Actions & Config
 
 - [ ] Config file loading (TOML, XDG paths)
-- [ ] Multiplexer detection
-- [ ] Action system with template resolution
-- [ ] Default action presets (editor, diff viewer, claude)
+- [x] Action system with template resolution
 - [ ] Custom keybinding configuration
 
 ### Phase 4 — Advanced

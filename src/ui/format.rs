@@ -139,17 +139,15 @@ fn render_change_graph(insertions: usize, deletions: usize) -> String {
 }
 
 /// Compute the max width for each token column across all file entries.
-/// Returns a Vec with one width per Token segment that appears before any
-/// `RightAlign` marker. Tokens after the marker are not padded.
+/// Returns a Vec with one width per Token segment (both left and right of
+/// any `RightAlign` marker), so all columns align across rows.
 pub fn compute_column_widths(
     segments: &[FormatSegment],
     entries: &[FileEntry],
     branch: &str,
 ) -> Vec<usize> {
-    // Only count tokens before RightAlign
     let token_count = segments
         .iter()
-        .take_while(|s| !matches!(s, FormatSegment::RightAlign))
         .filter(|s| matches!(s, FormatSegment::Token(_)))
         .count();
 
@@ -158,9 +156,6 @@ pub fn compute_column_widths(
     for entry in entries {
         let mut token_idx = 0;
         for segment in segments {
-            if matches!(segment, FormatSegment::RightAlign) {
-                break;
-            }
             if let FormatSegment::Token(ch) = segment {
                 let value = resolve_token(*ch, entry, branch);
                 widths[token_idx] = widths[token_idx].max(value.len());
@@ -263,25 +258,29 @@ pub fn render_file_line<'a>(
             }
             FormatSegment::Token(ch) => {
                 let value = resolve_token(*ch, entry, branch);
+                let width = widths.get(token_idx).copied().unwrap_or(value.len());
 
                 if *ch == 'g' {
                     let ins_count = value.chars().take_while(|c| *c == '+').count();
                     let (ins_part, del_part) = value.split_at(ins_count);
+                    let pad_needed = width.saturating_sub(value.len());
                     right_spans.push(Span::styled(
                         ins_part.to_string(),
                         Style::default().fg(Color::Green),
                     ));
                     right_spans.push(Span::styled(
-                        del_part.to_string(),
+                        format!("{}{}", del_part, " ".repeat(pad_needed)),
                         Style::default().fg(Color::Red),
                     ));
                 } else {
+                    let padded = format!("{:<width$}", value);
                     let style = match token_color(*ch, entry) {
                         Some(color) => Style::default().fg(color),
                         None => Style::default(),
                     };
-                    right_spans.push(Span::styled(value, style));
+                    right_spans.push(Span::styled(padded, style));
                 }
+                token_idx += 1;
             }
             FormatSegment::RightAlign => {}
         }
@@ -342,7 +341,9 @@ pub fn render_file_line_plain(
             FormatSegment::Literal(text) => right.push_str(text),
             FormatSegment::Token(ch) => {
                 let value = resolve_token(*ch, entry, branch);
-                right.push_str(&value);
+                let width = widths.get(token_idx).copied().unwrap_or(value.len());
+                right.push_str(&format!("{:<width$}", value));
+                token_idx += 1;
             }
             FormatSegment::RightAlign => {}
         }
@@ -783,7 +784,7 @@ mod tests {
     }
 
     #[test]
-    fn test_compute_column_widths_stops_at_right_align() {
+    fn test_compute_column_widths_includes_right_side() {
         let segments = parse_format("%s %f %= %- %+");
         let entries = vec![
             FileEntry {
@@ -800,9 +801,11 @@ mod tests {
             },
         ];
         let widths = compute_column_widths(&segments, &entries, "main");
-        // Only tokens before %= are padded: 's' and 'f'
-        assert_eq!(widths.len(), 2);
-        assert_eq!(widths[0], 1);
-        assert_eq!(widths[1], 22);
+        // All tokens get widths: 's', 'f', '-', '+'
+        assert_eq!(widths.len(), 4);
+        assert_eq!(widths[0], 1); // 's': max("M", "A") = 1
+        assert_eq!(widths[1], 22); // 'f': max("short.rs", "very/long/path/file.rs") = 22
+        assert_eq!(widths[2], 3); // '-': max("-0", "-50") = 3
+        assert_eq!(widths[3], 4); // '+': max("+1", "+100") = 4
     }
 }

@@ -14,6 +14,8 @@ pub enum FormatSegment {
     Token(char),
     /// Literal text between tokens
     Literal(String),
+    /// Right-align marker (%=) — everything after this is right-aligned
+    RightAlign,
 }
 
 /// Parse a vim-style format string into segments
@@ -21,6 +23,7 @@ pub fn parse_format(fmt: &str) -> Vec<FormatSegment> {
     let mut segments = Vec::new();
     let mut chars = fmt.chars().peekable();
     let mut literal = String::new();
+    let mut seen_right_align = false;
 
     while let Some(ch) = chars.next() {
         if ch == '%' {
@@ -28,6 +31,19 @@ pub fn parse_format(fmt: &str) -> Vec<FormatSegment> {
                 Some('%') => {
                     chars.next();
                     literal.push('%');
+                }
+                Some(&'=') => {
+                    chars.next();
+                    if !seen_right_align {
+                        if !literal.is_empty() {
+                            segments.push(FormatSegment::Literal(literal.clone()));
+                            literal.clear();
+                        }
+                        segments.push(FormatSegment::RightAlign);
+                        seen_right_align = true;
+                    } else {
+                        literal.push_str("%=");
+                    }
                 }
                 Some(&token) => {
                     if !literal.is_empty() {
@@ -215,6 +231,9 @@ pub fn render_file_line<'a>(
                 }
                 token_idx += 1;
             }
+            FormatSegment::RightAlign => {
+                // No-op for now; right-align rendering handled in a later task
+            }
         }
     }
 
@@ -241,6 +260,9 @@ pub fn render_file_line_plain(
                 let width = widths.get(token_idx).copied().unwrap_or(value.len());
                 result.push_str(&format!("{:<width$}", value));
                 token_idx += 1;
+            }
+            FormatSegment::RightAlign => {
+                // No-op for now; right-align rendering handled in a later task
             }
         }
     }
@@ -543,5 +565,54 @@ mod tests {
         let widths = vec![1, 7, 2, 2];
         let text = render_file_line_plain(&segments, &entry, "main", &widths);
         assert_eq!(text, "M main.rs -2 +5");
+    }
+
+    #[test]
+    fn test_parse_right_align_marker() {
+        let segments = parse_format("%s %f %= %- %+");
+        assert_eq!(
+            segments,
+            vec![
+                FormatSegment::Token('s'),
+                FormatSegment::Literal(" ".to_string()),
+                FormatSegment::Token('f'),
+                FormatSegment::Literal(" ".to_string()),
+                FormatSegment::RightAlign,
+                FormatSegment::Literal(" ".to_string()),
+                FormatSegment::Token('-'),
+                FormatSegment::Literal(" ".to_string()),
+                FormatSegment::Token('+'),
+            ]
+        );
+    }
+
+    #[test]
+    fn test_parse_multiple_right_align_only_first() {
+        let segments = parse_format("%f %= %- %= %+");
+        assert_eq!(
+            segments,
+            vec![
+                FormatSegment::Token('f'),
+                FormatSegment::Literal(" ".to_string()),
+                FormatSegment::RightAlign,
+                FormatSegment::Literal(" ".to_string()),
+                FormatSegment::Token('-'),
+                FormatSegment::Literal(" %= ".to_string()),
+                FormatSegment::Token('+'),
+            ]
+        );
+    }
+
+    #[test]
+    fn test_parse_right_align_at_start() {
+        let segments = parse_format("%= %f");
+        assert_eq!(
+            segments,
+            vec![
+                FormatSegment::RightAlign,
+                FormatSegment::Literal(" ".to_string()),
+                FormatSegment::Token('f'),
+            ]
+        );
     }
 }

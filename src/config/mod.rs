@@ -47,8 +47,8 @@ pub struct DisplayConfig {
     pub file_line: String,
     /// Show expand marker (▼/space) before each file row
     pub show_expand_marker: bool,
-    /// Right-side padding (spaces) when using %=  right-align marker
-    pub right_padding: u16,
+    /// Padding around the file list area
+    pub padding: PaddingConfig,
 }
 
 impl Default for DisplayConfig {
@@ -60,7 +60,27 @@ impl Default for DisplayConfig {
             flash_duration_ms: 600,
             file_line: "%s %f %- %+".to_string(),
             show_expand_marker: true,
-            right_padding: 2,
+            padding: PaddingConfig::default(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
+pub struct PaddingConfig {
+    pub top: u16,
+    pub bottom: u16,
+    pub left: u16,
+    pub right: u16,
+}
+
+impl Default for PaddingConfig {
+    fn default() -> Self {
+        Self {
+            top: 0,
+            bottom: 0,
+            left: 0,
+            right: 2,
         }
     }
 }
@@ -158,7 +178,10 @@ mod tests {
         assert!(!config.display.show_refresh_counter);
         assert!(config.display.flash_on_change);
         assert_eq!(config.display.flash_duration_ms, 600);
-        assert_eq!(config.display.right_padding, 2);
+        assert_eq!(config.display.padding.top, 0);
+        assert_eq!(config.display.padding.bottom, 0);
+        assert_eq!(config.display.padding.left, 0);
+        assert_eq!(config.display.padding.right, 2);
     }
 
     #[test]

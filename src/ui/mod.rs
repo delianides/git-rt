@@ -68,6 +68,14 @@ fn render(frame: &mut Frame, state: &AppState, display: &DisplayConfig) {
 
 /// Render the file list with optional expanded diff
 fn render_file_list(frame: &mut Frame, state: &AppState, display: &DisplayConfig, area: Rect) {
+    let pad = &display.padding;
+    let area = Rect {
+        x: area.x + pad.left,
+        y: area.y + pad.top,
+        width: area.width.saturating_sub(pad.left + pad.right),
+        height: area.height.saturating_sub(pad.top + pad.bottom),
+    };
+
     let files = state.files();
 
     if files.is_empty() {
@@ -88,9 +96,7 @@ fn render_file_list(frame: &mut Frame, state: &AppState, display: &DisplayConfig
 
         // Build the file line from the format string
         let marker_width: u16 = if display.show_expand_marker { 2 } else { 0 };
-        let line_width = area
-            .width
-            .saturating_sub(marker_width + display.right_padding);
+        let line_width = area.width.saturating_sub(marker_width);
         let mut line =
             format::render_file_line(&segments, file, state.branch(), &widths, line_width);
 

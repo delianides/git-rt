@@ -1,3 +1,5 @@
+pub mod format;
+
 use anyhow::Result;
 use crossterm::{
     event::{DisableFocusChange, EnableFocusChange},

@@ -1,3 +1,7 @@
+use std::path::Path;
+
+use crate::git::{FileEntry, FileStatus};
+
 /// A parsed segment of a format string
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum FormatSegment {
@@ -42,6 +46,75 @@ pub fn parse_format(fmt: &str) -> Vec<FormatSegment> {
     }
 
     segments
+}
+
+const GRAPH_WIDTH: usize = 20;
+
+/// Resolve a single format token to its string value for a given file entry
+pub fn resolve_token(token: char, entry: &FileEntry, branch: &str) -> String {
+    match token {
+        's' => status_char(&entry.status).to_string(),
+        'S' => staged_char(&entry.status).to_string(),
+        'f' => entry.path.clone(),
+        'n' => Path::new(&entry.path)
+            .file_name()
+            .map(|n| n.to_string_lossy().to_string())
+            .unwrap_or_default(),
+        'd' => Path::new(&entry.path)
+            .parent()
+            .map(|p| p.to_string_lossy().to_string())
+            .unwrap_or_default(),
+        'e' => Path::new(&entry.path)
+            .extension()
+            .map(|e| e.to_string_lossy().to_string())
+            .unwrap_or_default(),
+        '-' => format!("-{}", entry.deletions),
+        '+' => format!("+{}", entry.insertions),
+        't' => (entry.insertions + entry.deletions).to_string(),
+        'g' => render_change_graph(entry.insertions, entry.deletions),
+        'b' => branch.to_string(),
+        _ => format!("%{token}"),
+    }
+}
+
+fn status_char(status: &FileStatus) -> char {
+    match status {
+        FileStatus::Modified => 'M',
+        FileStatus::Added => 'A',
+        FileStatus::Deleted => 'D',
+        FileStatus::Renamed => 'R',
+        FileStatus::Untracked => '?',
+        FileStatus::Staged => 'S',
+        FileStatus::Conflicted => 'C',
+    }
+}
+
+fn staged_char(status: &FileStatus) -> char {
+    match status {
+        FileStatus::Staged => 'S',
+        FileStatus::Added => 'A',
+        _ => ' ',
+    }
+}
+
+fn render_change_graph(insertions: usize, deletions: usize) -> String {
+    let total = insertions + deletions;
+    if total == 0 {
+        return String::new();
+    }
+
+    let width = GRAPH_WIDTH.min(total);
+    let ins_width = ((insertions as f64 / total as f64) * width as f64).round() as usize;
+    let del_width = width - ins_width;
+
+    let mut graph = String::with_capacity(width);
+    for _ in 0..ins_width {
+        graph.push('+');
+    }
+    for _ in 0..del_width {
+        graph.push('-');
+    }
+    graph
 }
 
 #[cfg(test)]
@@ -117,5 +190,137 @@ mod tests {
     fn test_parse_empty_string() {
         let segments = parse_format("");
         assert!(segments.is_empty());
+    }
+
+    use crate::git::{FileEntry, FileStatus};
+
+    fn test_entry() -> FileEntry {
+        FileEntry {
+            path: "src/config/mod.rs".to_string(),
+            status: FileStatus::Modified,
+            insertions: 12,
+            deletions: 3,
+        }
+    }
+
+    #[test]
+    fn test_resolve_status_token() {
+        let entry = test_entry();
+        assert_eq!(resolve_token('s', &entry, "main"), "M");
+    }
+
+    #[test]
+    fn test_resolve_path_token() {
+        let entry = test_entry();
+        assert_eq!(resolve_token('f', &entry, "main"), "src/config/mod.rs");
+    }
+
+    #[test]
+    fn test_resolve_filename_token() {
+        let entry = test_entry();
+        assert_eq!(resolve_token('n', &entry, "main"), "mod.rs");
+    }
+
+    #[test]
+    fn test_resolve_directory_token() {
+        let entry = test_entry();
+        assert_eq!(resolve_token('d', &entry, "main"), "src/config");
+    }
+
+    #[test]
+    fn test_resolve_extension_token() {
+        let entry = test_entry();
+        assert_eq!(resolve_token('e', &entry, "main"), "rs");
+    }
+
+    #[test]
+    fn test_resolve_insertions_token() {
+        let entry = test_entry();
+        assert_eq!(resolve_token('+', &entry, "main"), "+12");
+    }
+
+    #[test]
+    fn test_resolve_deletions_token() {
+        let entry = test_entry();
+        assert_eq!(resolve_token('-', &entry, "main"), "-3");
+    }
+
+    #[test]
+    fn test_resolve_total_token() {
+        let entry = test_entry();
+        assert_eq!(resolve_token('t', &entry, "main"), "15");
+    }
+
+    #[test]
+    fn test_resolve_branch_token() {
+        let entry = test_entry();
+        assert_eq!(resolve_token('b', &entry, "main"), "main");
+    }
+
+    #[test]
+    fn test_resolve_change_graph_token() {
+        let entry = test_entry();
+        let graph = resolve_token('g', &entry, "main");
+        assert!(graph.contains('+'));
+        assert!(graph.contains('-'));
+    }
+
+    #[test]
+    fn test_resolve_no_extension() {
+        let entry = FileEntry {
+            path: "Makefile".to_string(),
+            status: FileStatus::Modified,
+            insertions: 1,
+            deletions: 0,
+        };
+        assert_eq!(resolve_token('e', &entry, "main"), "");
+    }
+
+    #[test]
+    fn test_resolve_no_directory() {
+        let entry = FileEntry {
+            path: "README.md".to_string(),
+            status: FileStatus::Modified,
+            insertions: 1,
+            deletions: 0,
+        };
+        assert_eq!(resolve_token('d', &entry, "main"), "");
+    }
+
+    #[test]
+    fn test_change_graph_zero_changes() {
+        let entry = FileEntry {
+            path: "empty.rs".to_string(),
+            status: FileStatus::Modified,
+            insertions: 0,
+            deletions: 0,
+        };
+        assert_eq!(resolve_token('g', &entry, "main"), "");
+    }
+
+    #[test]
+    fn test_change_graph_all_insertions() {
+        let entry = FileEntry {
+            path: "new.rs".to_string(),
+            status: FileStatus::Added,
+            insertions: 10,
+            deletions: 0,
+        };
+        let graph = resolve_token('g', &entry, "main");
+        assert!(!graph.contains('-'));
+        assert!(graph.contains('+'));
+    }
+
+    #[test]
+    fn test_change_graph_all_deletions() {
+        let entry = FileEntry {
+            path: "old.rs".to_string(),
+            status: FileStatus::Deleted,
+            insertions: 0,
+            deletions: 10,
+        };
+        let graph = resolve_token('g', &entry, "main");
+        assert!(graph.contains('-'));
+        assert!(!graph.contains('+'));
     }
 }

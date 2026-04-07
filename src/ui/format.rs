@@ -1,5 +1,10 @@
 use std::path::Path;
 
+use ratatui::{
+    style::{Color, Style},
+    text::{Line, Span},
+};
+
 use crate::git::{FileEntry, FileStatus};
 
 /// A parsed segment of a format string
@@ -143,6 +148,77 @@ pub fn compute_column_widths(
     }
 
     widths
+}
+
+/// Get the color for a format token
+fn token_color(token: char, entry: &FileEntry) -> Option<Color> {
+    match token {
+        's' => Some(status_color(&entry.status)),
+        'S' => Some(status_color(&entry.status)),
+        '-' => Some(Color::Red),
+        '+' => Some(Color::Green),
+        'g' => None, // graph has mixed colors, handled separately
+        _ => None,
+    }
+}
+
+fn status_color(status: &FileStatus) -> Color {
+    match status {
+        FileStatus::Modified => Color::Yellow,
+        FileStatus::Added | FileStatus::Untracked => Color::Green,
+        FileStatus::Deleted => Color::Red,
+        FileStatus::Renamed => Color::Cyan,
+        FileStatus::Staged => Color::Green,
+        FileStatus::Conflicted => Color::Magenta,
+    }
+}
+
+/// Render a file line as a styled ratatui Line with colored spans
+pub fn render_file_line<'a>(
+    segments: &[FormatSegment],
+    entry: &FileEntry,
+    branch: &str,
+    widths: &[usize],
+) -> Line<'a> {
+    let mut spans: Vec<Span<'a>> = Vec::new();
+    let mut token_idx = 0;
+
+    for segment in segments {
+        match segment {
+            FormatSegment::Literal(text) => {
+                spans.push(Span::raw(text.to_string()));
+            }
+            FormatSegment::Token(ch) => {
+                let value = resolve_token(*ch, entry, branch);
+                let width = widths.get(token_idx).copied().unwrap_or(value.len());
+
+                if *ch == 'g' {
+                    // Change graph gets split into colored + and - spans
+                    let ins_count = value.chars().take_while(|c| *c == '+').count();
+                    let (ins_part, del_part) = value.split_at(ins_count);
+                    let pad_needed = width.saturating_sub(value.len());
+                    spans.push(Span::styled(
+                        ins_part.to_string(),
+                        Style::default().fg(Color::Green),
+                    ));
+                    spans.push(Span::styled(
+                        format!("{}{}", del_part, " ".repeat(pad_needed)),
+                        Style::default().fg(Color::Red),
+                    ));
+                } else {
+                    let padded = format!("{:<width$}", value);
+                    let style = match token_color(*ch, entry) {
+                        Some(color) => Style::default().fg(color),
+                        None => Style::default(),
+                    };
+                    spans.push(Span::styled(padded, style));
+                }
+                token_idx += 1;
+            }
+        }
+    }
+
+    Line::from(spans)
 }
 
 /// Render a file line as a plain string (for testing). Pads token columns to given widths.
@@ -426,6 +502,39 @@ mod tests {
         // '+' -> max of "+1" (2) and "+1000" (5) = 5
         assert_eq!(widths[0], 4);
         assert_eq!(widths[1], 5);
+    }
+
+    use ratatui::style::Color;
+
+    #[test]
+    fn test_render_file_line_styled_has_correct_span_count() {
+        let segments = parse_format("%s %f %- %+");
+        let entry = FileEntry {
+            path: "main.rs".to_string(),
+            status: FileStatus::Modified,
+            insertions: 5,
+            deletions: 2,
+        };
+        let widths = vec![1, 7, 2, 2];
+        let line = render_file_line(&segments, &entry, "main", &widths);
+        // Expect spans: status, literal " ", path, literal " ", deletions, literal " ", insertions
+        assert_eq!(line.spans.len(), 7);
+    }
+
+    #[test]
+    fn test_render_file_line_styled_colors() {
+        let segments = parse_format("%- %+");
+        let entry = FileEntry {
+            path: "a.rs".to_string(),
+            status: FileStatus::Modified,
+            insertions: 5,
+            deletions: 2,
+        };
+        let widths = vec![2, 2];
+        let line = render_file_line(&segments, &entry, "main", &widths);
+        // First span is deletions (red), then literal, then insertions (green)
+        assert_eq!(line.spans[0].style.fg, Some(Color::Red));
+        assert_eq!(line.spans[2].style.fg, Some(Color::Green));
     }
 
     #[test]

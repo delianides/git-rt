@@ -45,6 +45,10 @@ pub struct DisplayConfig {
     pub flash_on_change: bool,
     /// Duration in milliseconds for the flash effect
     pub flash_duration_ms: u64,
+    /// Vim-style format string for file rows (e.g. "%s %f %- %+")
+    pub file_line: String,
+    /// Show expand marker (▼/space) before each file row
+    pub show_expand_marker: bool,
 }
 
 impl Default for DisplayConfig {
@@ -55,6 +59,8 @@ impl Default for DisplayConfig {
             show_refresh_counter: false,
             flash_on_change: true,
             flash_duration_ms: 600,
+            file_line: "%s %f %- %+".to_string(),
+            show_expand_marker: true,
         }
     }
 }
@@ -263,6 +269,35 @@ flash_duration_ms = 1000
         assert!(config.display.show_status);
         assert_eq!(config.display.context_lines, 3);
         assert!(config.display.flash_on_change);
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn test_default_file_line_format() {
+        let config = DisplayConfig::default();
+        assert_eq!(config.file_line, "%s %f %- %+");
+        assert!(config.show_expand_marker);
+    }
+
+    #[test]
+    fn test_file_line_from_toml() {
+        let dir = std::env::temp_dir().join("git-rt-test-file-line");
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("config.toml");
+        std::fs::write(
+            &path,
+            r#"
+[display]
+file_line = "%f %g"
+show_expand_marker = false
+"#,
+        )
+        .unwrap();
+
+        let config = AppConfig::load(Some(&path)).unwrap();
+        assert_eq!(config.display.file_line, "%f %g");
+        assert!(!config.display.show_expand_marker);
 
         std::fs::remove_dir_all(&dir).ok();
     }

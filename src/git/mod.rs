@@ -102,6 +102,18 @@ impl GitRepo {
         })
     }
 
+    /// Get the current branch name, or "HEAD" if detached
+    pub fn branch_name(&self) -> Result<String> {
+        let output = Command::new("git")
+            .args(["rev-parse", "--abbrev-ref", "HEAD"])
+            .current_dir(&self.repo_path)
+            .output()
+            .context("Failed to run git rev-parse")?;
+
+        let name = String::from_utf8_lossy(&output.stdout).trim().to_string();
+        Ok(if name.is_empty() { "HEAD".to_string() } else { name })
+    }
+
     /// Compute the current status of all changed files with numstat.
     pub fn status(&self) -> Result<Vec<FileEntry>> {
         let mut entries = Vec::new();
@@ -368,6 +380,17 @@ index abc1234..def5678 100644
         for s in &statuses {
             let cloned = s.clone();
             assert_eq!(s, &cloned);
+        }
+    }
+
+    #[test]
+    fn test_branch_name_returns_string() {
+        // Use the project repo itself for testing
+        let repo = GitRepo::new(std::path::Path::new("."));
+        if let Ok(repo) = repo {
+            let branch = repo.branch_name();
+            assert!(branch.is_ok());
+            assert!(!branch.unwrap().is_empty());
         }
     }
 

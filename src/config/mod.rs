@@ -35,8 +35,6 @@ impl Default for AppConfig {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
 pub struct DisplayConfig {
-    /// Show file status character (M, A, D, etc.)
-    pub show_status: bool,
     /// Maximum number of diff context lines to show around changes
     pub context_lines: usize,
     /// Show refresh counter and last-updated time in the status bar
@@ -54,7 +52,6 @@ pub struct DisplayConfig {
 impl Default for DisplayConfig {
     fn default() -> Self {
         Self {
-            show_status: true,
             context_lines: 3,
             show_refresh_counter: false,
             flash_on_change: true,
@@ -154,7 +151,6 @@ mod tests {
     fn test_default_config() {
         let config = AppConfig::default();
         assert_eq!(config.debounce_ms, 200);
-        assert!(config.display.show_status);
         assert_eq!(config.display.context_lines, 3);
         assert!(!config.display.show_refresh_counter);
         assert!(config.display.flash_on_change);
@@ -240,7 +236,6 @@ mod tests {
 debounce_ms = 500
 
 [display]
-show_status = false
 flash_on_change = true
 flash_duration_ms = 1000
 "#,
@@ -249,7 +244,6 @@ flash_duration_ms = 1000
 
         let config = AppConfig::load(Some(&path)).unwrap();
         assert_eq!(config.debounce_ms, 500);
-        assert!(!config.display.show_status);
         assert!(config.display.flash_on_change);
         assert_eq!(config.display.flash_duration_ms, 1000);
 
@@ -266,7 +260,6 @@ flash_duration_ms = 1000
         let config = AppConfig::load(Some(&path)).unwrap();
         assert_eq!(config.debounce_ms, 100);
         // Defaults should fill in
-        assert!(config.display.show_status);
         assert_eq!(config.display.context_lines, 3);
         assert!(config.display.flash_on_change);
 

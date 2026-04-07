@@ -47,6 +47,8 @@ pub struct DisplayConfig {
     pub file_line: String,
     /// Show expand marker (▼/space) before each file row
     pub show_expand_marker: bool,
+    /// Right-side padding (spaces) when using %=  right-align marker
+    pub right_padding: u16,
 }
 
 impl Default for DisplayConfig {
@@ -58,6 +60,7 @@ impl Default for DisplayConfig {
             flash_duration_ms: 600,
             file_line: "%s %f %- %+".to_string(),
             show_expand_marker: true,
+            right_padding: 2,
         }
     }
 }
@@ -155,6 +158,7 @@ mod tests {
         assert!(!config.display.show_refresh_counter);
         assert!(config.display.flash_on_change);
         assert_eq!(config.display.flash_duration_ms, 600);
+        assert_eq!(config.display.right_padding, 2);
     }
 
     #[test]

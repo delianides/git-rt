@@ -77,7 +77,7 @@ pub struct PaddingConfig {
 impl Default for PaddingConfig {
     fn default() -> Self {
         Self {
-            top: 4,
+            top: 1,
             bottom: 0,
             left: 0,
             right: 2,
@@ -178,7 +178,7 @@ mod tests {
         assert!(!config.display.show_refresh_counter);
         assert!(config.display.flash_on_change);
         assert_eq!(config.display.flash_duration_ms, 600);
-        assert_eq!(config.display.padding.top, 4);
+        assert_eq!(config.display.padding.top, 1);
         assert_eq!(config.display.padding.bottom, 0);
         assert_eq!(config.display.padding.left, 0);
         assert_eq!(config.display.padding.right, 2);

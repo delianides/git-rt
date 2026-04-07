@@ -139,14 +139,17 @@ fn render_change_graph(insertions: usize, deletions: usize) -> String {
 }
 
 /// Compute the max width for each token column across all file entries.
-/// Returns a Vec with one width per Token segment (Literals are skipped).
+/// Returns a Vec with one width per Token segment that appears before any
+/// `RightAlign` marker. Tokens after the marker are not padded.
 pub fn compute_column_widths(
     segments: &[FormatSegment],
     entries: &[FileEntry],
     branch: &str,
 ) -> Vec<usize> {
+    // Only count tokens before RightAlign
     let token_count = segments
         .iter()
+        .take_while(|s| !matches!(s, FormatSegment::RightAlign))
         .filter(|s| matches!(s, FormatSegment::Token(_)))
         .count();
 
@@ -155,6 +158,9 @@ pub fn compute_column_widths(
     for entry in entries {
         let mut token_idx = 0;
         for segment in segments {
+            if matches!(segment, FormatSegment::RightAlign) {
+                break;
+            }
             if let FormatSegment::Token(ch) = segment {
                 let value = resolve_token(*ch, entry, branch);
                 widths[token_idx] = widths[token_idx].max(value.len());
@@ -614,5 +620,29 @@ mod tests {
                 FormatSegment::Token('f'),
             ]
         );
+    }
+
+    #[test]
+    fn test_compute_column_widths_stops_at_right_align() {
+        let segments = parse_format("%s %f %= %- %+");
+        let entries = vec![
+            FileEntry {
+                path: "short.rs".to_string(),
+                status: FileStatus::Modified,
+                insertions: 1,
+                deletions: 0,
+            },
+            FileEntry {
+                path: "very/long/path/file.rs".to_string(),
+                status: FileStatus::Added,
+                insertions: 100,
+                deletions: 50,
+            },
+        ];
+        let widths = compute_column_widths(&segments, &entries, "main");
+        // Only tokens before %= are padded: 's' and 'f'
+        assert_eq!(widths.len(), 2);
+        assert_eq!(widths[0], 1);
+        assert_eq!(widths[1], 22);
     }
 }

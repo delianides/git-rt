@@ -117,6 +117,61 @@ fn render_change_graph(insertions: usize, deletions: usize) -> String {
     graph
 }
 
+/// Compute the max width for each token column across all file entries.
+/// Returns a Vec with one width per Token segment (Literals are skipped).
+pub fn compute_column_widths(
+    segments: &[FormatSegment],
+    entries: &[FileEntry],
+    branch: &str,
+) -> Vec<usize> {
+    let token_count = segments
+        .iter()
+        .filter(|s| matches!(s, FormatSegment::Token(_)))
+        .count();
+
+    let mut widths = vec![0usize; token_count];
+
+    for entry in entries {
+        let mut token_idx = 0;
+        for segment in segments {
+            if let FormatSegment::Token(ch) = segment {
+                let value = resolve_token(*ch, entry, branch);
+                widths[token_idx] = widths[token_idx].max(value.len());
+                token_idx += 1;
+            }
+        }
+    }
+
+    widths
+}
+
+/// Render a file line as a plain string (for testing). Pads token columns to given widths.
+pub fn render_file_line_plain(
+    segments: &[FormatSegment],
+    entry: &FileEntry,
+    branch: &str,
+    widths: &[usize],
+) -> String {
+    let mut result = String::new();
+    let mut token_idx = 0;
+
+    for segment in segments {
+        match segment {
+            FormatSegment::Literal(text) => {
+                result.push_str(text);
+            }
+            FormatSegment::Token(ch) => {
+                let value = resolve_token(*ch, entry, branch);
+                let width = widths.get(token_idx).copied().unwrap_or(value.len());
+                result.push_str(&format!("{:<width$}", value));
+                token_idx += 1;
+            }
+        }
+    }
+
+    result
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -322,5 +377,68 @@ mod tests {
         let graph = resolve_token('g', &entry, "main");
         assert!(graph.contains('-'));
         assert!(!graph.contains('+'));
+    }
+
+    #[test]
+    fn test_compute_column_widths() {
+        let segments = parse_format("%s %f");
+        let entries = vec![
+            FileEntry {
+                path: "short.rs".to_string(),
+                status: FileStatus::Modified,
+                insertions: 1,
+                deletions: 0,
+            },
+            FileEntry {
+                path: "very/long/path/file.rs".to_string(),
+                status: FileStatus::Added,
+                insertions: 100,
+                deletions: 50,
+            },
+        ];
+        let widths = compute_column_widths(&segments, &entries, "main");
+        // Token 's' -> max of "M" and "A" = 1
+        // Token 'f' -> max of "short.rs" (8) and "very/long/path/file.rs" (22) = 22
+        assert_eq!(widths.len(), 2);
+        assert_eq!(widths[0], 1);
+        assert_eq!(widths[1], 22);
+    }
+
+    #[test]
+    fn test_compute_column_widths_with_numbers() {
+        let segments = parse_format("%- %+");
+        let entries = vec![
+            FileEntry {
+                path: "a.rs".to_string(),
+                status: FileStatus::Modified,
+                insertions: 1,
+                deletions: 100,
+            },
+            FileEntry {
+                path: "b.rs".to_string(),
+                status: FileStatus::Modified,
+                insertions: 1000,
+                deletions: 2,
+            },
+        ];
+        let widths = compute_column_widths(&segments, &entries, "main");
+        // '-' -> max of "-100" (4) and "-2" (2) = 4
+        // '+' -> max of "+1" (2) and "+1000" (5) = 5
+        assert_eq!(widths[0], 4);
+        assert_eq!(widths[1], 5);
+    }
+
+    #[test]
+    fn test_render_file_line_plain_text() {
+        let segments = parse_format("%s %f %- %+");
+        let entry = FileEntry {
+            path: "main.rs".to_string(),
+            status: FileStatus::Modified,
+            insertions: 5,
+            deletions: 2,
+        };
+        let widths = vec![1, 7, 2, 2];
+        let text = render_file_line_plain(&segments, &entry, "main", &widths);
+        assert_eq!(text, "M main.rs -2 +5");
     }
 }

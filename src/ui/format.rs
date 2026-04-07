@@ -659,7 +659,7 @@ mod tests {
             insertions: 5,
             deletions: 2,
         };
-        let widths = compute_column_widths(&segments, &[entry.clone()], "main");
+        let widths = compute_column_widths(&segments, std::slice::from_ref(&entry), "main");
         let text = render_file_line_plain(&segments, &entry, "main", &widths, 40);
         // "M main.rs" = 9 chars left, " -2 +5" = 6 chars right, spacer = 40-9-6 = 25
         assert_eq!(text.len(), 40);
@@ -690,7 +690,7 @@ mod tests {
             insertions: 5,
             deletions: 2,
         };
-        let widths = compute_column_widths(&segments, &[entry.clone()], "main");
+        let widths = compute_column_widths(&segments, std::slice::from_ref(&entry), "main");
         // Content exceeds width — spacer should be 0, no panic
         let text = render_file_line_plain(&segments, &entry, "main", &widths, 20);
         assert!(text.starts_with("very/long/path/that/exceeds/width.rs"));
@@ -755,7 +755,7 @@ mod tests {
             insertions: 5,
             deletions: 2,
         };
-        let widths = compute_column_widths(&segments, &[entry.clone()], "main");
+        let widths = compute_column_widths(&segments, std::slice::from_ref(&entry), "main");
         let line = render_file_line(&segments, &entry, "main", &widths, 60);
         // Left: status, " ", path, " " = 4 spans
         // Spacer: 1 span

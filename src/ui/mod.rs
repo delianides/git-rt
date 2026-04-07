@@ -89,7 +89,8 @@ fn render_file_list(frame: &mut Frame, state: &AppState, display: &DisplayConfig
         // Build the file line from the format string
         let marker_width: u16 = if display.show_expand_marker { 2 } else { 0 };
         let line_width = area.width.saturating_sub(marker_width);
-        let mut line = format::render_file_line(&segments, file, state.branch(), &widths, line_width);
+        let mut line =
+            format::render_file_line(&segments, file, state.branch(), &widths, line_width);
 
         // Prepend expand marker if enabled
         if display.show_expand_marker {

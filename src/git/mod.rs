@@ -260,6 +260,10 @@ impl GitRepo {
             .output()
             .context("Failed to run git log")?;
 
+        if !output.status.success() {
+            return Ok((String::new(), String::new()));
+        }
+
         let text = String::from_utf8_lossy(&output.stdout).trim().to_string();
         let mut lines = text.lines();
         let sha = lines.next().unwrap_or("").to_string();
@@ -313,7 +317,12 @@ impl GitRepo {
         let git_dir = if git_dir.is_file() {
             let content = std::fs::read_to_string(&git_dir).ok()?;
             let path = content.strip_prefix("gitdir: ")?.trim();
-            PathBuf::from(path)
+            let p = PathBuf::from(path);
+            if p.is_relative() {
+                self.repo_path.join(p)
+            } else {
+                p
+            }
         } else {
             git_dir
         };

@@ -36,6 +36,14 @@ struct Cli {
     /// Enable logging at the given level (trace, debug, info, warn, error)
     #[arg(long)]
     log: Option<String>,
+
+    /// Pin to a specific worktree (by name or path). Disables auto-follow.
+    #[arg(long, conflicts_with = "branch")]
+    worktree: Option<String>,
+
+    /// Pin to the worktree with this branch checked out. Disables auto-follow.
+    #[arg(long, conflicts_with = "worktree")]
+    branch: Option<String>,
 }
 
 fn main() -> Result<()> {
@@ -62,6 +70,30 @@ fn main() -> Result<()> {
 
     let config = config::AppConfig::load(cli.config.as_deref())?;
 
-    let mut app = app::App::new(repo_path, config, cli.debounce)?;
+    // Resolve worktree/branch pinning
+    let git_worktrees_dir = repo_path.join(".git").join("worktrees");
+    let pinned_worktree = if let Some(ref wt_arg) = cli.worktree {
+        Some(
+            watcher::worktree::resolve_worktree_arg(&git_worktrees_dir, wt_arg)
+                .with_context(|| format!("Failed to resolve --worktree '{wt_arg}'"))?,
+        )
+    } else if let Some(ref branch_arg) = cli.branch {
+        Some(
+            watcher::worktree::resolve_branch_arg(&git_worktrees_dir, branch_arg)
+                .with_context(|| format!("Failed to resolve --branch '{branch_arg}'"))?,
+        )
+    } else {
+        None
+    };
+
+    let (watch_path, auto_follow) = match pinned_worktree {
+        Some(ref wt) => {
+            tracing::info!(worktree = %wt.name, path = ?wt.path, "Pinned to worktree");
+            (wt.path.clone(), false)
+        }
+        None => (repo_path.clone(), true),
+    };
+
+    let mut app = app::App::new(watch_path, repo_path, config, cli.debounce, auto_follow)?;
     app.run()
 }

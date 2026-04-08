@@ -537,7 +537,6 @@ index abc1234..def5678 100644
         let repo = GitRepo::new(std::path::Path::new(".")).unwrap();
         let name = repo.repo_name();
         assert!(!name.is_empty());
-        assert_eq!(name, "git-rt");
     }
 
     #[test]

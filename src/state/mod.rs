@@ -43,6 +43,8 @@ pub struct AppState {
     ahead_behind: Option<(usize, usize)>,
     /// Repo state (REBASING, MERGING, etc.), None if clean
     repo_state: Option<String>,
+    /// Temporary message displayed on the bottom statusbar
+    flash_message: Option<(String, Instant)>,
 }
 
 impl AppState {
@@ -68,6 +70,7 @@ impl AppState {
             stash_count: 0,
             ahead_behind: None,
             repo_state: None,
+            flash_message: None,
         }
     }
 
@@ -187,6 +190,27 @@ impl AppState {
         self.repo_state = state;
     }
 
+    /// Get the current flash message if it hasn't expired
+    pub fn flash_message(&self) -> Option<&str> {
+        self.flash_message.as_ref().and_then(|(msg, time)| {
+            if time.elapsed() < self.flash_duration {
+                Some(msg.as_str())
+            } else {
+                None
+            }
+        })
+    }
+
+    /// Set a temporary flash message on the bottom statusbar
+    pub fn set_flash_message(&mut self, message: String) {
+        self.flash_message = Some((message, Instant::now()));
+    }
+
+    /// Clear the flash message
+    pub fn clear_flash_message(&mut self) {
+        self.flash_message = None;
+    }
+
     // -- Navigation --
 
     pub fn select_next(&mut self) {
@@ -227,6 +251,34 @@ impl AppState {
     }
 
     // -- State updates --
+
+    /// Reset state for a worktree switch. Clears selection, expansion,
+    /// diff cache, and flash times. Updates files, branch, repo name,
+    /// and worktree name.
+    pub fn reset_for_switch(
+        &mut self,
+        files: Vec<FileEntry>,
+        branch: String,
+        repo_name: String,
+        worktree_name: String,
+    ) {
+        self.files = files;
+        self.selected = 0;
+        self.expanded = None;
+        self.diff_cache.clear();
+        self.diff_scroll = 0;
+        self.refresh_count = 0;
+        self.last_refresh = Instant::now();
+        self.flash_times.clear();
+        self.branch = branch;
+        self.repo_name = repo_name;
+        self.worktree_name = worktree_name;
+        self.head_sha.clear();
+        self.head_message.clear();
+        self.stash_count = 0;
+        self.ahead_behind = None;
+        self.repo_state = None;
+    }
 
     /// Update the file list from a fresh git status computation.
     /// Preserves selection position and expanded state where possible.
@@ -566,5 +618,61 @@ mod tests {
         assert_eq!(state.stash_count(), 3);
         assert_eq!(state.ahead_behind(), Some((2, 1)));
         assert_eq!(state.repo_state(), Some("REBASING"));
+    }
+
+    #[test]
+    fn test_flash_message_default_none() {
+        let state = AppState::new(vec![], Duration::from_millis(600), "main".to_string());
+        assert!(state.flash_message().is_none());
+    }
+
+    #[test]
+    fn test_set_and_get_flash_message() {
+        let mut state = AppState::new(vec![], Duration::from_millis(600), "main".to_string());
+        state.set_flash_message("Switched to worktree: foo".to_string());
+        assert_eq!(state.flash_message().unwrap(), "Switched to worktree: foo");
+    }
+
+    #[test]
+    fn test_flash_message_expires() {
+        let mut state = AppState::new(vec![], Duration::from_millis(1), "main".to_string());
+        state.set_flash_message("test".to_string());
+        std::thread::sleep(Duration::from_millis(5));
+        assert!(state.flash_message().is_none());
+    }
+
+    #[test]
+    fn test_clear_flash_message() {
+        let mut state = AppState::new(vec![], Duration::from_millis(600), "main".to_string());
+        state.set_flash_message("test".to_string());
+        state.clear_flash_message();
+        assert!(state.flash_message().is_none());
+    }
+
+    #[test]
+    fn test_reset_for_switch() {
+        let files = vec![make_entry("a.rs", 1, 0), make_entry("b.rs", 2, 1)];
+        let mut state = AppState::new(files, Duration::from_millis(600), "main".to_string());
+        state.select_next(); // select b.rs
+        state.expand_selected(FileDiff::default());
+        state.set_repo_name("old-repo".to_string());
+        state.set_worktree_name("old-wt".to_string());
+
+        let new_files = vec![make_entry("c.rs", 3, 0)];
+        state.reset_for_switch(
+            new_files,
+            "feature".to_string(),
+            "new-repo".to_string(),
+            "new-wt".to_string(),
+        );
+
+        assert_eq!(state.selected_index(), 0);
+        assert!(state.expanded_path().is_none());
+        assert_eq!(state.files().len(), 1);
+        assert_eq!(state.files()[0].path, "c.rs");
+        assert_eq!(state.branch(), "feature");
+        assert_eq!(state.repo_name(), "new-repo");
+        assert_eq!(state.worktree_name(), "new-wt");
+        assert_eq!(state.refresh_count(), 0);
     }
 }

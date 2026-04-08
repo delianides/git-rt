@@ -58,9 +58,10 @@ fn render(frame: &mut Frame, state: &AppState, display: &DisplayConfig) {
     let area = frame.area();
 
     // Layout: file list takes up available space, status bar at bottom
+    let status_line_count = display.status_lines.len() as u16;
     let chunks = Layout::default()
         .direction(Direction::Vertical)
-        .constraints([Constraint::Min(1), Constraint::Length(1)])
+        .constraints([Constraint::Min(1), Constraint::Length(status_line_count)])
         .split(area);
 
     render_file_list(frame, state, display, chunks[0]);
@@ -187,48 +188,41 @@ fn render_file_list(frame: &mut Frame, state: &AppState, display: &DisplayConfig
     frame.render_stateful_widget(list, area, &mut list_state);
 }
 
-/// Render the bottom status bar
+/// Render the bottom status bar using configurable format strings
 fn render_status_bar(frame: &mut Frame, state: &AppState, display: &DisplayConfig, area: Rect) {
-    let file_count = state.files().len();
-    let total_ins: usize = state.files().iter().map(|f| f.insertions).sum();
-    let total_del: usize = state.files().iter().map(|f| f.deletions).sum();
-
-    let mut spans = vec![
-        Span::styled(
-            format!(" {file_count} files changed"),
-            Style::default().fg(display.colors.ui.status_bar_fg.resolve()),
-        ),
-        Span::raw("  "),
-        Span::styled(
-            format!("-{total_del}"),
-            Style::default().fg(display.colors.status.deleted.resolve()),
-        ),
-        Span::raw("  "),
-        Span::styled(
-            format!("+{total_ins}"),
-            Style::default().fg(display.colors.status.added.resolve()),
-        ),
-    ];
-
-    if display.show_refresh_counter {
-        let last_secs = state.last_refresh_secs();
-        let refresh_count = state.refresh_count();
-        spans.push(Span::raw("  │  "));
-        spans.push(Span::styled(
-            format!("updated {last_secs}s ago (#{refresh_count})"),
-            Style::default().fg(Color::DarkGray),
-        ));
+    if display.status_lines.is_empty() {
+        return;
     }
 
-    spans.push(Span::raw("  │  "));
-    spans.push(Span::styled(
-        "j/k:nav  enter:expand  q:quit",
-        Style::default().fg(Color::DarkGray),
-    ));
+    let default_fg = display.colors.ui.status_bar_fg.resolve();
+    let bg = display.colors.ui.status_bar_bg.resolve();
 
-    let status = Line::from(spans);
+    for (i, format_str) in display.status_lines.iter().enumerate() {
+        let row_area = Rect {
+            x: area.x,
+            y: area.y + i as u16,
+            width: area.width,
+            height: 1,
+        };
 
-    let bar = Paragraph::new(status)
-        .style(Style::default().bg(display.colors.ui.status_bar_bg.resolve()));
-    frame.render_widget(bar, area);
+        if row_area.y >= area.y + area.height {
+            break;
+        }
+
+        let segments = status_format::parse_status_format(format_str);
+        let line = status_format::render_status_line(
+            &segments,
+            state,
+            area.width.saturating_sub(1),
+            default_fg,
+        );
+
+        // Prepend a space for left padding
+        let mut spans = vec![Span::raw(" ")];
+        spans.extend(line.spans);
+        let padded_line = Line::from(spans);
+
+        let bar = Paragraph::new(padded_line).style(Style::default().bg(bg));
+        frame.render_widget(bar, row_area);
+    }
 }

@@ -12,6 +12,7 @@ use serde::{Deserialize, Serialize};
 pub struct ColorValue(String);
 
 impl ColorValue {
+    /// Construct a `ColorValue` from a raw string (named color or hex).
     pub fn new(s: &str) -> Self {
         Self(s.to_string())
     }

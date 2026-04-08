@@ -60,34 +60,7 @@ impl ColorValue {
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(default)]
 pub struct ColorConfig {
-    pub status: StatusColors,
     pub ui: UiColors,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(default)]
-pub struct StatusColors {
-    pub modified: ColorValue,
-    pub added: ColorValue,
-    pub deleted: ColorValue,
-    pub renamed: ColorValue,
-    pub untracked: ColorValue,
-    pub staged: ColorValue,
-    pub conflicted: ColorValue,
-}
-
-impl Default for StatusColors {
-    fn default() -> Self {
-        Self {
-            modified: ColorValue::new("yellow"),
-            added: ColorValue::new("green"),
-            deleted: ColorValue::new("red"),
-            renamed: ColorValue::new("cyan"),
-            untracked: ColorValue::new("green"),
-            staged: ColorValue::new("green"),
-            conflicted: ColorValue::new("magenta"),
-        }
-    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -167,6 +140,10 @@ pub struct AppConfig {
 
     /// Named actions that can be triggered on files
     pub actions: HashMap<String, ActionConfig>,
+
+    /// User-defined color palette for statusbar format tags
+    #[serde(default)]
+    pub colors: HashMap<String, ColorValue>,
 }
 
 impl Default for AppConfig {
@@ -176,6 +153,7 @@ impl Default for AppConfig {
             display: DisplayConfig::default(),
             keys: KeyConfig::default(),
             actions: HashMap::new(),
+            colors: HashMap::new(),
         }
     }
 }
@@ -584,18 +562,6 @@ show_expand_marker = false
     }
 
     #[test]
-    fn test_status_colors_defaults() {
-        let colors = StatusColors::default();
-        assert_eq!(colors.modified.resolve(), Color::Yellow);
-        assert_eq!(colors.added.resolve(), Color::Green);
-        assert_eq!(colors.deleted.resolve(), Color::Red);
-        assert_eq!(colors.renamed.resolve(), Color::Cyan);
-        assert_eq!(colors.untracked.resolve(), Color::Green);
-        assert_eq!(colors.staged.resolve(), Color::Green);
-        assert_eq!(colors.conflicted.resolve(), Color::Magenta);
-    }
-
-    #[test]
     fn test_ui_colors_defaults() {
         let colors = UiColors::default();
         assert_eq!(colors.selection_bg.resolve(), Color::DarkGray);
@@ -607,37 +573,7 @@ show_expand_marker = false
     #[test]
     fn test_color_config_on_display_config() {
         let display = DisplayConfig::default();
-        assert_eq!(display.colors.status.modified.resolve(), Color::Yellow);
         assert_eq!(display.colors.ui.selection_bg.resolve(), Color::DarkGray);
-    }
-
-    #[test]
-    fn test_toml_partial_status_colors() {
-        let dir = std::env::temp_dir().join("git-rt-test-color-partial");
-        std::fs::create_dir_all(&dir).unwrap();
-        let path = dir.join("config.toml");
-        std::fs::write(
-            &path,
-            r##"
-[display.colors.status]
-modified = "#FF8800"
-"##,
-        )
-        .unwrap();
-
-        let config = AppConfig::load(Some(&path)).unwrap();
-        assert_eq!(
-            config.display.colors.status.modified.resolve(),
-            Color::Rgb(255, 136, 0)
-        );
-        // Unspecified fields use defaults
-        assert_eq!(config.display.colors.status.added.resolve(), Color::Green);
-        assert_eq!(
-            config.display.colors.ui.selection_bg.resolve(),
-            Color::DarkGray
-        );
-
-        std::fs::remove_dir_all(&dir).ok();
     }
 
     #[test]
@@ -648,15 +584,6 @@ modified = "#FF8800"
         std::fs::write(
             &path,
             r##"
-[display.colors.status]
-modified = "#FF8800"
-added = "#00FF00"
-deleted = "#FF0000"
-renamed = "#00FFFF"
-untracked = "#888888"
-staged = "#00CC00"
-conflicted = "#FF00FF"
-
 [display.colors.ui]
 selection_bg = "#444444"
 selection_fg = "#EEEEEE"
@@ -668,16 +595,12 @@ empty_text = "#555555"
 
         let config = AppConfig::load(Some(&path)).unwrap();
         assert_eq!(
-            config.display.colors.status.modified.resolve(),
-            Color::Rgb(255, 136, 0)
-        );
-        assert_eq!(
-            config.display.colors.status.untracked.resolve(),
-            Color::Rgb(136, 136, 136)
-        );
-        assert_eq!(
             config.display.colors.ui.selection_fg.resolve(),
             Color::Rgb(238, 238, 238)
+        );
+        assert_eq!(
+            config.display.colors.ui.selection_bg.resolve(),
+            Color::Rgb(68, 68, 68)
         );
 
         std::fs::remove_dir_all(&dir).ok();
@@ -691,10 +614,6 @@ empty_text = "#555555"
         std::fs::write(&path, "debounce_ms = 100\n").unwrap();
 
         let config = AppConfig::load(Some(&path)).unwrap();
-        assert_eq!(
-            config.display.colors.status.modified.resolve(),
-            Color::Yellow
-        );
         assert_eq!(
             config.display.colors.ui.selection_bg.resolve(),
             Color::DarkGray
@@ -766,6 +685,79 @@ status_line = ""
         let config = AppConfig::load(Some(&path)).unwrap();
         assert!(config.display.statusbar.top.status_line.is_empty());
         assert!(config.display.statusbar.bottom.status_line.is_empty());
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn test_default_palette_empty() {
+        let config = AppConfig::default();
+        assert!(config.colors.is_empty());
+    }
+
+    #[test]
+    fn test_palette_from_toml() {
+        let dir = std::env::temp_dir().join("git-rt-test-palette");
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("config.toml");
+        std::fs::write(
+            &path,
+            r##"
+[colors]
+danger = "#FF5555"
+success = "#50FA7B"
+muted = "gray"
+"##,
+        )
+        .unwrap();
+
+        let config = AppConfig::load(Some(&path)).unwrap();
+        assert_eq!(config.colors.len(), 3);
+        assert_eq!(
+            config.colors.get("danger").unwrap().resolve(),
+            Color::Rgb(255, 85, 85)
+        );
+        assert_eq!(
+            config.colors.get("success").unwrap().resolve(),
+            Color::Rgb(80, 250, 123)
+        );
+        assert_eq!(config.colors.get("muted").unwrap().resolve(), Color::Gray);
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn test_palette_override_builtin() {
+        let dir = std::env::temp_dir().join("git-rt-test-palette-override");
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("config.toml");
+        std::fs::write(
+            &path,
+            r##"
+[colors]
+red = "#FF6666"
+"##,
+        )
+        .unwrap();
+
+        let config = AppConfig::load(Some(&path)).unwrap();
+        assert_eq!(
+            config.colors.get("red").unwrap().resolve(),
+            Color::Rgb(255, 102, 102)
+        );
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn test_no_palette_section_defaults_empty() {
+        let dir = std::env::temp_dir().join("git-rt-test-no-palette");
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("config.toml");
+        std::fs::write(&path, "debounce_ms = 100\n").unwrap();
+
+        let config = AppConfig::load(Some(&path)).unwrap();
+        assert!(config.colors.is_empty());
 
         std::fs::remove_dir_all(&dir).ok();
     }

@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.2.1](https://github.com/delianides/git-rt/compare/v0.2.0...v0.2.1) (2026-04-08)
+
+
+### Bug Fixes
+
+* use PAT for release-please to trigger tag-based workflows ([#12](https://github.com/delianides/git-rt/issues/12)) ([82d24c4](https://github.com/delianides/git-rt/commit/82d24c42023484e56296554a4a42f26f993fc5d5))
+
 ## [0.2.0](https://github.com/delianides/git-rt/compare/v0.1.0...v0.2.0) (2026-04-08)
 
 

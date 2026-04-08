@@ -219,31 +219,47 @@ impl WorktreeMonitor {
         let tx = self.event_tx.clone();
 
         let watcher_name = name.clone();
+        let log_name = name.clone();
         let debouncer = new_debouncer(
             self.debounce,
             None,
-            move |result: std::result::Result<Vec<DebouncedEvent>, Vec<notify::Error>>| {
-                if let Ok(events) = result {
+            move |result: std::result::Result<Vec<DebouncedEvent>, Vec<notify::Error>>| match result
+            {
+                Ok(events) => {
                     let relevant = events.iter().any(|e| {
                         e.event
                             .paths
                             .iter()
                             .any(|p| !p.to_string_lossy().contains("/.git/"))
                     });
+                    tracing::debug!(
+                        worktree = %log_name,
+                        event_count = events.len(),
+                        relevant,
+                        "Activity watcher callback fired"
+                    );
                     if relevant {
                         let _ = tx.try_send(WorktreeEvent::Activity(watcher_name.clone()));
+                    }
+                }
+                Err(errors) => {
+                    for e in &errors {
+                        tracing::warn!(worktree = %log_name, error = %e, "Activity watcher error");
                     }
                 }
             },
         );
 
         match debouncer {
-            Ok(mut d) => {
-                if d.watch(&wt.path, RecursiveMode::Recursive).is_ok() {
+            Ok(mut d) => match d.watch(&wt.path, RecursiveMode::Recursive) {
+                Ok(()) => {
                     self.activity_watchers.insert(name, d);
-                    tracing::debug!(worktree = %wt.name, "Activity watcher started");
+                    tracing::debug!(worktree = %wt.name, path = ?wt.path, "Activity watcher started");
                 }
-            }
+                Err(e) => {
+                    tracing::warn!(worktree = %wt.name, path = ?wt.path, error = %e, "Failed to watch worktree path");
+                }
+            },
             Err(e) => {
                 tracing::warn!(worktree = %wt.name, error = %e, "Failed to start activity watcher");
             }

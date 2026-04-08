@@ -79,7 +79,7 @@ fn render(frame: &mut Frame, state: &AppState, display: &DisplayConfig) {
 
     render_status_bar(frame, state, &display.statusbar.top, chunks[0]);
     render_file_list(frame, state, display, chunks[1]);
-    render_status_bar(frame, state, &display.statusbar.bottom, chunks[2]);
+    render_bottom_status_bar(frame, state, &display.statusbar.bottom, chunks[2]);
 }
 
 /// Render the file list with optional expanded diff
@@ -200,6 +200,32 @@ fn render_file_list(frame: &mut Frame, state: &AppState, display: &DisplayConfig
     list_state.select(Some(selected_list_index));
 
     frame.render_stateful_widget(list, area, &mut list_state);
+}
+
+/// Render the bottom statusbar, showing flash message if active
+fn render_bottom_status_bar(
+    frame: &mut Frame,
+    state: &AppState,
+    bar: &StatusBarConfig,
+    area: Rect,
+) {
+    if area.height == 0 {
+        return;
+    }
+
+    let bg = bar.background_color.resolve();
+
+    if let Some(message) = state.flash_message() {
+        let line = Line::from(vec![
+            Span::raw(" "),
+            Span::styled(message.to_string(), Style::default().fg(Color::Yellow)),
+        ]);
+        let bar_widget = Paragraph::new(line).style(Style::default().bg(bg));
+        frame.render_widget(bar_widget, area);
+        return;
+    }
+
+    render_status_bar(frame, state, bar, area);
 }
 
 /// Render a single statusbar line using its own config

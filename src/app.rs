@@ -39,7 +39,19 @@ impl App {
         let branch = git.branch_name().unwrap_or_else(|_| "HEAD".to_string());
 
         let flash_duration = Duration::from_millis(config.display.flash_duration_ms);
-        let state = AppState::new(files, flash_duration, branch);
+        let mut state = AppState::new(files, flash_duration, branch);
+
+        // Static metadata (computed once)
+        state.set_repo_name(git.repo_name());
+        state.set_worktree_name(git.worktree_name());
+
+        // Initial dynamic metadata
+        if let Ok((sha, msg)) = git.head_info() {
+            state.set_head_info(sha, msg);
+        }
+        state.set_stash_count(git.stash_count().unwrap_or(0));
+        state.set_ahead_behind(git.ahead_behind().unwrap_or(None));
+        state.set_repo_state(git.repo_state());
 
         let (fs_rx, watcher) = FsWatcher::new(&repo_path, Duration::from_millis(debounce_ms))?;
 
@@ -158,6 +170,16 @@ impl App {
         }
         self.state.set_branch(branch);
         self.state.update_files(files);
+
+        if let Ok((sha, msg)) = self.git.head_info() {
+            self.state.set_head_info(sha, msg);
+        }
+        self.state
+            .set_stash_count(self.git.stash_count().unwrap_or(0));
+        self.state
+            .set_ahead_behind(self.git.ahead_behind().unwrap_or(None));
+        self.state.set_repo_state(self.git.repo_state());
+
         Ok(())
     }
 

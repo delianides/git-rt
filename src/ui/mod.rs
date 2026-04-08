@@ -102,8 +102,14 @@ fn render_file_list(frame: &mut Frame, state: &AppState, display: &DisplayConfig
         let line_width = area
             .width
             .saturating_sub(marker_width + pad.left + pad.right);
-        let mut line =
-            format::render_file_line(&segments, file, state.branch(), &widths, line_width);
+        let mut line = format::render_file_line(
+            &segments,
+            file,
+            state.branch(),
+            &widths,
+            line_width,
+            &crate::config::StatusColors::default(),
+        );
 
         // Prepend expand marker (after left padding)
         if display.show_expand_marker {

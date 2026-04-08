@@ -252,6 +252,34 @@ impl AppState {
 
     // -- State updates --
 
+    /// Reset state for a worktree switch. Clears selection, expansion,
+    /// diff cache, and flash times. Updates files, branch, repo name,
+    /// and worktree name.
+    pub fn reset_for_switch(
+        &mut self,
+        files: Vec<FileEntry>,
+        branch: String,
+        repo_name: String,
+        worktree_name: String,
+    ) {
+        self.files = files;
+        self.selected = 0;
+        self.expanded = None;
+        self.diff_cache.clear();
+        self.diff_scroll = 0;
+        self.refresh_count = 0;
+        self.last_refresh = Instant::now();
+        self.flash_times.clear();
+        self.branch = branch;
+        self.repo_name = repo_name;
+        self.worktree_name = worktree_name;
+        self.head_sha.clear();
+        self.head_message.clear();
+        self.stash_count = 0;
+        self.ahead_behind = None;
+        self.repo_state = None;
+    }
+
     /// Update the file list from a fresh git status computation.
     /// Preserves selection position and expanded state where possible.
     pub fn update_files(&mut self, new_files: Vec<FileEntry>) {
@@ -619,5 +647,32 @@ mod tests {
         state.set_flash_message("test".to_string());
         state.clear_flash_message();
         assert!(state.flash_message().is_none());
+    }
+
+    #[test]
+    fn test_reset_for_switch() {
+        let files = vec![make_entry("a.rs", 1, 0), make_entry("b.rs", 2, 1)];
+        let mut state = AppState::new(files, Duration::from_millis(600), "main".to_string());
+        state.select_next(); // select b.rs
+        state.expand_selected(FileDiff::default());
+        state.set_repo_name("old-repo".to_string());
+        state.set_worktree_name("old-wt".to_string());
+
+        let new_files = vec![make_entry("c.rs", 3, 0)];
+        state.reset_for_switch(
+            new_files,
+            "feature".to_string(),
+            "new-repo".to_string(),
+            "new-wt".to_string(),
+        );
+
+        assert_eq!(state.selected_index(), 0);
+        assert!(state.expanded_path().is_none());
+        assert_eq!(state.files().len(), 1);
+        assert_eq!(state.files()[0].path, "c.rs");
+        assert_eq!(state.branch(), "feature");
+        assert_eq!(state.repo_name(), "new-repo");
+        assert_eq!(state.worktree_name(), "new-wt");
+        assert_eq!(state.refresh_count(), 0);
     }
 }

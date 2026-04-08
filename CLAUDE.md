@@ -19,7 +19,7 @@ src/
 ├── state/            # Application state / view model
 │   └── mod.rs        # FileEntry list, selection, expanded state, diff cache
 ├── ui/               # Rendering via ratatui
-│   └── mod.rs        # Layout, file list, diff panel, status bar
+│   └── mod.rs        # Layout, file list, diff panel, status line
 ├── actions/          # Configurable external actions (open editor, diff viewer, etc.)
 │   └── mod.rs        # Template resolution, multiplexer detection, process spawning
 └── config/           # Configuration loading and defaults

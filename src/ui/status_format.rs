@@ -1,3 +1,5 @@
+use std::collections::HashMap;
+
 use ratatui::{
     style::{Color, Modifier, Style},
     text::{Line, Span},
@@ -7,7 +9,7 @@ use crate::config::ColorValue;
 use crate::git::FileStatus;
 use crate::state::AppState;
 
-/// A parsed segment of a statusbar format string
+/// A parsed segment of a statusline format string
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum StatusSegment {
     /// A data token like %b, %c, %+, etc.
@@ -30,7 +32,7 @@ pub enum StyleTag {
     Dim,
 }
 
-/// Parse a statusbar format string into segments.
+/// Parse a statusline format string into segments.
 /// Handles %tokens, {color}...{/} style tags, and %= right-align.
 pub fn parse_status_format(fmt: &str) -> Vec<StatusSegment> {
     let mut segments = Vec::new();
@@ -386,10 +388,14 @@ fn collapse_whitespace(segments: &mut Vec<ExpandedSegment>) {
 }
 
 /// Resolve a style tag to a ratatui Style modification
-fn resolve_style_tag(tag: &StyleTag) -> Style {
+fn resolve_style_tag(tag: &StyleTag, palette: &HashMap<String, ColorValue>) -> Style {
     match tag {
         StyleTag::Color(name) => {
-            let color = ColorValue::new(name).resolve();
+            let color = if let Some(cv) = palette.get(&name.to_lowercase()) {
+                cv.resolve()
+            } else {
+                ColorValue::new(name).resolve()
+            };
             Style::default().fg(color)
         }
         StyleTag::Bold => Style::default().add_modifier(Modifier::BOLD),
@@ -404,6 +410,7 @@ pub fn render_status_line<'a>(
     state: &AppState,
     available_width: u16,
     default_fg: Color,
+    palette: &HashMap<String, ColorValue>,
 ) -> Line<'a> {
     let expanded = expand_status_line(segments, state);
 
@@ -418,8 +425,8 @@ pub fn render_status_line<'a>(
 
     let base_style = Style::default().fg(default_fg);
 
-    let left_spans = build_styled_spans(left_expanded, base_style);
-    let right_spans = build_styled_spans(right_expanded, base_style);
+    let left_spans = build_styled_spans(left_expanded, base_style, palette);
+    let right_spans = build_styled_spans(right_expanded, base_style, palette);
 
     if right_spans.is_empty() {
         return Line::from(left_spans);
@@ -437,7 +444,11 @@ pub fn render_status_line<'a>(
 }
 
 /// Build styled spans from expanded segments using a color/modifier stack
-fn build_styled_spans<'a>(segments: &[ExpandedSegment], base_style: Style) -> Vec<Span<'a>> {
+fn build_styled_spans<'a>(
+    segments: &[ExpandedSegment],
+    base_style: Style,
+    palette: &HashMap<String, ColorValue>,
+) -> Vec<Span<'a>> {
     let mut spans: Vec<Span<'a>> = Vec::new();
     let mut style_stack: Vec<Style> = Vec::new();
 
@@ -451,7 +462,7 @@ fn build_styled_spans<'a>(segments: &[ExpandedSegment], base_style: Style) -> Ve
             }
             ExpandedKind::StyleStart(tag) => {
                 let parent = style_stack.last().copied().unwrap_or(base_style);
-                let tag_style = resolve_style_tag(tag);
+                let tag_style = resolve_style_tag(tag, palette);
                 let merged = merge_styles(parent, tag_style);
                 style_stack.push(merged);
             }
@@ -481,6 +492,7 @@ fn merge_styles(parent: Style, child: Style) -> Style {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::collections::HashMap;
 
     #[test]
     fn test_parse_simple_tokens() {
@@ -840,7 +852,7 @@ mod tests {
         let state = test_state();
         let segments = parse_status_format("%b  %c files");
         let default_fg = Color::White;
-        let line = render_status_line(&segments, &state, 80, default_fg);
+        let line = render_status_line(&segments, &state, 80, default_fg, &HashMap::new());
         let text: String = line.spans.iter().map(|s| s.content.to_string()).collect();
         assert!(text.contains("main"));
         assert!(text.contains("3 files"));
@@ -851,7 +863,7 @@ mod tests {
         let state = test_state();
         let segments = parse_status_format("{red}%-{/}");
         let default_fg = Color::White;
-        let line = render_status_line(&segments, &state, 80, default_fg);
+        let line = render_status_line(&segments, &state, 80, default_fg, &HashMap::new());
         let red_span = line.spans.iter().find(|s| s.content.contains("-5"));
         assert!(red_span.is_some());
         assert_eq!(red_span.unwrap().style.fg, Some(Color::Red));
@@ -862,7 +874,7 @@ mod tests {
         let state = test_state();
         let segments = parse_status_format("{#FF0000}%-{/}");
         let default_fg = Color::White;
-        let line = render_status_line(&segments, &state, 80, default_fg);
+        let line = render_status_line(&segments, &state, 80, default_fg, &HashMap::new());
         let colored_span = line.spans.iter().find(|s| s.content.contains("-5"));
         assert!(colored_span.is_some());
         assert_eq!(colored_span.unwrap().style.fg, Some(Color::Rgb(255, 0, 0)));
@@ -873,7 +885,7 @@ mod tests {
         let state = test_state();
         let segments = parse_status_format("{bold}%b{/}");
         let default_fg = Color::White;
-        let line = render_status_line(&segments, &state, 80, default_fg);
+        let line = render_status_line(&segments, &state, 80, default_fg, &HashMap::new());
         let bold_span = line.spans.iter().find(|s| s.content.contains("main"));
         assert!(bold_span.is_some());
         assert!(bold_span
@@ -888,7 +900,7 @@ mod tests {
         let state = test_state();
         let segments = parse_status_format("%b");
         let default_fg = Color::Cyan;
-        let line = render_status_line(&segments, &state, 80, default_fg);
+        let line = render_status_line(&segments, &state, 80, default_fg, &HashMap::new());
         let span = line.spans.iter().find(|s| s.content.contains("main"));
         assert!(span.is_some());
         assert_eq!(span.unwrap().style.fg, Some(Color::Cyan));
@@ -899,7 +911,7 @@ mod tests {
         let state = test_state();
         let segments = parse_status_format("%b %=%R");
         let default_fg = Color::White;
-        let line = render_status_line(&segments, &state, 40, default_fg);
+        let line = render_status_line(&segments, &state, 40, default_fg, &HashMap::new());
         let total_width: usize = line.spans.iter().map(|s| s.content.len()).sum();
         assert_eq!(total_width, 40);
     }
@@ -941,7 +953,7 @@ mod tests {
         let state = test_state();
         let segments = parse_status_format("{dim}%h{/}");
         let default_fg = Color::White;
-        let line = render_status_line(&segments, &state, 80, default_fg);
+        let line = render_status_line(&segments, &state, 80, default_fg, &HashMap::new());
         let dim_span = line.spans.iter().find(|s| s.content.contains("j/k:nav"));
         assert!(dim_span.is_some());
         assert!(dim_span.unwrap().style.add_modifier.contains(Modifier::DIM));
@@ -952,12 +964,84 @@ mod tests {
         let state = test_state();
         let segments = parse_status_format("{bold}{red}%-{/}{/}");
         let default_fg = Color::White;
-        let line = render_status_line(&segments, &state, 80, default_fg);
+        let line = render_status_line(&segments, &state, 80, default_fg, &HashMap::new());
         let styled_span = line.spans.iter().find(|s| s.content.contains("-5"));
         assert!(styled_span.is_some());
         let style = styled_span.unwrap().style;
         // Should have both bold AND red
         assert_eq!(style.fg, Some(Color::Red));
         assert!(style.add_modifier.contains(Modifier::BOLD));
+    }
+
+    #[test]
+    fn test_resolve_style_tag_palette_custom_color() {
+        let mut palette = HashMap::new();
+        palette.insert("danger".to_string(), ColorValue::new("#FF5555"));
+
+        let tag = StyleTag::Color("danger".to_string());
+        let style = resolve_style_tag(&tag, &palette);
+        assert_eq!(style.fg, Some(Color::Rgb(255, 85, 85)));
+    }
+
+    #[test]
+    fn test_resolve_style_tag_palette_override_builtin() {
+        let mut palette = HashMap::new();
+        palette.insert("red".to_string(), ColorValue::new("#FF6666"));
+
+        let tag = StyleTag::Color("red".to_string());
+        let style = resolve_style_tag(&tag, &palette);
+        assert_eq!(style.fg, Some(Color::Rgb(255, 102, 102)));
+    }
+
+    #[test]
+    fn test_resolve_style_tag_fallback_to_builtin() {
+        let palette = HashMap::new();
+
+        let tag = StyleTag::Color("green".to_string());
+        let style = resolve_style_tag(&tag, &palette);
+        assert_eq!(style.fg, Some(Color::Green));
+    }
+
+    #[test]
+    fn test_resolve_style_tag_bold_ignores_palette() {
+        let palette = HashMap::new();
+        let tag = StyleTag::Bold;
+        let style = resolve_style_tag(&tag, &palette);
+        assert!(style.add_modifier.contains(Modifier::BOLD));
+    }
+
+    #[test]
+    fn test_build_styled_spans_with_palette() {
+        let mut palette = HashMap::new();
+        palette.insert("alert".to_string(), ColorValue::new("#FFAA00"));
+
+        let segments = vec![
+            ExpandedSegment {
+                kind: ExpandedKind::StyleStart(StyleTag::Color("alert".to_string())),
+                text: String::new(),
+            },
+            ExpandedSegment {
+                kind: ExpandedKind::Text,
+                text: "warning".to_string(),
+            },
+            ExpandedSegment {
+                kind: ExpandedKind::StyleEnd,
+                text: String::new(),
+            },
+        ];
+
+        let base_style = Style::default().fg(Color::White);
+        let spans = build_styled_spans(&segments, base_style, &palette);
+        assert_eq!(spans.len(), 1);
+        assert_eq!(spans[0].style.fg, Some(Color::Rgb(255, 170, 0)));
+    }
+
+    #[test]
+    fn test_resolve_style_tag_unknown_name_falls_back() {
+        let palette = HashMap::new();
+        let tag = StyleTag::Color("nonexistent".to_string());
+        let style = resolve_style_tag(&tag, &palette);
+        // Unknown name falls back to Color::Reset via ColorValue
+        assert_eq!(style.fg, Some(Color::Reset));
     }
 }

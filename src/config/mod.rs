@@ -60,34 +60,7 @@ impl ColorValue {
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(default)]
 pub struct ColorConfig {
-    pub status: StatusColors,
     pub ui: UiColors,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(default)]
-pub struct StatusColors {
-    pub modified: ColorValue,
-    pub added: ColorValue,
-    pub deleted: ColorValue,
-    pub renamed: ColorValue,
-    pub untracked: ColorValue,
-    pub staged: ColorValue,
-    pub conflicted: ColorValue,
-}
-
-impl Default for StatusColors {
-    fn default() -> Self {
-        Self {
-            modified: ColorValue::new("yellow"),
-            added: ColorValue::new("green"),
-            deleted: ColorValue::new("red"),
-            renamed: ColorValue::new("cyan"),
-            untracked: ColorValue::new("green"),
-            staged: ColorValue::new("green"),
-            conflicted: ColorValue::new("magenta"),
-        }
-    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -110,10 +83,10 @@ impl Default for UiColors {
     }
 }
 
-/// Configuration for a single statusbar (top or bottom)
+/// Configuration for a single statusline (top or bottom)
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
-pub struct StatusBarConfig {
+pub struct StatusLineConfig {
     /// Format string for this bar. Empty string hides the bar.
     pub status_line: String,
     /// Foreground color for unstyled text in this bar
@@ -122,15 +95,15 @@ pub struct StatusBarConfig {
     pub background_color: ColorValue,
 }
 
-/// Container for top and bottom statusbar configuration
+/// Container for top and bottom statusline configuration
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
-pub struct StatusBarSectionConfig {
-    pub top: StatusBarConfig,
-    pub bottom: StatusBarConfig,
+pub struct StatusLineSectionConfig {
+    pub top: StatusLineConfig,
+    pub bottom: StatusLineConfig,
 }
 
-impl Default for StatusBarConfig {
+impl Default for StatusLineConfig {
     fn default() -> Self {
         Self {
             status_line: String::new(),
@@ -140,13 +113,13 @@ impl Default for StatusBarConfig {
     }
 }
 
-impl Default for StatusBarSectionConfig {
+impl Default for StatusLineSectionConfig {
     fn default() -> Self {
         Self {
-            top: StatusBarConfig::default(),
-            bottom: StatusBarConfig {
+            top: StatusLineConfig::default(),
+            bottom: StatusLineConfig {
                 status_line: "%b  %c files  {red}%-{/} {green}%+{/}  %=%R".to_string(),
-                ..StatusBarConfig::default()
+                ..StatusLineConfig::default()
             },
         }
     }
@@ -167,6 +140,10 @@ pub struct AppConfig {
 
     /// Named actions that can be triggered on files
     pub actions: HashMap<String, ActionConfig>,
+
+    /// User-defined color palette for statusline format tags
+    #[serde(default)]
+    pub colors: HashMap<String, ColorValue>,
 }
 
 impl Default for AppConfig {
@@ -176,6 +153,7 @@ impl Default for AppConfig {
             display: DisplayConfig::default(),
             keys: KeyConfig::default(),
             actions: HashMap::new(),
+            colors: HashMap::new(),
         }
     }
 }
@@ -193,8 +171,8 @@ pub struct DisplayConfig {
     pub flash_duration_ms: u64,
     /// Vim-style format string for file rows (e.g. "%s %f %- %+")
     pub file_line: String,
-    /// Top and bottom statusbar configuration
-    pub statusbar: StatusBarSectionConfig,
+    /// Top and bottom statusline configuration
+    pub statusline: StatusLineSectionConfig,
     /// Show expand marker (▼/space) before each file row
     pub show_expand_marker: bool,
     /// Padding around the file list area
@@ -211,7 +189,7 @@ impl Default for DisplayConfig {
             flash_on_change: true,
             flash_duration_ms: 600,
             file_line: "%s %f %- %+".to_string(),
-            statusbar: StatusBarSectionConfig::default(),
+            statusline: StatusLineSectionConfig::default(),
             show_expand_marker: true,
             padding: PaddingConfig::default(),
             colors: ColorConfig::default(),
@@ -584,18 +562,6 @@ show_expand_marker = false
     }
 
     #[test]
-    fn test_status_colors_defaults() {
-        let colors = StatusColors::default();
-        assert_eq!(colors.modified.resolve(), Color::Yellow);
-        assert_eq!(colors.added.resolve(), Color::Green);
-        assert_eq!(colors.deleted.resolve(), Color::Red);
-        assert_eq!(colors.renamed.resolve(), Color::Cyan);
-        assert_eq!(colors.untracked.resolve(), Color::Green);
-        assert_eq!(colors.staged.resolve(), Color::Green);
-        assert_eq!(colors.conflicted.resolve(), Color::Magenta);
-    }
-
-    #[test]
     fn test_ui_colors_defaults() {
         let colors = UiColors::default();
         assert_eq!(colors.selection_bg.resolve(), Color::DarkGray);
@@ -607,37 +573,7 @@ show_expand_marker = false
     #[test]
     fn test_color_config_on_display_config() {
         let display = DisplayConfig::default();
-        assert_eq!(display.colors.status.modified.resolve(), Color::Yellow);
         assert_eq!(display.colors.ui.selection_bg.resolve(), Color::DarkGray);
-    }
-
-    #[test]
-    fn test_toml_partial_status_colors() {
-        let dir = std::env::temp_dir().join("git-rt-test-color-partial");
-        std::fs::create_dir_all(&dir).unwrap();
-        let path = dir.join("config.toml");
-        std::fs::write(
-            &path,
-            r##"
-[display.colors.status]
-modified = "#FF8800"
-"##,
-        )
-        .unwrap();
-
-        let config = AppConfig::load(Some(&path)).unwrap();
-        assert_eq!(
-            config.display.colors.status.modified.resolve(),
-            Color::Rgb(255, 136, 0)
-        );
-        // Unspecified fields use defaults
-        assert_eq!(config.display.colors.status.added.resolve(), Color::Green);
-        assert_eq!(
-            config.display.colors.ui.selection_bg.resolve(),
-            Color::DarkGray
-        );
-
-        std::fs::remove_dir_all(&dir).ok();
     }
 
     #[test]
@@ -648,15 +584,6 @@ modified = "#FF8800"
         std::fs::write(
             &path,
             r##"
-[display.colors.status]
-modified = "#FF8800"
-added = "#00FF00"
-deleted = "#FF0000"
-renamed = "#00FFFF"
-untracked = "#888888"
-staged = "#00CC00"
-conflicted = "#FF00FF"
-
 [display.colors.ui]
 selection_bg = "#444444"
 selection_fg = "#EEEEEE"
@@ -668,16 +595,12 @@ empty_text = "#555555"
 
         let config = AppConfig::load(Some(&path)).unwrap();
         assert_eq!(
-            config.display.colors.status.modified.resolve(),
-            Color::Rgb(255, 136, 0)
-        );
-        assert_eq!(
-            config.display.colors.status.untracked.resolve(),
-            Color::Rgb(136, 136, 136)
-        );
-        assert_eq!(
             config.display.colors.ui.selection_fg.resolve(),
             Color::Rgb(238, 238, 238)
+        );
+        assert_eq!(
+            config.display.colors.ui.selection_bg.resolve(),
+            Color::Rgb(68, 68, 68)
         );
 
         std::fs::remove_dir_all(&dir).ok();
@@ -692,10 +615,6 @@ empty_text = "#555555"
 
         let config = AppConfig::load(Some(&path)).unwrap();
         assert_eq!(
-            config.display.colors.status.modified.resolve(),
-            Color::Yellow
-        );
-        assert_eq!(
             config.display.colors.ui.selection_bg.resolve(),
             Color::DarkGray
         );
@@ -704,18 +623,18 @@ empty_text = "#555555"
     }
 
     #[test]
-    fn test_statusbar_from_toml() {
-        let dir = std::env::temp_dir().join("git-rt-test-statusbar");
+    fn test_statusline_from_toml() {
+        let dir = std::env::temp_dir().join("git-rt-test-statusline");
         std::fs::create_dir_all(&dir).unwrap();
         let path = dir.join("config.toml");
         std::fs::write(
             &path,
             r##"
-[display.statusbar.top]
+[display.statusline.top]
 status_line = "{dim}%h{/}"
 foreground_color = "cyan"
 
-[display.statusbar.bottom]
+[display.statusline.bottom]
 status_line = "%b %c"
 background_color = "#222222"
 "##,
@@ -723,23 +642,23 @@ background_color = "#222222"
         .unwrap();
 
         let config = AppConfig::load(Some(&path)).unwrap();
-        assert_eq!(config.display.statusbar.top.status_line, "{dim}%h{/}");
+        assert_eq!(config.display.statusline.top.status_line, "{dim}%h{/}");
         assert_eq!(
-            config.display.statusbar.top.foreground_color.resolve(),
+            config.display.statusline.top.foreground_color.resolve(),
             Color::Cyan
         );
         // Unspecified fields use defaults
         assert_eq!(
-            config.display.statusbar.top.background_color.resolve(),
+            config.display.statusline.top.background_color.resolve(),
             Color::Rgb(30, 30, 30)
         );
-        assert_eq!(config.display.statusbar.bottom.status_line, "%b %c");
+        assert_eq!(config.display.statusline.bottom.status_line, "%b %c");
         assert_eq!(
-            config.display.statusbar.bottom.background_color.resolve(),
+            config.display.statusline.bottom.background_color.resolve(),
             Color::Rgb(34, 34, 34)
         );
         assert_eq!(
-            config.display.statusbar.bottom.foreground_color.resolve(),
+            config.display.statusline.bottom.foreground_color.resolve(),
             Color::White
         );
 
@@ -747,51 +666,124 @@ background_color = "#222222"
     }
 
     #[test]
-    fn test_statusbar_empty_hides_bar() {
-        let dir = std::env::temp_dir().join("git-rt-test-statusbar-empty");
+    fn test_statusline_empty_hides_bar() {
+        let dir = std::env::temp_dir().join("git-rt-test-statusline-empty");
         std::fs::create_dir_all(&dir).unwrap();
         let path = dir.join("config.toml");
         std::fs::write(
             &path,
             r#"
-[display.statusbar.top]
+[display.statusline.top]
 status_line = ""
 
-[display.statusbar.bottom]
+[display.statusline.bottom]
 status_line = ""
 "#,
         )
         .unwrap();
 
         let config = AppConfig::load(Some(&path)).unwrap();
-        assert!(config.display.statusbar.top.status_line.is_empty());
-        assert!(config.display.statusbar.bottom.status_line.is_empty());
+        assert!(config.display.statusline.top.status_line.is_empty());
+        assert!(config.display.statusline.bottom.status_line.is_empty());
 
         std::fs::remove_dir_all(&dir).ok();
     }
 
     #[test]
-    fn test_default_statusbar_config() {
-        let config = DisplayConfig::default();
-        assert!(config.statusbar.top.status_line.is_empty());
+    fn test_default_palette_empty() {
+        let config = AppConfig::default();
+        assert!(config.colors.is_empty());
+    }
+
+    #[test]
+    fn test_palette_from_toml() {
+        let dir = std::env::temp_dir().join("git-rt-test-palette");
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("config.toml");
+        std::fs::write(
+            &path,
+            r##"
+[colors]
+danger = "#FF5555"
+success = "#50FA7B"
+muted = "gray"
+"##,
+        )
+        .unwrap();
+
+        let config = AppConfig::load(Some(&path)).unwrap();
+        assert_eq!(config.colors.len(), 3);
         assert_eq!(
-            config.statusbar.top.foreground_color.resolve(),
+            config.colors.get("danger").unwrap().resolve(),
+            Color::Rgb(255, 85, 85)
+        );
+        assert_eq!(
+            config.colors.get("success").unwrap().resolve(),
+            Color::Rgb(80, 250, 123)
+        );
+        assert_eq!(config.colors.get("muted").unwrap().resolve(), Color::Gray);
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn test_palette_override_builtin() {
+        let dir = std::env::temp_dir().join("git-rt-test-palette-override");
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("config.toml");
+        std::fs::write(
+            &path,
+            r##"
+[colors]
+red = "#FF6666"
+"##,
+        )
+        .unwrap();
+
+        let config = AppConfig::load(Some(&path)).unwrap();
+        assert_eq!(
+            config.colors.get("red").unwrap().resolve(),
+            Color::Rgb(255, 102, 102)
+        );
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn test_no_palette_section_defaults_empty() {
+        let dir = std::env::temp_dir().join("git-rt-test-no-palette");
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("config.toml");
+        std::fs::write(&path, "debounce_ms = 100\n").unwrap();
+
+        let config = AppConfig::load(Some(&path)).unwrap();
+        assert!(config.colors.is_empty());
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn test_default_statusline_config() {
+        let config = DisplayConfig::default();
+        assert!(config.statusline.top.status_line.is_empty());
+        assert_eq!(
+            config.statusline.top.foreground_color.resolve(),
             Color::White
         );
         assert_eq!(
-            config.statusbar.top.background_color.resolve(),
+            config.statusline.top.background_color.resolve(),
             Color::Rgb(30, 30, 30)
         );
         assert_eq!(
-            config.statusbar.bottom.status_line,
+            config.statusline.bottom.status_line,
             "%b  %c files  {red}%-{/} {green}%+{/}  %=%R"
         );
         assert_eq!(
-            config.statusbar.bottom.foreground_color.resolve(),
+            config.statusline.bottom.foreground_color.resolve(),
             Color::White
         );
         assert_eq!(
-            config.statusbar.bottom.background_color.resolve(),
+            config.statusline.bottom.background_color.resolve(),
             Color::Rgb(30, 30, 30)
         );
     }

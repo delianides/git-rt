@@ -1,12 +1,10 @@
-#[allow(unused_imports)]
 use ratatui::{
     style::{Color, Modifier, Style},
     text::{Line, Span},
 };
 
-#[allow(unused_imports)]
 use crate::config::ColorValue;
-#[allow(unused_imports)]
+use crate::git::FileStatus;
 use crate::state::AppState;
 
 /// A parsed segment of a statusbar format string
@@ -118,6 +116,366 @@ pub fn parse_status_format(fmt: &str) -> Vec<StatusSegment> {
     }
 
     segments
+}
+
+/// Resolve a status format token to its string value.
+/// Returns empty string for tokens that should render nothing when zero/empty.
+pub fn resolve_status_token(token: char, state: &AppState) -> String {
+    match token {
+        'R' => state.repo_name().to_string(),
+        'b' => state.branch().to_string(),
+        'w' => {
+            let name = state.worktree_name();
+            if name.is_empty() {
+                String::new()
+            } else {
+                name.to_string()
+            }
+        }
+        'c' => state.files().len().to_string(),
+        '+' => {
+            let total: usize = state.files().iter().map(|f| f.insertions).sum();
+            if total == 0 {
+                String::new()
+            } else {
+                format!("+{total}")
+            }
+        }
+        '-' => {
+            let total: usize = state.files().iter().map(|f| f.deletions).sum();
+            if total == 0 {
+                String::new()
+            } else {
+                format!("-{total}")
+            }
+        }
+        't' => {
+            let total: usize = state
+                .files()
+                .iter()
+                .map(|f| f.insertions + f.deletions)
+                .sum();
+            if total == 0 {
+                String::new()
+            } else {
+                total.to_string()
+            }
+        }
+        'u' => {
+            let count = state
+                .files()
+                .iter()
+                .filter(|f| f.status == FileStatus::Untracked)
+                .count();
+            if count == 0 {
+                String::new()
+            } else {
+                count.to_string()
+            }
+        }
+        's' => {
+            let count = state
+                .files()
+                .iter()
+                .filter(|f| f.status == FileStatus::Staged)
+                .count();
+            if count == 0 {
+                String::new()
+            } else {
+                count.to_string()
+            }
+        }
+        'm' => {
+            let count = state
+                .files()
+                .iter()
+                .filter(|f| f.status == FileStatus::Modified)
+                .count();
+            if count == 0 {
+                String::new()
+            } else {
+                count.to_string()
+            }
+        }
+        'S' => {
+            let count = state.stash_count();
+            if count == 0 {
+                String::new()
+            } else {
+                count.to_string()
+            }
+        }
+        'a' => match state.ahead_behind() {
+            Some((ahead, behind)) => format!("\u{2191}{ahead} \u{2193}{behind}"),
+            None => String::new(),
+        },
+        'g' => state.repo_state().unwrap_or("").to_string(),
+        'H' => state.head_sha().to_string(),
+        'M' => state.head_message().to_string(),
+        'r' => {
+            let count = state.refresh_count();
+            if count == 0 {
+                String::new()
+            } else {
+                format!("#{count}")
+            }
+        }
+        'T' => {
+            let secs = state.last_refresh_secs();
+            if secs == 0 {
+                String::new()
+            } else {
+                format!("{secs}s ago")
+            }
+        }
+        'h' => "j/k:nav  enter:expand  q:quit".to_string(),
+        _ => String::new(),
+    }
+}
+
+/// The kind of an expanded segment (post-token-resolution)
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ExpandedKind {
+    Text,
+    RightAlign,
+    StyleStart(StyleTag),
+    StyleEnd,
+}
+
+/// An expanded segment with resolved text
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ExpandedSegment {
+    pub text: String,
+    pub kind: ExpandedKind,
+}
+
+/// Expand tokens in a parsed status format, collapsing whitespace around empty tokens.
+pub fn expand_status_line(segments: &[StatusSegment], state: &AppState) -> Vec<ExpandedSegment> {
+    let mut raw: Vec<ExpandedSegment> = Vec::new();
+
+    for segment in segments {
+        match segment {
+            StatusSegment::Token(ch) => {
+                let value = resolve_status_token(*ch, state);
+                raw.push(ExpandedSegment {
+                    text: value,
+                    kind: ExpandedKind::Text,
+                });
+            }
+            StatusSegment::Literal(text) => {
+                raw.push(ExpandedSegment {
+                    text: text.clone(),
+                    kind: ExpandedKind::Text,
+                });
+            }
+            StatusSegment::RightAlign => {
+                raw.push(ExpandedSegment {
+                    text: String::new(),
+                    kind: ExpandedKind::RightAlign,
+                });
+            }
+            StatusSegment::StyleStart(tag) => {
+                raw.push(ExpandedSegment {
+                    text: String::new(),
+                    kind: ExpandedKind::StyleStart(tag.clone()),
+                });
+            }
+            StatusSegment::StyleEnd => {
+                raw.push(ExpandedSegment {
+                    text: String::new(),
+                    kind: ExpandedKind::StyleEnd,
+                });
+            }
+        }
+    }
+
+    collapse_whitespace(&mut raw);
+    raw
+}
+
+/// Collapse whitespace around empty text segments.
+/// When a text segment is empty, trim adjacent whitespace and collapse double spaces.
+fn collapse_whitespace(segments: &mut Vec<ExpandedSegment>) {
+    // Track which text segment indices were modified by empty-token trimming
+    let mut modified_indices: std::collections::HashSet<usize> = std::collections::HashSet::new();
+
+    // Find indices of empty text segments
+    let empty_indices: Vec<usize> = segments
+        .iter()
+        .enumerate()
+        .filter(|(_, s)| s.kind == ExpandedKind::Text && s.text.is_empty())
+        .map(|(i, _)| i)
+        .collect();
+
+    // For each empty text segment, trim surrounding whitespace
+    for &idx in &empty_indices {
+        if let Some((pi, prev)) = segments[..idx]
+            .iter_mut()
+            .enumerate()
+            .rev()
+            .find(|(_, s)| s.kind == ExpandedKind::Text && !s.text.is_empty())
+        {
+            prev.text = prev.text.trim_end().to_string();
+            modified_indices.insert(pi);
+        }
+
+        // Find the actual index in the full segments vec for the next non-empty text
+        if let Some((offset, next)) = segments[idx + 1..]
+            .iter_mut()
+            .enumerate()
+            .find(|(_, s)| s.kind == ExpandedKind::Text && !s.text.is_empty())
+        {
+            next.text = next.text.trim_start().to_string();
+            modified_indices.insert(idx + 1 + offset);
+        }
+    }
+
+    // Remove empty text segments
+    segments.retain(|s| !(s.kind == ExpandedKind::Text && s.text.is_empty()));
+
+    // After removing empty segments, check if adjacent non-empty text segments
+    // need a space inserted between them (when both were trimmed and are now touching)
+    let len = segments.len();
+    let mut inserts: Vec<usize> = Vec::new();
+    for i in 0..len.saturating_sub(1) {
+        if segments[i].kind == ExpandedKind::Text
+            && !segments[i].text.is_empty()
+            && segments[i + 1].kind == ExpandedKind::Text
+            && !segments[i + 1].text.is_empty()
+        {
+            let left_ends_space = segments[i].text.ends_with(' ');
+            let right_starts_space = segments[i + 1].text.starts_with(' ');
+            if !left_ends_space && !right_starts_space {
+                // Check if there were empty tokens between these (i.e., both were trimmed)
+                // We can detect this: if original had whitespace between them that got trimmed
+                // A simpler heuristic: if either segment was modified, add a space
+                // But we lost exact indices after retain. Instead, just check if neither has space.
+                inserts.push(i + 1);
+            }
+        }
+    }
+    // Insert spaces (reverse order to preserve indices)
+    for &pos in inserts.iter().rev() {
+        segments.insert(
+            pos,
+            ExpandedSegment {
+                text: " ".to_string(),
+                kind: ExpandedKind::Text,
+            },
+        );
+    }
+
+    // Trim leading whitespace on first text segment
+    if let Some(first) = segments
+        .iter_mut()
+        .find(|s| s.kind == ExpandedKind::Text && !s.text.is_empty())
+    {
+        first.text = first.text.trim_start().to_string();
+    }
+    // Trim trailing whitespace on last text segment
+    if let Some(last) = segments
+        .iter_mut()
+        .rev()
+        .find(|s| s.kind == ExpandedKind::Text && !s.text.is_empty())
+    {
+        last.text = last.text.trim_end().to_string();
+    }
+
+    // Final cleanup: remove any segments that became empty after trimming
+    segments.retain(|s| !(s.kind == ExpandedKind::Text && s.text.is_empty()));
+}
+
+/// Resolve a style tag to a ratatui Style modification
+fn resolve_style_tag(tag: &StyleTag) -> Style {
+    match tag {
+        StyleTag::Color(name) => {
+            let color = ColorValue::new(name).resolve();
+            Style::default().fg(color)
+        }
+        StyleTag::Bold => Style::default().add_modifier(Modifier::BOLD),
+        StyleTag::Dim => Style::default().add_modifier(Modifier::DIM),
+    }
+}
+
+/// Render a status format line to a styled ratatui Line.
+/// Handles color stack, right-alignment, and whitespace collapsing.
+pub fn render_status_line<'a>(
+    segments: &[StatusSegment],
+    state: &AppState,
+    available_width: u16,
+    default_fg: Color,
+) -> Line<'a> {
+    let expanded = expand_status_line(segments, state);
+
+    let right_align_pos = expanded
+        .iter()
+        .position(|s| s.kind == ExpandedKind::RightAlign);
+
+    let (left_expanded, right_expanded) = match right_align_pos {
+        Some(pos) => (&expanded[..pos], &expanded[pos + 1..]),
+        None => (expanded.as_slice(), &[] as &[ExpandedSegment]),
+    };
+
+    let base_style = Style::default().fg(default_fg);
+
+    let left_spans = build_styled_spans(left_expanded, base_style);
+    let right_spans = build_styled_spans(right_expanded, base_style);
+
+    if right_spans.is_empty() {
+        return Line::from(left_spans);
+    }
+
+    let left_width: usize = left_spans.iter().map(|s| s.content.len()).sum();
+    let right_width: usize = right_spans.iter().map(|s| s.content.len()).sum();
+    let spacer = (available_width as usize).saturating_sub(left_width + right_width);
+
+    let mut spans = left_spans;
+    spans.push(Span::raw(" ".repeat(spacer)));
+    spans.extend(right_spans);
+
+    Line::from(spans)
+}
+
+/// Build styled spans from expanded segments using a color/modifier stack
+fn build_styled_spans<'a>(segments: &[ExpandedSegment], base_style: Style) -> Vec<Span<'a>> {
+    let mut spans: Vec<Span<'a>> = Vec::new();
+    let mut style_stack: Vec<Style> = Vec::new();
+
+    for segment in segments {
+        match &segment.kind {
+            ExpandedKind::Text => {
+                if !segment.text.is_empty() {
+                    let current_style = style_stack.last().copied().unwrap_or(base_style);
+                    spans.push(Span::styled(segment.text.clone(), current_style));
+                }
+            }
+            ExpandedKind::StyleStart(tag) => {
+                let parent = style_stack.last().copied().unwrap_or(base_style);
+                let tag_style = resolve_style_tag(tag);
+                let merged = merge_styles(parent, tag_style);
+                style_stack.push(merged);
+            }
+            ExpandedKind::StyleEnd => {
+                style_stack.pop();
+            }
+            ExpandedKind::RightAlign => {}
+        }
+    }
+
+    spans
+}
+
+/// Merge two styles: child overrides parent for fg, and adds modifiers
+fn merge_styles(parent: Style, child: Style) -> Style {
+    let mut merged = parent;
+    if let Some(fg) = child.fg {
+        merged.fg = Some(fg);
+    }
+    if let Some(bg) = child.bg {
+        merged.bg = Some(bg);
+    }
+    merged.add_modifier = merged.add_modifier.union(child.add_modifier);
+    merged
 }
 
 #[cfg(test)]
@@ -253,5 +611,289 @@ mod tests {
                 StatusSegment::Token('R'),
             ]
         );
+    }
+
+    // -- Helper for token resolution and rendering tests --
+
+    fn test_state() -> AppState {
+        use crate::git::{FileEntry, FileStatus};
+        let files = vec![
+            FileEntry {
+                path: "a.rs".to_string(),
+                status: FileStatus::Modified,
+                insertions: 10,
+                deletions: 3,
+            },
+            FileEntry {
+                path: "b.rs".to_string(),
+                status: FileStatus::Untracked,
+                insertions: 5,
+                deletions: 0,
+            },
+            FileEntry {
+                path: "c.rs".to_string(),
+                status: FileStatus::Staged,
+                insertions: 0,
+                deletions: 2,
+            },
+        ];
+        let mut state = AppState::new(
+            files,
+            std::time::Duration::from_millis(600),
+            "main".to_string(),
+        );
+        state.set_repo_name("git-rt".to_string());
+        state.set_worktree_name("my-worktree".to_string());
+        state.set_head_info("abc1234".to_string(), "fix: a bug".to_string());
+        state.set_stash_count(2);
+        state.set_ahead_behind(Some((3, 1)));
+        state.set_repo_state(Some("REBASING".to_string()));
+        state
+    }
+
+    // -- Task 6: Token resolution tests --
+
+    #[test]
+    fn test_resolve_repo_name() {
+        let state = test_state();
+        assert_eq!(resolve_status_token('R', &state), "git-rt");
+    }
+
+    #[test]
+    fn test_resolve_branch() {
+        let state = test_state();
+        assert_eq!(resolve_status_token('b', &state), "main");
+    }
+
+    #[test]
+    fn test_resolve_worktree() {
+        let state = test_state();
+        assert_eq!(resolve_status_token('w', &state), "my-worktree");
+    }
+
+    #[test]
+    fn test_resolve_file_count() {
+        let state = test_state();
+        assert_eq!(resolve_status_token('c', &state), "3");
+    }
+
+    #[test]
+    fn test_resolve_total_insertions() {
+        let state = test_state();
+        assert_eq!(resolve_status_token('+', &state), "+15");
+    }
+
+    #[test]
+    fn test_resolve_total_deletions() {
+        let state = test_state();
+        assert_eq!(resolve_status_token('-', &state), "-5");
+    }
+
+    #[test]
+    fn test_resolve_total_changes() {
+        let state = test_state();
+        assert_eq!(resolve_status_token('t', &state), "20");
+    }
+
+    #[test]
+    fn test_resolve_untracked_count() {
+        let state = test_state();
+        assert_eq!(resolve_status_token('u', &state), "1");
+    }
+
+    #[test]
+    fn test_resolve_staged_count() {
+        let state = test_state();
+        assert_eq!(resolve_status_token('s', &state), "1");
+    }
+
+    #[test]
+    fn test_resolve_modified_count() {
+        let state = test_state();
+        assert_eq!(resolve_status_token('m', &state), "1");
+    }
+
+    #[test]
+    fn test_resolve_stash_count() {
+        let state = test_state();
+        assert_eq!(resolve_status_token('S', &state), "2");
+    }
+
+    #[test]
+    fn test_resolve_ahead_behind() {
+        let state = test_state();
+        assert_eq!(resolve_status_token('a', &state), "\u{2191}3 \u{2193}1");
+    }
+
+    #[test]
+    fn test_resolve_git_state() {
+        let state = test_state();
+        assert_eq!(resolve_status_token('g', &state), "REBASING");
+    }
+
+    #[test]
+    fn test_resolve_head_sha() {
+        let state = test_state();
+        assert_eq!(resolve_status_token('H', &state), "abc1234");
+    }
+
+    #[test]
+    fn test_resolve_head_message() {
+        let state = test_state();
+        assert_eq!(resolve_status_token('M', &state), "fix: a bug");
+    }
+
+    #[test]
+    fn test_resolve_help() {
+        let state = test_state();
+        assert_eq!(
+            resolve_status_token('h', &state),
+            "j/k:nav  enter:expand  q:quit"
+        );
+    }
+
+    #[test]
+    fn test_resolve_empty_when_zero() {
+        let state = AppState::new(
+            vec![],
+            std::time::Duration::from_millis(600),
+            "main".to_string(),
+        );
+        assert_eq!(resolve_status_token('+', &state), "");
+        assert_eq!(resolve_status_token('-', &state), "");
+        assert_eq!(resolve_status_token('t', &state), "");
+        assert_eq!(resolve_status_token('u', &state), "");
+        assert_eq!(resolve_status_token('s', &state), "");
+        assert_eq!(resolve_status_token('m', &state), "");
+        assert_eq!(resolve_status_token('S', &state), "");
+        assert_eq!(resolve_status_token('a', &state), "");
+        assert_eq!(resolve_status_token('g', &state), "");
+        assert_eq!(resolve_status_token('c', &state), "0");
+    }
+
+    // -- Task 7: Expansion tests --
+
+    #[test]
+    fn test_expand_simple() {
+        let state = test_state();
+        let segments = parse_status_format("%b  %c files");
+        let expanded = expand_status_line(&segments, &state);
+        let text: String = expanded.iter().map(|s| s.text.as_str()).collect();
+        assert_eq!(text, "main  3 files");
+    }
+
+    #[test]
+    fn test_expand_empty_token_collapses_whitespace() {
+        let mut state = test_state();
+        state.set_stash_count(0);
+        let segments = parse_status_format("%b  %S  %c files");
+        let expanded = expand_status_line(&segments, &state);
+        let text: String = expanded.iter().map(|s| s.text.as_str()).collect();
+        assert_eq!(text, "main 3 files");
+    }
+
+    #[test]
+    fn test_expand_multiple_empty_tokens_collapse() {
+        let mut state = test_state();
+        state.set_stash_count(0);
+        state.set_ahead_behind(None);
+        let segments = parse_status_format("%b  %S  %a  %c");
+        let expanded = expand_status_line(&segments, &state);
+        let text: String = expanded.iter().map(|s| s.text.as_str()).collect();
+        assert_eq!(text, "main 3");
+    }
+
+    #[test]
+    fn test_expand_trims_leading_trailing() {
+        let mut state = test_state();
+        state.set_stash_count(0);
+        let segments = parse_status_format("%S  %b");
+        let expanded = expand_status_line(&segments, &state);
+        let text: String = expanded.iter().map(|s| s.text.as_str()).collect();
+        assert_eq!(text, "main");
+    }
+
+    #[test]
+    fn test_expand_preserves_style_tags() {
+        let state = test_state();
+        let segments = parse_status_format("{red}%-{/}");
+        let expanded = expand_status_line(&segments, &state);
+        assert!(expanded
+            .iter()
+            .any(|s| matches!(s.kind, ExpandedKind::StyleStart(_))));
+        assert!(expanded
+            .iter()
+            .any(|s| matches!(s.kind, ExpandedKind::StyleEnd)));
+    }
+
+    // -- Task 8: Rendering tests --
+
+    #[test]
+    fn test_render_plain_text() {
+        let state = test_state();
+        let segments = parse_status_format("%b  %c files");
+        let default_fg = Color::White;
+        let line = render_status_line(&segments, &state, 80, default_fg);
+        let text: String = line.spans.iter().map(|s| s.content.to_string()).collect();
+        assert!(text.contains("main"));
+        assert!(text.contains("3 files"));
+    }
+
+    #[test]
+    fn test_render_with_color() {
+        let state = test_state();
+        let segments = parse_status_format("{red}%-{/}");
+        let default_fg = Color::White;
+        let line = render_status_line(&segments, &state, 80, default_fg);
+        let red_span = line.spans.iter().find(|s| s.content.contains("-5"));
+        assert!(red_span.is_some());
+        assert_eq!(red_span.unwrap().style.fg, Some(Color::Red));
+    }
+
+    #[test]
+    fn test_render_with_hex_color() {
+        let state = test_state();
+        let segments = parse_status_format("{#FF0000}%-{/}");
+        let default_fg = Color::White;
+        let line = render_status_line(&segments, &state, 80, default_fg);
+        let colored_span = line.spans.iter().find(|s| s.content.contains("-5"));
+        assert!(colored_span.is_some());
+        assert_eq!(colored_span.unwrap().style.fg, Some(Color::Rgb(255, 0, 0)));
+    }
+
+    #[test]
+    fn test_render_with_bold() {
+        let state = test_state();
+        let segments = parse_status_format("{bold}%b{/}");
+        let default_fg = Color::White;
+        let line = render_status_line(&segments, &state, 80, default_fg);
+        let bold_span = line.spans.iter().find(|s| s.content.contains("main"));
+        assert!(bold_span.is_some());
+        assert!(bold_span
+            .unwrap()
+            .style
+            .add_modifier
+            .contains(Modifier::BOLD));
+    }
+
+    #[test]
+    fn test_render_default_fg_for_unstyled() {
+        let state = test_state();
+        let segments = parse_status_format("%b");
+        let default_fg = Color::Cyan;
+        let line = render_status_line(&segments, &state, 80, default_fg);
+        let span = line.spans.iter().find(|s| s.content.contains("main"));
+        assert!(span.is_some());
+        assert_eq!(span.unwrap().style.fg, Some(Color::Cyan));
+    }
+
+    #[test]
+    fn test_render_right_align() {
+        let state = test_state();
+        let segments = parse_status_format("%b %=%R");
+        let default_fg = Color::White;
+        let line = render_status_line(&segments, &state, 40, default_fg);
+        let total_width: usize = line.spans.iter().map(|s| s.content.len()).sum();
+        assert_eq!(total_width, 40);
     }
 }

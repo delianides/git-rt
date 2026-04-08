@@ -29,6 +29,20 @@ pub struct AppState {
     focused: bool,
     /// Current branch name
     branch: String,
+    /// Repository name (basename of repo root)
+    repo_name: String,
+    /// Worktree name (basename of worktree path)
+    worktree_name: String,
+    /// HEAD short SHA
+    head_sha: String,
+    /// HEAD commit message (first line)
+    head_message: String,
+    /// Number of stash entries
+    stash_count: usize,
+    /// Ahead/behind upstream (ahead, behind), None if no upstream
+    ahead_behind: Option<(usize, usize)>,
+    /// Repo state (REBASING, MERGING, etc.), None if clean
+    repo_state: Option<String>,
 }
 
 impl AppState {
@@ -47,6 +61,13 @@ impl AppState {
             flash_duration,
             focused: true,
             branch,
+            repo_name: String::new(),
+            worktree_name: String::new(),
+            head_sha: String::new(),
+            head_message: String::new(),
+            stash_count: 0,
+            ahead_behind: None,
+            repo_state: None,
         }
     }
 
@@ -111,6 +132,59 @@ impl AppState {
 
     pub fn set_branch(&mut self, branch: String) {
         self.branch = branch;
+    }
+
+    pub fn repo_name(&self) -> &str {
+        &self.repo_name
+    }
+
+    pub fn set_repo_name(&mut self, name: String) {
+        self.repo_name = name;
+    }
+
+    pub fn worktree_name(&self) -> &str {
+        &self.worktree_name
+    }
+
+    pub fn set_worktree_name(&mut self, name: String) {
+        self.worktree_name = name;
+    }
+
+    pub fn head_sha(&self) -> &str {
+        &self.head_sha
+    }
+
+    pub fn head_message(&self) -> &str {
+        &self.head_message
+    }
+
+    pub fn set_head_info(&mut self, sha: String, message: String) {
+        self.head_sha = sha;
+        self.head_message = message;
+    }
+
+    pub fn stash_count(&self) -> usize {
+        self.stash_count
+    }
+
+    pub fn set_stash_count(&mut self, count: usize) {
+        self.stash_count = count;
+    }
+
+    pub fn ahead_behind(&self) -> Option<(usize, usize)> {
+        self.ahead_behind
+    }
+
+    pub fn set_ahead_behind(&mut self, ab: Option<(usize, usize)>) {
+        self.ahead_behind = ab;
+    }
+
+    pub fn repo_state(&self) -> Option<&str> {
+        self.repo_state.as_deref()
+    }
+
+    pub fn set_repo_state(&mut self, state: Option<String>) {
+        self.repo_state = state;
     }
 
     // -- Navigation --
@@ -457,5 +531,40 @@ mod tests {
 
         state.set_focused(true);
         assert!(state.is_focused());
+    }
+
+    #[test]
+    fn test_repo_metadata_accessors() {
+        let files = vec![make_entry("a.rs", 1, 0)];
+        let state = AppState::new(files, Duration::from_millis(600), "main".to_string());
+
+        assert_eq!(state.repo_name(), "");
+        assert_eq!(state.worktree_name(), "");
+        assert_eq!(state.head_sha(), "");
+        assert_eq!(state.head_message(), "");
+        assert_eq!(state.stash_count(), 0);
+        assert_eq!(state.ahead_behind(), None);
+        assert_eq!(state.repo_state(), None);
+    }
+
+    #[test]
+    fn test_set_repo_metadata() {
+        let files = vec![make_entry("a.rs", 1, 0)];
+        let mut state = AppState::new(files, Duration::from_millis(600), "main".to_string());
+
+        state.set_repo_name("git-rt".to_string());
+        state.set_worktree_name("git-rt".to_string());
+        state.set_head_info("abc1234".to_string(), "fix: some bug".to_string());
+        state.set_stash_count(3);
+        state.set_ahead_behind(Some((2, 1)));
+        state.set_repo_state(Some("REBASING".to_string()));
+
+        assert_eq!(state.repo_name(), "git-rt");
+        assert_eq!(state.worktree_name(), "git-rt");
+        assert_eq!(state.head_sha(), "abc1234");
+        assert_eq!(state.head_message(), "fix: some bug");
+        assert_eq!(state.stash_count(), 3);
+        assert_eq!(state.ahead_behind(), Some((2, 1)));
+        assert_eq!(state.repo_state(), Some("REBASING"));
     }
 }

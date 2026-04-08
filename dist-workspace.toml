@@ -1,0 +1,17 @@
+[workspace]
+members = ["cargo:."]
+
+[dist]
+cargo-dist-version = "0.31.0"
+ci = "github"
+installers = ["shell", "powershell", "homebrew"]
+tap = "delianides/homebrew-git-rt"
+targets = [
+  "x86_64-apple-darwin",
+  "aarch64-apple-darwin",
+  "x86_64-unknown-linux-musl",
+  "aarch64-unknown-linux-musl",
+]
+install-updater = false
+publish-jobs = ["homebrew"]
+allow-dirty = ["ci"]

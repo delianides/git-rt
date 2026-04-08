@@ -4,7 +4,7 @@ version = "0.1.0"
 edition = "2021"
 description = "A real-time terminal dashboard for git changes with configurable actions"
 license = "MIT"
-repository = "https://github.com/OWNER/git-rt"
+repository = "https://github.com/delianides/git-rt"
 readme = "README.md"
 keywords = ["git", "tui", "terminal", "dashboard", "developer-tools"]
 categories = ["command-line-utilities", "development-tools"]
@@ -53,3 +53,7 @@ tempfile = "3"
 lto = true
 strip = true
 codegen-units = 1
+
+[profile.dist]
+inherits = "release"
+lto = "thin"

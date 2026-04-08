@@ -237,6 +237,7 @@ fn render_status_bar(frame: &mut Frame, state: &AppState, bar: &StatusBarConfig,
         state,
         area.width.saturating_sub(1),
         default_fg,
+        &std::collections::HashMap::new(),
     );
 
     // Prepend a space for left padding

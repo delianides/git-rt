@@ -754,6 +754,9 @@ background_color = "#222222"
         std::fs::write(
             &path,
             r#"
+[display.statusbar.top]
+status_line = ""
+
 [display.statusbar.bottom]
 status_line = ""
 "#,

@@ -1,4 +1,5 @@
 pub mod format;
+pub mod status_format;
 
 use anyhow::Result;
 use crossterm::{

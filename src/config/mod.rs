@@ -44,13 +44,13 @@ impl ColorValue {
             "magenta" => Color::Magenta,
             "cyan" => Color::Cyan,
             "gray" | "grey" => Color::Gray,
-            "darkgray" | "darkgrey" => Color::DarkGray,
-            "lightred" => Color::LightRed,
-            "lightgreen" => Color::LightGreen,
-            "lightyellow" => Color::LightYellow,
-            "lightblue" => Color::LightBlue,
-            "lightmagenta" => Color::LightMagenta,
-            "lightcyan" => Color::LightCyan,
+            "darkgray" | "darkgrey" | "dark_gray" | "dark_grey" => Color::DarkGray,
+            "lightred" | "light_red" => Color::LightRed,
+            "lightgreen" | "light_green" => Color::LightGreen,
+            "lightyellow" | "light_yellow" => Color::LightYellow,
+            "lightblue" | "light_blue" => Color::LightBlue,
+            "lightmagenta" | "light_magenta" => Color::LightMagenta,
+            "lightcyan" | "light_cyan" => Color::LightCyan,
             "white" => Color::White,
             _ => Color::Reset,
         }
@@ -155,6 +155,9 @@ pub struct DisplayConfig {
     pub flash_duration_ms: u64,
     /// Vim-style format string for file rows (e.g. "%s %f %- %+")
     pub file_line: String,
+    /// Format strings for statusbar lines (one per row).
+    /// Empty array hides the statusbar entirely.
+    pub status_lines: Vec<String>,
     /// Show expand marker (▼/space) before each file row
     pub show_expand_marker: bool,
     /// Padding around the file list area
@@ -171,6 +174,7 @@ impl Default for DisplayConfig {
             flash_on_change: true,
             flash_duration_ms: 600,
             file_line: "%s %f %- %+".to_string(),
+            status_lines: vec!["%b  %c files  {red}%-{/} {green}%+{/}  %=%R".to_string()],
             show_expand_marker: true,
             padding: PaddingConfig::default(),
             colors: ColorConfig::default(),
@@ -478,6 +482,23 @@ show_expand_marker = false
     }
 
     #[test]
+    fn test_color_value_underscore_variants() {
+        assert_eq!(ColorValue::new("dark_gray").resolve(), Color::DarkGray);
+        assert_eq!(ColorValue::new("light_red").resolve(), Color::LightRed);
+        assert_eq!(ColorValue::new("light_green").resolve(), Color::LightGreen);
+        assert_eq!(ColorValue::new("light_blue").resolve(), Color::LightBlue);
+        assert_eq!(
+            ColorValue::new("light_yellow").resolve(),
+            Color::LightYellow
+        );
+        assert_eq!(
+            ColorValue::new("light_magenta").resolve(),
+            Color::LightMagenta
+        );
+        assert_eq!(ColorValue::new("light_cyan").resolve(), Color::LightCyan);
+    }
+
+    #[test]
     fn test_color_value_named_case_insensitive() {
         let cv = ColorValue::new("Red");
         assert_eq!(cv.resolve(), Color::Red);
@@ -652,6 +673,64 @@ empty_text = "#555555"
             config.display.colors.ui.status_bar_bg.resolve(),
             Color::Rgb(30, 30, 30)
         );
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn test_default_status_lines() {
+        let config = DisplayConfig::default();
+        assert_eq!(config.status_lines.len(), 1);
+        assert_eq!(
+            config.status_lines[0],
+            "%b  %c files  {red}%-{/} {green}%+{/}  %=%R"
+        );
+    }
+
+    #[test]
+    fn test_status_lines_from_toml() {
+        let dir = std::env::temp_dir().join("git-rt-test-status-lines");
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("config.toml");
+        std::fs::write(
+            &path,
+            r#"
+[display]
+status_lines = [
+  "%b  %c files  {red}%-{/} {green}%+{/}",
+  "{dark_gray}%h{/}",
+]
+"#,
+        )
+        .unwrap();
+
+        let config = AppConfig::load(Some(&path)).unwrap();
+        assert_eq!(config.display.status_lines.len(), 2);
+        assert_eq!(
+            config.display.status_lines[0],
+            "%b  %c files  {red}%-{/} {green}%+{/}"
+        );
+        assert_eq!(config.display.status_lines[1], "{dark_gray}%h{/}");
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn test_status_lines_empty_hides_bar() {
+        let dir = std::env::temp_dir().join("git-rt-test-status-lines-empty");
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("config.toml");
+        std::fs::write(
+            &path,
+            r#"
+[display]
+status_lines = []
+"#,
+        )
+        .unwrap();
+
+        let config = AppConfig::load(Some(&path)).unwrap();
+        assert!(config.display.status_lines.is_empty());
 
         std::fs::remove_dir_all(&dir).ok();
     }

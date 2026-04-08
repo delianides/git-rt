@@ -222,6 +222,130 @@ impl GitRepo {
         Ok(parse_unified_diff(&diff_str))
     }
 
+    /// Get the repository name (basename of repo_path)
+    pub fn repo_name(&self) -> String {
+        self.repo_path
+            .file_name()
+            .map(|n| n.to_string_lossy().to_string())
+            .unwrap_or_default()
+    }
+
+    /// Get the worktree name (basename of `git rev-parse --show-toplevel`)
+    /// Handles linked worktrees where repo_path may differ from the toplevel.
+    pub fn worktree_name(&self) -> String {
+        let output = Command::new("git")
+            .args(["rev-parse", "--show-toplevel"])
+            .current_dir(&self.repo_path)
+            .output()
+            .ok();
+
+        if let Some(output) = output {
+            let toplevel = String::from_utf8_lossy(&output.stdout).trim().to_string();
+            if !toplevel.is_empty() {
+                return Path::new(&toplevel)
+                    .file_name()
+                    .map(|n| n.to_string_lossy().to_string())
+                    .unwrap_or_default();
+            }
+        }
+
+        self.repo_name()
+    }
+
+    /// Get HEAD short SHA and commit subject line
+    pub fn head_info(&self) -> Result<(String, String)> {
+        let output = Command::new("git")
+            .args(["log", "-1", "--format=%h%n%s"])
+            .current_dir(&self.repo_path)
+            .output()
+            .context("Failed to run git log")?;
+
+        if !output.status.success() {
+            return Ok((String::new(), String::new()));
+        }
+
+        let text = String::from_utf8_lossy(&output.stdout).trim().to_string();
+        let mut lines = text.lines();
+        let sha = lines.next().unwrap_or("").to_string();
+        let message = lines.next().unwrap_or("").to_string();
+
+        Ok((sha, message))
+    }
+
+    /// Count the number of stash entries
+    pub fn stash_count(&self) -> Result<usize> {
+        let output = Command::new("git")
+            .args(["stash", "list"])
+            .current_dir(&self.repo_path)
+            .output()
+            .context("Failed to run git stash list")?;
+
+        let text = String::from_utf8_lossy(&output.stdout);
+        let count = text.lines().filter(|l| !l.is_empty()).count();
+        Ok(count)
+    }
+
+    /// Get ahead/behind counts relative to upstream.
+    /// Returns None if there is no upstream configured.
+    pub fn ahead_behind(&self) -> Result<Option<(usize, usize)>> {
+        let output = Command::new("git")
+            .args(["rev-list", "--left-right", "--count", "HEAD...@{upstream}"])
+            .current_dir(&self.repo_path)
+            .output()
+            .context("Failed to run git rev-list")?;
+
+        if !output.status.success() {
+            // No upstream configured
+            return Ok(None);
+        }
+
+        let text = String::from_utf8_lossy(&output.stdout).trim().to_string();
+        let parts: Vec<&str> = text.split('\t').collect();
+        if parts.len() == 2 {
+            let ahead = parts[0].parse::<usize>().unwrap_or(0);
+            let behind = parts[1].parse::<usize>().unwrap_or(0);
+            Ok(Some((ahead, behind)))
+        } else {
+            Ok(None)
+        }
+    }
+
+    /// Check if the repo is in a special state (rebase, merge, cherry-pick, etc.)
+    /// Handles `.git` being a file (linked worktree gitdir pointer).
+    pub fn repo_state(&self) -> Option<String> {
+        let git_dir = self.repo_path.join(".git");
+        let git_dir = if git_dir.is_file() {
+            let content = std::fs::read_to_string(&git_dir).ok()?;
+            let path = content.strip_prefix("gitdir: ")?.trim();
+            let p = PathBuf::from(path);
+            if p.is_relative() {
+                self.repo_path.join(p)
+            } else {
+                p
+            }
+        } else {
+            git_dir
+        };
+
+        if git_dir.join("rebase-merge").exists() || git_dir.join("rebase-apply").exists() {
+            return Some("REBASING".to_string());
+        }
+        if git_dir.join("MERGE_HEAD").exists() {
+            return Some("MERGING".to_string());
+        }
+        if git_dir.join("CHERRY_PICK_HEAD").exists() {
+            return Some("CHERRY-PICKING".to_string());
+        }
+        if git_dir.join("REVERT_HEAD").exists() {
+            return Some("REVERTING".to_string());
+        }
+        if git_dir.join("BISECT_LOG").exists() {
+            return Some("BISECTING".to_string());
+        }
+
+        None
+    }
+
     /// Create a synthetic diff for untracked files (all lines as additions)
     fn diff_untracked(&self, path: &str) -> Result<FileDiff> {
         let file_path = self.repo_path.join(path);
@@ -406,6 +530,50 @@ index abc1234..def5678 100644
             assert!(branch.is_ok());
             assert!(!branch.unwrap().is_empty());
         }
+    }
+
+    #[test]
+    fn test_repo_name() {
+        let repo = GitRepo::new(std::path::Path::new(".")).unwrap();
+        let name = repo.repo_name();
+        assert!(!name.is_empty());
+        assert_eq!(name, "git-rt");
+    }
+
+    #[test]
+    fn test_worktree_name() {
+        let repo = GitRepo::new(std::path::Path::new(".")).unwrap();
+        let name = repo.worktree_name();
+        assert!(!name.is_empty());
+    }
+
+    #[test]
+    fn test_head_info() {
+        let repo = GitRepo::new(std::path::Path::new(".")).unwrap();
+        let (sha, message) = repo.head_info().unwrap();
+        assert!(!sha.is_empty());
+        assert!(sha.len() <= 12);
+        assert!(!message.is_empty());
+    }
+
+    #[test]
+    fn test_stash_count_returns_zero_or_more() {
+        let repo = GitRepo::new(std::path::Path::new(".")).unwrap();
+        let count = repo.stash_count().unwrap();
+        assert!(count < 10000);
+    }
+
+    #[test]
+    fn test_ahead_behind_no_panic() {
+        let repo = GitRepo::new(std::path::Path::new(".")).unwrap();
+        let _result = repo.ahead_behind();
+    }
+
+    #[test]
+    fn test_repo_state_clean() {
+        let repo = GitRepo::new(std::path::Path::new(".")).unwrap();
+        let state = repo.repo_state();
+        assert!(state.is_none() || !state.unwrap().is_empty());
     }
 
     #[test]

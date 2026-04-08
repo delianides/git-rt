@@ -557,4 +557,102 @@ show_expand_marker = false
             Color::Rgb(30, 30, 30)
         );
     }
+
+    #[test]
+    fn test_toml_partial_status_colors() {
+        let dir = std::env::temp_dir().join("git-rt-test-color-partial");
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("config.toml");
+        std::fs::write(
+            &path,
+            r##"
+[display.colors.status]
+modified = "#FF8800"
+"##,
+        )
+        .unwrap();
+
+        let config = AppConfig::load(Some(&path)).unwrap();
+        assert_eq!(
+            config.display.colors.status.modified.resolve(),
+            Color::Rgb(255, 136, 0)
+        );
+        // Unspecified fields use defaults
+        assert_eq!(config.display.colors.status.added.resolve(), Color::Green);
+        assert_eq!(
+            config.display.colors.ui.status_bar_bg.resolve(),
+            Color::Rgb(30, 30, 30)
+        );
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn test_toml_full_color_config() {
+        let dir = std::env::temp_dir().join("git-rt-test-color-full");
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("config.toml");
+        std::fs::write(
+            &path,
+            r##"
+[display.colors.status]
+modified = "#FF8800"
+added = "#00FF00"
+deleted = "#FF0000"
+renamed = "#00FFFF"
+untracked = "#888888"
+staged = "#00CC00"
+conflicted = "#FF00FF"
+
+[display.colors.ui]
+status_bar_bg = "#222222"
+status_bar_fg = "#CCCCCC"
+selection_bg = "#444444"
+selection_fg = "#EEEEEE"
+flash_bg = "#665500"
+empty_text = "#555555"
+"##,
+        )
+        .unwrap();
+
+        let config = AppConfig::load(Some(&path)).unwrap();
+        assert_eq!(
+            config.display.colors.status.modified.resolve(),
+            Color::Rgb(255, 136, 0)
+        );
+        assert_eq!(
+            config.display.colors.status.untracked.resolve(),
+            Color::Rgb(136, 136, 136)
+        );
+        assert_eq!(
+            config.display.colors.ui.status_bar_bg.resolve(),
+            Color::Rgb(34, 34, 34)
+        );
+        assert_eq!(
+            config.display.colors.ui.selection_fg.resolve(),
+            Color::Rgb(238, 238, 238)
+        );
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn test_toml_no_colors_uses_defaults() {
+        let dir = std::env::temp_dir().join("git-rt-test-color-none");
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("config.toml");
+        std::fs::write(&path, "debounce_ms = 100\n").unwrap();
+
+        let config = AppConfig::load(Some(&path)).unwrap();
+        assert_eq!(
+            config.display.colors.status.modified.resolve(),
+            Color::Yellow
+        );
+        assert_eq!(
+            config.display.colors.ui.status_bar_bg.resolve(),
+            Color::Rgb(30, 30, 30)
+        );
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
 }

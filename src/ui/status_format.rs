@@ -391,7 +391,7 @@ fn collapse_whitespace(segments: &mut Vec<ExpandedSegment>) {
 fn resolve_style_tag(tag: &StyleTag, palette: &HashMap<String, ColorValue>) -> Style {
     match tag {
         StyleTag::Color(name) => {
-            let color = if let Some(cv) = palette.get(name) {
+            let color = if let Some(cv) = palette.get(&name.to_lowercase()) {
                 cv.resolve()
             } else {
                 ColorValue::new(name).resolve()
@@ -1034,5 +1034,14 @@ mod tests {
         let spans = build_styled_spans(&segments, base_style, &palette);
         assert_eq!(spans.len(), 1);
         assert_eq!(spans[0].style.fg, Some(Color::Rgb(255, 170, 0)));
+    }
+
+    #[test]
+    fn test_resolve_style_tag_unknown_name_falls_back() {
+        let palette = HashMap::new();
+        let tag = StyleTag::Color("nonexistent".to_string());
+        let style = resolve_style_tag(&tag, &palette);
+        // Unknown name falls back to Color::Reset via ColorValue
+        assert_eq!(style.fg, Some(Color::Reset));
     }
 }

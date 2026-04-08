@@ -896,4 +896,61 @@ mod tests {
         let total_width: usize = line.spans.iter().map(|s| s.content.len()).sum();
         assert_eq!(total_width, 40);
     }
+
+    #[test]
+    fn test_resolve_refresh_counter() {
+        let mut state = test_state();
+        // After update_files, refresh_count becomes 1
+        state.update_files(state.files().to_vec());
+        let result = resolve_status_token('r', &state);
+        assert!(result.starts_with('#'));
+    }
+
+    #[test]
+    fn test_resolve_refresh_counter_empty_when_zero() {
+        let state = AppState::new(
+            vec![],
+            std::time::Duration::from_millis(600),
+            "main".to_string(),
+        );
+        assert_eq!(resolve_status_token('r', &state), "");
+    }
+
+    #[test]
+    fn test_resolve_empty_repo_name() {
+        let state = AppState::new(
+            vec![],
+            std::time::Duration::from_millis(600),
+            "main".to_string(),
+        );
+        // Default repo_name is empty
+        assert_eq!(resolve_status_token('R', &state), "");
+        assert_eq!(resolve_status_token('H', &state), "");
+        assert_eq!(resolve_status_token('M', &state), "");
+    }
+
+    #[test]
+    fn test_render_with_dim() {
+        let state = test_state();
+        let segments = parse_status_format("{dim}%h{/}");
+        let default_fg = Color::White;
+        let line = render_status_line(&segments, &state, 80, default_fg);
+        let dim_span = line.spans.iter().find(|s| s.content.contains("j/k:nav"));
+        assert!(dim_span.is_some());
+        assert!(dim_span.unwrap().style.add_modifier.contains(Modifier::DIM));
+    }
+
+    #[test]
+    fn test_render_nested_styles() {
+        let state = test_state();
+        let segments = parse_status_format("{bold}{red}%-{/}{/}");
+        let default_fg = Color::White;
+        let line = render_status_line(&segments, &state, 80, default_fg);
+        let styled_span = line.spans.iter().find(|s| s.content.contains("-5"));
+        assert!(styled_span.is_some());
+        let style = styled_span.unwrap().style;
+        // Should have both bold AND red
+        assert_eq!(style.fg, Some(Color::Red));
+        assert!(style.add_modifier.contains(Modifier::BOLD));
+    }
 }

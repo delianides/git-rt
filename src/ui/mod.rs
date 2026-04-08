@@ -58,7 +58,12 @@ fn render(frame: &mut Frame, state: &AppState, display: &DisplayConfig) {
     let area = frame.area();
 
     // Layout: file list takes up available space, status bar at bottom
-    let status_line_count = display.status_lines.len() as u16;
+    // TODO(Task 3): update to use display.statusbar top/bottom
+    let status_line_count = if display.statusbar.bottom.status_line.is_empty() {
+        0u16
+    } else {
+        1u16
+    };
     let chunks = Layout::default()
         .direction(Direction::Vertical)
         .constraints([Constraint::Min(1), Constraint::Length(status_line_count)])
@@ -189,40 +194,30 @@ fn render_file_list(frame: &mut Frame, state: &AppState, display: &DisplayConfig
 }
 
 /// Render the bottom status bar using configurable format strings
+/// TODO(Task 3): fully update to use display.statusbar top/bottom configs
 fn render_status_bar(frame: &mut Frame, state: &AppState, display: &DisplayConfig, area: Rect) {
-    if display.status_lines.is_empty() {
+    let bottom = &display.statusbar.bottom;
+    if bottom.status_line.is_empty() {
         return;
     }
 
-    let default_fg = display.colors.ui.status_bar_fg.resolve();
-    let bg = display.colors.ui.status_bar_bg.resolve();
+    let default_fg = bottom.foreground_color.resolve();
+    let bg = bottom.background_color.resolve();
 
-    for (i, format_str) in display.status_lines.iter().enumerate() {
-        let row_area = Rect {
-            x: area.x,
-            y: area.y + i as u16,
-            width: area.width,
-            height: 1,
-        };
+    let format_str = &bottom.status_line;
+    let segments = status_format::parse_status_format(format_str);
+    let line = status_format::render_status_line(
+        &segments,
+        state,
+        area.width.saturating_sub(1),
+        default_fg,
+    );
 
-        if row_area.y >= area.y + area.height {
-            break;
-        }
+    // Prepend a space for left padding
+    let mut spans = vec![Span::raw(" ")];
+    spans.extend(line.spans);
+    let padded_line = Line::from(spans);
 
-        let segments = status_format::parse_status_format(format_str);
-        let line = status_format::render_status_line(
-            &segments,
-            state,
-            area.width.saturating_sub(1),
-            default_fg,
-        );
-
-        // Prepend a space for left padding
-        let mut spans = vec![Span::raw(" ")];
-        spans.extend(line.spans);
-        let padded_line = Line::from(spans);
-
-        let bar = Paragraph::new(padded_line).style(Style::default().bg(bg));
-        frame.render_widget(bar, row_area);
-    }
+    let bar = Paragraph::new(padded_line).style(Style::default().bg(bg));
+    frame.render_widget(bar, area);
 }

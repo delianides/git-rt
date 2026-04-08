@@ -5,6 +5,7 @@ use ratatui::{
     text::{Line, Span},
 };
 
+use crate::config::StatusColors;
 use crate::git::{FileEntry, FileStatus};
 
 /// A parsed segment of a format string
@@ -168,25 +169,26 @@ pub fn compute_column_widths(
 }
 
 /// Get the color for a format token
-fn token_color(token: char, entry: &FileEntry) -> Option<Color> {
+fn token_color(token: char, entry: &FileEntry, colors: &StatusColors) -> Option<Color> {
     match token {
-        's' => Some(status_color(&entry.status)),
-        'S' => Some(status_color(&entry.status)),
-        '-' => Some(Color::Red),
-        '+' => Some(Color::Green),
+        's' => Some(status_color(&entry.status, colors)),
+        'S' => Some(status_color(&entry.status, colors)),
+        '-' => Some(colors.deleted.resolve()),
+        '+' => Some(colors.added.resolve()),
         'g' => None, // graph has mixed colors, handled separately
         _ => None,
     }
 }
 
-fn status_color(status: &FileStatus) -> Color {
+fn status_color(status: &FileStatus, colors: &StatusColors) -> Color {
     match status {
-        FileStatus::Modified => Color::Yellow,
-        FileStatus::Added | FileStatus::Untracked => Color::Green,
-        FileStatus::Deleted => Color::Red,
-        FileStatus::Renamed => Color::Cyan,
-        FileStatus::Staged => Color::Green,
-        FileStatus::Conflicted => Color::Magenta,
+        FileStatus::Modified => colors.modified.resolve(),
+        FileStatus::Added => colors.added.resolve(),
+        FileStatus::Untracked => colors.untracked.resolve(),
+        FileStatus::Deleted => colors.deleted.resolve(),
+        FileStatus::Renamed => colors.renamed.resolve(),
+        FileStatus::Staged => colors.staged.resolve(),
+        FileStatus::Conflicted => colors.conflicted.resolve(),
     }
 }
 
@@ -197,6 +199,7 @@ pub fn render_file_line<'a>(
     branch: &str,
     widths: &[usize],
     available_width: u16,
+    colors: &StatusColors,
 ) -> Line<'a> {
     let right_align_pos = segments
         .iter()
@@ -225,15 +228,15 @@ pub fn render_file_line<'a>(
                     let pad_needed = width.saturating_sub(value.len());
                     left_spans.push(Span::styled(
                         ins_part.to_string(),
-                        Style::default().fg(Color::Green),
+                        Style::default().fg(colors.added.resolve()),
                     ));
                     left_spans.push(Span::styled(
                         format!("{}{}", del_part, " ".repeat(pad_needed)),
-                        Style::default().fg(Color::Red),
+                        Style::default().fg(colors.deleted.resolve()),
                     ));
                 } else {
                     let padded = format!("{:<width$}", value);
-                    let style = match token_color(*ch, entry) {
+                    let style = match token_color(*ch, entry, colors) {
                         Some(color) => Style::default().fg(color),
                         None => Style::default(),
                     };
@@ -266,15 +269,15 @@ pub fn render_file_line<'a>(
                     let pad_needed = width.saturating_sub(value.len());
                     right_spans.push(Span::styled(
                         ins_part.to_string(),
-                        Style::default().fg(Color::Green),
+                        Style::default().fg(colors.added.resolve()),
                     ));
                     right_spans.push(Span::styled(
                         format!("{}{}", del_part, " ".repeat(pad_needed)),
-                        Style::default().fg(Color::Red),
+                        Style::default().fg(colors.deleted.resolve()),
                     ));
                 } else {
                     let padded = format!("{:<width$}", value);
-                    let style = match token_color(*ch, entry) {
+                    let style = match token_color(*ch, entry, colors) {
                         Some(color) => Style::default().fg(color),
                         None => Style::default(),
                     };
@@ -423,6 +426,7 @@ mod tests {
         assert!(segments.is_empty());
     }
 
+    use crate::config::{ColorValue, StatusColors};
     use crate::git::{FileEntry, FileStatus};
 
     fn test_entry() -> FileEntry {
@@ -616,7 +620,8 @@ mod tests {
             deletions: 2,
         };
         let widths = vec![1, 7, 2, 2];
-        let line = render_file_line(&segments, &entry, "main", &widths, 80);
+        let colors = StatusColors::default();
+        let line = render_file_line(&segments, &entry, "main", &widths, 80, &colors);
         // Expect spans: status, literal " ", path, literal " ", deletions, literal " ", insertions
         assert_eq!(line.spans.len(), 7);
     }
@@ -631,10 +636,33 @@ mod tests {
             deletions: 2,
         };
         let widths = vec![2, 2];
-        let line = render_file_line(&segments, &entry, "main", &widths, 80);
+        let colors = StatusColors::default();
+        let line = render_file_line(&segments, &entry, "main", &widths, 80, &colors);
         // First span is deletions (red), then literal, then insertions (green)
         assert_eq!(line.spans[0].style.fg, Some(Color::Red));
         assert_eq!(line.spans[2].style.fg, Some(Color::Green));
+    }
+
+    #[test]
+    fn test_render_file_line_custom_colors() {
+        let segments = parse_format("%s %- %+");
+        let entry = FileEntry {
+            path: "a.rs".to_string(),
+            status: FileStatus::Modified,
+            insertions: 5,
+            deletions: 2,
+        };
+        let widths = vec![1, 2, 2];
+        let colors = StatusColors {
+            modified: ColorValue::new("#FF8800"),
+            deleted: ColorValue::new("#AA0000"),
+            added: ColorValue::new("#00AA00"),
+            ..StatusColors::default()
+        };
+        let line = render_file_line(&segments, &entry, "main", &widths, 80, &colors);
+        assert_eq!(line.spans[0].style.fg, Some(Color::Rgb(255, 136, 0)));
+        assert_eq!(line.spans[2].style.fg, Some(Color::Rgb(170, 0, 0)));
+        assert_eq!(line.spans[4].style.fg, Some(Color::Rgb(0, 170, 0)));
     }
 
     #[test]
@@ -757,7 +785,8 @@ mod tests {
             deletions: 2,
         };
         let widths = compute_column_widths(&segments, std::slice::from_ref(&entry), "main");
-        let line = render_file_line(&segments, &entry, "main", &widths, 60);
+        let colors = StatusColors::default();
+        let line = render_file_line(&segments, &entry, "main", &widths, 60, &colors);
         // Left: status, " ", path, " " = 4 spans
         // Spacer: 1 span
         // Right: " ", deletions, " ", insertions = 4 spans
@@ -778,7 +807,8 @@ mod tests {
             deletions: 2,
         };
         let widths = vec![1, 7, 2, 2];
-        let line = render_file_line(&segments, &entry, "main", &widths, 80);
+        let colors = StatusColors::default();
+        let line = render_file_line(&segments, &entry, "main", &widths, 80, &colors);
         // Same as before: 7 spans, no spacer
         assert_eq!(line.spans.len(), 7);
     }

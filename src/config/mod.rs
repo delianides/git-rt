@@ -2,7 +2,117 @@ use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result};
+use ratatui::style::Color;
 use serde::{Deserialize, Serialize};
+
+/// A color value that can be a named color or hex RGB string.
+/// Resolves to a `ratatui::style::Color` at render time.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(transparent)]
+pub struct ColorValue(String);
+
+impl ColorValue {
+    /// Construct a `ColorValue` from a raw string (named color or hex).
+    pub fn new(s: &str) -> Self {
+        Self(s.to_string())
+    }
+
+    /// Resolve the color string to a ratatui Color.
+    /// Supports named colors (case-insensitive) and hex RGB (#RRGGBB).
+    /// Falls back to Color::Reset for invalid values.
+    pub fn resolve(&self) -> Color {
+        let s = self.0.trim();
+
+        if let Some(hex) = s.strip_prefix('#') {
+            if hex.len() == 6 {
+                let r = u8::from_str_radix(&hex[0..2], 16);
+                let g = u8::from_str_radix(&hex[2..4], 16);
+                let b = u8::from_str_radix(&hex[4..6], 16);
+                if let (Ok(r), Ok(g), Ok(b)) = (r, g, b) {
+                    return Color::Rgb(r, g, b);
+                }
+            }
+            return Color::Reset;
+        }
+
+        match s.to_lowercase().as_str() {
+            "black" => Color::Black,
+            "red" => Color::Red,
+            "green" => Color::Green,
+            "yellow" => Color::Yellow,
+            "blue" => Color::Blue,
+            "magenta" => Color::Magenta,
+            "cyan" => Color::Cyan,
+            "gray" | "grey" => Color::Gray,
+            "darkgray" | "darkgrey" => Color::DarkGray,
+            "lightred" => Color::LightRed,
+            "lightgreen" => Color::LightGreen,
+            "lightyellow" => Color::LightYellow,
+            "lightblue" => Color::LightBlue,
+            "lightmagenta" => Color::LightMagenta,
+            "lightcyan" => Color::LightCyan,
+            "white" => Color::White,
+            _ => Color::Reset,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(default)]
+pub struct ColorConfig {
+    pub status: StatusColors,
+    pub ui: UiColors,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
+pub struct StatusColors {
+    pub modified: ColorValue,
+    pub added: ColorValue,
+    pub deleted: ColorValue,
+    pub renamed: ColorValue,
+    pub untracked: ColorValue,
+    pub staged: ColorValue,
+    pub conflicted: ColorValue,
+}
+
+impl Default for StatusColors {
+    fn default() -> Self {
+        Self {
+            modified: ColorValue::new("yellow"),
+            added: ColorValue::new("green"),
+            deleted: ColorValue::new("red"),
+            renamed: ColorValue::new("cyan"),
+            untracked: ColorValue::new("green"),
+            staged: ColorValue::new("green"),
+            conflicted: ColorValue::new("magenta"),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
+pub struct UiColors {
+    pub status_bar_bg: ColorValue,
+    pub status_bar_fg: ColorValue,
+    pub selection_bg: ColorValue,
+    pub selection_fg: ColorValue,
+    pub flash_bg: ColorValue,
+    pub empty_text: ColorValue,
+}
+
+impl Default for UiColors {
+    fn default() -> Self {
+        Self {
+            status_bar_bg: ColorValue::new("#1E1E1E"),
+            status_bar_fg: ColorValue::new("white"),
+            selection_bg: ColorValue::new("darkgray"),
+            selection_fg: ColorValue::new("white"),
+            flash_bg: ColorValue::new("#64641E"),
+            empty_text: ColorValue::new("darkgray"),
+        }
+    }
+}
 
 /// Top-level application configuration
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -49,6 +159,8 @@ pub struct DisplayConfig {
     pub show_expand_marker: bool,
     /// Padding around the file list area
     pub padding: PaddingConfig,
+    /// Color theme configuration
+    pub colors: ColorConfig,
 }
 
 impl Default for DisplayConfig {
@@ -61,6 +173,7 @@ impl Default for DisplayConfig {
             file_line: "%s %f %- %+".to_string(),
             show_expand_marker: true,
             padding: PaddingConfig::default(),
+            colors: ColorConfig::default(),
         }
     }
 }
@@ -318,6 +431,227 @@ show_expand_marker = false
         let config = AppConfig::load(Some(&path)).unwrap();
         assert_eq!(config.display.file_line, "%f %g");
         assert!(!config.display.show_expand_marker);
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn test_color_value_named_red() {
+        let cv = ColorValue::new("red");
+        assert_eq!(cv.resolve(), Color::Red);
+    }
+
+    #[test]
+    fn test_color_value_named_green() {
+        let cv = ColorValue::new("green");
+        assert_eq!(cv.resolve(), Color::Green);
+    }
+
+    #[test]
+    fn test_color_value_named_yellow() {
+        let cv = ColorValue::new("yellow");
+        assert_eq!(cv.resolve(), Color::Yellow);
+    }
+
+    #[test]
+    fn test_color_value_named_cyan() {
+        let cv = ColorValue::new("cyan");
+        assert_eq!(cv.resolve(), Color::Cyan);
+    }
+
+    #[test]
+    fn test_color_value_named_magenta() {
+        let cv = ColorValue::new("magenta");
+        assert_eq!(cv.resolve(), Color::Magenta);
+    }
+
+    #[test]
+    fn test_color_value_named_white() {
+        let cv = ColorValue::new("white");
+        assert_eq!(cv.resolve(), Color::White);
+    }
+
+    #[test]
+    fn test_color_value_named_darkgray() {
+        let cv = ColorValue::new("darkgray");
+        assert_eq!(cv.resolve(), Color::DarkGray);
+    }
+
+    #[test]
+    fn test_color_value_named_case_insensitive() {
+        let cv = ColorValue::new("Red");
+        assert_eq!(cv.resolve(), Color::Red);
+    }
+
+    #[test]
+    fn test_color_value_hex() {
+        let cv = ColorValue::new("#FF5733");
+        assert_eq!(cv.resolve(), Color::Rgb(255, 87, 51));
+    }
+
+    #[test]
+    fn test_color_value_hex_lowercase() {
+        let cv = ColorValue::new("#ff5733");
+        assert_eq!(cv.resolve(), Color::Rgb(255, 87, 51));
+    }
+
+    #[test]
+    fn test_color_value_hex_black() {
+        let cv = ColorValue::new("#000000");
+        assert_eq!(cv.resolve(), Color::Rgb(0, 0, 0));
+    }
+
+    #[test]
+    fn test_color_value_hex_white() {
+        let cv = ColorValue::new("#FFFFFF");
+        assert_eq!(cv.resolve(), Color::Rgb(255, 255, 255));
+    }
+
+    #[test]
+    fn test_color_value_invalid_fallback() {
+        let cv = ColorValue::new("notacolor");
+        assert_eq!(cv.resolve(), Color::Reset);
+    }
+
+    #[test]
+    fn test_color_value_invalid_hex_fallback() {
+        let cv = ColorValue::new("#ZZZZZZ");
+        assert_eq!(cv.resolve(), Color::Reset);
+    }
+
+    #[test]
+    fn test_color_value_empty_fallback() {
+        let cv = ColorValue::new("");
+        assert_eq!(cv.resolve(), Color::Reset);
+    }
+
+    #[test]
+    fn test_status_colors_defaults() {
+        let colors = StatusColors::default();
+        assert_eq!(colors.modified.resolve(), Color::Yellow);
+        assert_eq!(colors.added.resolve(), Color::Green);
+        assert_eq!(colors.deleted.resolve(), Color::Red);
+        assert_eq!(colors.renamed.resolve(), Color::Cyan);
+        assert_eq!(colors.untracked.resolve(), Color::Green);
+        assert_eq!(colors.staged.resolve(), Color::Green);
+        assert_eq!(colors.conflicted.resolve(), Color::Magenta);
+    }
+
+    #[test]
+    fn test_ui_colors_defaults() {
+        let colors = UiColors::default();
+        assert_eq!(colors.status_bar_bg.resolve(), Color::Rgb(30, 30, 30));
+        assert_eq!(colors.status_bar_fg.resolve(), Color::White);
+        assert_eq!(colors.selection_bg.resolve(), Color::DarkGray);
+        assert_eq!(colors.selection_fg.resolve(), Color::White);
+        assert_eq!(colors.flash_bg.resolve(), Color::Rgb(100, 100, 30));
+        assert_eq!(colors.empty_text.resolve(), Color::DarkGray);
+    }
+
+    #[test]
+    fn test_color_config_on_display_config() {
+        let display = DisplayConfig::default();
+        assert_eq!(display.colors.status.modified.resolve(), Color::Yellow);
+        assert_eq!(
+            display.colors.ui.status_bar_bg.resolve(),
+            Color::Rgb(30, 30, 30)
+        );
+    }
+
+    #[test]
+    fn test_toml_partial_status_colors() {
+        let dir = std::env::temp_dir().join("git-rt-test-color-partial");
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("config.toml");
+        std::fs::write(
+            &path,
+            r##"
+[display.colors.status]
+modified = "#FF8800"
+"##,
+        )
+        .unwrap();
+
+        let config = AppConfig::load(Some(&path)).unwrap();
+        assert_eq!(
+            config.display.colors.status.modified.resolve(),
+            Color::Rgb(255, 136, 0)
+        );
+        // Unspecified fields use defaults
+        assert_eq!(config.display.colors.status.added.resolve(), Color::Green);
+        assert_eq!(
+            config.display.colors.ui.status_bar_bg.resolve(),
+            Color::Rgb(30, 30, 30)
+        );
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn test_toml_full_color_config() {
+        let dir = std::env::temp_dir().join("git-rt-test-color-full");
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("config.toml");
+        std::fs::write(
+            &path,
+            r##"
+[display.colors.status]
+modified = "#FF8800"
+added = "#00FF00"
+deleted = "#FF0000"
+renamed = "#00FFFF"
+untracked = "#888888"
+staged = "#00CC00"
+conflicted = "#FF00FF"
+
+[display.colors.ui]
+status_bar_bg = "#222222"
+status_bar_fg = "#CCCCCC"
+selection_bg = "#444444"
+selection_fg = "#EEEEEE"
+flash_bg = "#665500"
+empty_text = "#555555"
+"##,
+        )
+        .unwrap();
+
+        let config = AppConfig::load(Some(&path)).unwrap();
+        assert_eq!(
+            config.display.colors.status.modified.resolve(),
+            Color::Rgb(255, 136, 0)
+        );
+        assert_eq!(
+            config.display.colors.status.untracked.resolve(),
+            Color::Rgb(136, 136, 136)
+        );
+        assert_eq!(
+            config.display.colors.ui.status_bar_bg.resolve(),
+            Color::Rgb(34, 34, 34)
+        );
+        assert_eq!(
+            config.display.colors.ui.selection_fg.resolve(),
+            Color::Rgb(238, 238, 238)
+        );
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn test_toml_no_colors_uses_defaults() {
+        let dir = std::env::temp_dir().join("git-rt-test-color-none");
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("config.toml");
+        std::fs::write(&path, "debounce_ms = 100\n").unwrap();
+
+        let config = AppConfig::load(Some(&path)).unwrap();
+        assert_eq!(
+            config.display.colors.status.modified.resolve(),
+            Color::Yellow
+        );
+        assert_eq!(
+            config.display.colors.ui.status_bar_bg.resolve(),
+            Color::Rgb(30, 30, 30)
+        );
 
         std::fs::remove_dir_all(&dir).ok();
     }

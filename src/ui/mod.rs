@@ -82,7 +82,7 @@ fn render_file_list(frame: &mut Frame, state: &AppState, display: &DisplayConfig
 
     if files.is_empty() {
         let msg = Paragraph::new("  No changes detected. Watching for file changes...")
-            .style(Style::default().fg(Color::DarkGray));
+            .style(Style::default().fg(display.colors.ui.empty_text.resolve()));
         frame.render_widget(msg, area);
         return;
     }
@@ -102,8 +102,14 @@ fn render_file_list(frame: &mut Frame, state: &AppState, display: &DisplayConfig
         let line_width = area
             .width
             .saturating_sub(marker_width + pad.left + pad.right);
-        let mut line =
-            format::render_file_line(&segments, file, state.branch(), &widths, line_width);
+        let mut line = format::render_file_line(
+            &segments,
+            file,
+            state.branch(),
+            &widths,
+            line_width,
+            &display.colors.status,
+        );
 
         // Prepend expand marker (after left padding)
         if display.show_expand_marker {
@@ -118,7 +124,7 @@ fn render_file_list(frame: &mut Frame, state: &AppState, display: &DisplayConfig
 
         let mut item = ListItem::new(line);
         if display.flash_on_change && state.is_flashing(&file.path) {
-            item = item.style(Style::default().bg(Color::Rgb(100, 100, 30)));
+            item = item.style(Style::default().bg(display.colors.ui.flash_bg.resolve()));
         }
         items.push(item);
         list_index_to_file_index.push(Some(i));
@@ -163,7 +169,9 @@ fn render_file_list(frame: &mut Frame, state: &AppState, display: &DisplayConfig
         .unwrap_or(0);
 
     let highlight = if state.is_focused() {
-        Style::default().bg(Color::DarkGray)
+        Style::default()
+            .bg(display.colors.ui.selection_bg.resolve())
+            .fg(display.colors.ui.selection_fg.resolve())
     } else {
         Style::default()
     };
@@ -187,12 +195,18 @@ fn render_status_bar(frame: &mut Frame, state: &AppState, display: &DisplayConfi
     let mut spans = vec![
         Span::styled(
             format!(" {file_count} files changed"),
-            Style::default().fg(Color::White),
+            Style::default().fg(display.colors.ui.status_bar_fg.resolve()),
         ),
         Span::raw("  "),
-        Span::styled(format!("-{total_del}"), Style::default().fg(Color::Red)),
+        Span::styled(
+            format!("-{total_del}"),
+            Style::default().fg(display.colors.status.deleted.resolve()),
+        ),
         Span::raw("  "),
-        Span::styled(format!("+{total_ins}"), Style::default().fg(Color::Green)),
+        Span::styled(
+            format!("+{total_ins}"),
+            Style::default().fg(display.colors.status.added.resolve()),
+        ),
     ];
 
     if display.show_refresh_counter {
@@ -213,6 +227,7 @@ fn render_status_bar(frame: &mut Frame, state: &AppState, display: &DisplayConfi
 
     let status = Line::from(spans);
 
-    let bar = Paragraph::new(status).style(Style::default().bg(Color::Rgb(30, 30, 30)));
+    let bar = Paragraph::new(status)
+        .style(Style::default().bg(display.colors.ui.status_bar_bg.resolve()));
     frame.render_widget(bar, area);
 }

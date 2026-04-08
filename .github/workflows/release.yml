@@ -296,22 +296,6 @@ jobs:
           pattern: artifacts-*
           path: Formula/
           merge-multiple: true
-      # Add auth headers to formula URLs so Homebrew can download from private repo
-      - name: Inject auth headers for private repo
-        run: |
-          for f in Formula/*.rb; do
-            [ -f "$f" ] || continue
-            python3 -c "
-          import re, sys
-          text = open(sys.argv[1]).read()
-          text = re.sub(
-              r'url \"(https://github\.com/delianides/git-rt/releases/download/[^\"]+)\"',
-              r'url \"\1\",\n      headers: [\"Authorization: token #{ENV.fetch(\\\\\"HOMEBREW_GITHUB_API_TOKEN\\\\\")}\"]',
-              text
-          )
-          open(sys.argv[1], 'w').write(text)
-          " "$f"
-          done
       # This is extra complex because you can make your Formula name not match your app name
       # so we need to find releases with a *.rb file, and publish with that filename.
       - name: Commit formula files

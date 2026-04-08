@@ -2,7 +2,59 @@ use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result};
+use ratatui::style::Color;
 use serde::{Deserialize, Serialize};
+
+/// A color value that can be a named color or hex RGB string.
+/// Resolves to a `ratatui::style::Color` at render time.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(transparent)]
+pub struct ColorValue(String);
+
+impl ColorValue {
+    pub fn new(s: &str) -> Self {
+        Self(s.to_string())
+    }
+
+    /// Resolve the color string to a ratatui Color.
+    /// Supports named colors (case-insensitive) and hex RGB (#RRGGBB).
+    /// Falls back to Color::Reset for invalid values.
+    pub fn resolve(&self) -> Color {
+        let s = self.0.trim();
+
+        if let Some(hex) = s.strip_prefix('#') {
+            if hex.len() == 6 {
+                let r = u8::from_str_radix(&hex[0..2], 16);
+                let g = u8::from_str_radix(&hex[2..4], 16);
+                let b = u8::from_str_radix(&hex[4..6], 16);
+                if let (Ok(r), Ok(g), Ok(b)) = (r, g, b) {
+                    return Color::Rgb(r, g, b);
+                }
+            }
+            return Color::Reset;
+        }
+
+        match s.to_lowercase().as_str() {
+            "black" => Color::Black,
+            "red" => Color::Red,
+            "green" => Color::Green,
+            "yellow" => Color::Yellow,
+            "blue" => Color::Blue,
+            "magenta" => Color::Magenta,
+            "cyan" => Color::Cyan,
+            "gray" | "grey" => Color::Gray,
+            "darkgray" | "darkgrey" => Color::DarkGray,
+            "lightred" => Color::LightRed,
+            "lightgreen" => Color::LightGreen,
+            "lightyellow" => Color::LightYellow,
+            "lightblue" => Color::LightBlue,
+            "lightmagenta" => Color::LightMagenta,
+            "lightcyan" => Color::LightCyan,
+            "white" => Color::White,
+            _ => Color::Reset,
+        }
+    }
+}
 
 /// Top-level application configuration
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -320,5 +372,95 @@ show_expand_marker = false
         assert!(!config.display.show_expand_marker);
 
         std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn test_color_value_named_red() {
+        let cv = ColorValue::new("red");
+        assert_eq!(cv.resolve(), Color::Red);
+    }
+
+    #[test]
+    fn test_color_value_named_green() {
+        let cv = ColorValue::new("green");
+        assert_eq!(cv.resolve(), Color::Green);
+    }
+
+    #[test]
+    fn test_color_value_named_yellow() {
+        let cv = ColorValue::new("yellow");
+        assert_eq!(cv.resolve(), Color::Yellow);
+    }
+
+    #[test]
+    fn test_color_value_named_cyan() {
+        let cv = ColorValue::new("cyan");
+        assert_eq!(cv.resolve(), Color::Cyan);
+    }
+
+    #[test]
+    fn test_color_value_named_magenta() {
+        let cv = ColorValue::new("magenta");
+        assert_eq!(cv.resolve(), Color::Magenta);
+    }
+
+    #[test]
+    fn test_color_value_named_white() {
+        let cv = ColorValue::new("white");
+        assert_eq!(cv.resolve(), Color::White);
+    }
+
+    #[test]
+    fn test_color_value_named_darkgray() {
+        let cv = ColorValue::new("darkgray");
+        assert_eq!(cv.resolve(), Color::DarkGray);
+    }
+
+    #[test]
+    fn test_color_value_named_case_insensitive() {
+        let cv = ColorValue::new("Red");
+        assert_eq!(cv.resolve(), Color::Red);
+    }
+
+    #[test]
+    fn test_color_value_hex() {
+        let cv = ColorValue::new("#FF5733");
+        assert_eq!(cv.resolve(), Color::Rgb(255, 87, 51));
+    }
+
+    #[test]
+    fn test_color_value_hex_lowercase() {
+        let cv = ColorValue::new("#ff5733");
+        assert_eq!(cv.resolve(), Color::Rgb(255, 87, 51));
+    }
+
+    #[test]
+    fn test_color_value_hex_black() {
+        let cv = ColorValue::new("#000000");
+        assert_eq!(cv.resolve(), Color::Rgb(0, 0, 0));
+    }
+
+    #[test]
+    fn test_color_value_hex_white() {
+        let cv = ColorValue::new("#FFFFFF");
+        assert_eq!(cv.resolve(), Color::Rgb(255, 255, 255));
+    }
+
+    #[test]
+    fn test_color_value_invalid_fallback() {
+        let cv = ColorValue::new("notacolor");
+        assert_eq!(cv.resolve(), Color::Reset);
+    }
+
+    #[test]
+    fn test_color_value_invalid_hex_fallback() {
+        let cv = ColorValue::new("#ZZZZZZ");
+        assert_eq!(cv.resolve(), Color::Reset);
+    }
+
+    #[test]
+    fn test_color_value_empty_fallback() {
+        let cv = ColorValue::new("");
+        assert_eq!(cv.resolve(), Color::Reset);
     }
 }

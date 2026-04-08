@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.2.3](https://github.com/delianides/git-rt/compare/v0.2.2...v0.2.3) (2026-04-08)
+
+
+### Bug Fixes
+
+* revert auth header injection ([#17](https://github.com/delianides/git-rt/issues/17)) ([0a9351b](https://github.com/delianides/git-rt/commit/0a9351b01fa8517deb426dae2ce49d50c06d2adf))
+
 ## [0.2.2](https://github.com/delianides/git-rt/compare/v0.2.1...v0.2.2) (2026-04-08)
 
 

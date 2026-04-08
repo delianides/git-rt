@@ -57,6 +57,63 @@ impl ColorValue {
     }
 }
 
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(default)]
+pub struct ColorConfig {
+    pub status: StatusColors,
+    pub ui: UiColors,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
+pub struct StatusColors {
+    pub modified: ColorValue,
+    pub added: ColorValue,
+    pub deleted: ColorValue,
+    pub renamed: ColorValue,
+    pub untracked: ColorValue,
+    pub staged: ColorValue,
+    pub conflicted: ColorValue,
+}
+
+impl Default for StatusColors {
+    fn default() -> Self {
+        Self {
+            modified: ColorValue::new("yellow"),
+            added: ColorValue::new("green"),
+            deleted: ColorValue::new("red"),
+            renamed: ColorValue::new("cyan"),
+            untracked: ColorValue::new("green"),
+            staged: ColorValue::new("green"),
+            conflicted: ColorValue::new("magenta"),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
+pub struct UiColors {
+    pub status_bar_bg: ColorValue,
+    pub status_bar_fg: ColorValue,
+    pub selection_bg: ColorValue,
+    pub selection_fg: ColorValue,
+    pub flash_bg: ColorValue,
+    pub empty_text: ColorValue,
+}
+
+impl Default for UiColors {
+    fn default() -> Self {
+        Self {
+            status_bar_bg: ColorValue::new("#1E1E1E"),
+            status_bar_fg: ColorValue::new("white"),
+            selection_bg: ColorValue::new("darkgray"),
+            selection_fg: ColorValue::new("white"),
+            flash_bg: ColorValue::new("#64641E"),
+            empty_text: ColorValue::new("darkgray"),
+        }
+    }
+}
+
 /// Top-level application configuration
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
@@ -102,6 +159,8 @@ pub struct DisplayConfig {
     pub show_expand_marker: bool,
     /// Padding around the file list area
     pub padding: PaddingConfig,
+    /// Color theme configuration
+    pub colors: ColorConfig,
 }
 
 impl Default for DisplayConfig {
@@ -114,6 +173,7 @@ impl Default for DisplayConfig {
             file_line: "%s %f %- %+".to_string(),
             show_expand_marker: true,
             padding: PaddingConfig::default(),
+            colors: ColorConfig::default(),
         }
     }
 }
@@ -463,5 +523,38 @@ show_expand_marker = false
     fn test_color_value_empty_fallback() {
         let cv = ColorValue::new("");
         assert_eq!(cv.resolve(), Color::Reset);
+    }
+
+    #[test]
+    fn test_status_colors_defaults() {
+        let colors = StatusColors::default();
+        assert_eq!(colors.modified.resolve(), Color::Yellow);
+        assert_eq!(colors.added.resolve(), Color::Green);
+        assert_eq!(colors.deleted.resolve(), Color::Red);
+        assert_eq!(colors.renamed.resolve(), Color::Cyan);
+        assert_eq!(colors.untracked.resolve(), Color::Green);
+        assert_eq!(colors.staged.resolve(), Color::Green);
+        assert_eq!(colors.conflicted.resolve(), Color::Magenta);
+    }
+
+    #[test]
+    fn test_ui_colors_defaults() {
+        let colors = UiColors::default();
+        assert_eq!(colors.status_bar_bg.resolve(), Color::Rgb(30, 30, 30));
+        assert_eq!(colors.status_bar_fg.resolve(), Color::White);
+        assert_eq!(colors.selection_bg.resolve(), Color::DarkGray);
+        assert_eq!(colors.selection_fg.resolve(), Color::White);
+        assert_eq!(colors.flash_bg.resolve(), Color::Rgb(100, 100, 30));
+        assert_eq!(colors.empty_text.resolve(), Color::DarkGray);
+    }
+
+    #[test]
+    fn test_color_config_on_display_config() {
+        let display = DisplayConfig::default();
+        assert_eq!(display.colors.status.modified.resolve(), Color::Yellow);
+        assert_eq!(
+            display.colors.ui.status_bar_bg.resolve(),
+            Color::Rgb(30, 30, 30)
+        );
     }
 }

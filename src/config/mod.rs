@@ -44,13 +44,13 @@ impl ColorValue {
             "magenta" => Color::Magenta,
             "cyan" => Color::Cyan,
             "gray" | "grey" => Color::Gray,
-            "darkgray" | "darkgrey" => Color::DarkGray,
-            "lightred" => Color::LightRed,
-            "lightgreen" => Color::LightGreen,
-            "lightyellow" => Color::LightYellow,
-            "lightblue" => Color::LightBlue,
-            "lightmagenta" => Color::LightMagenta,
-            "lightcyan" => Color::LightCyan,
+            "darkgray" | "darkgrey" | "dark_gray" | "dark_grey" => Color::DarkGray,
+            "lightred" | "light_red" => Color::LightRed,
+            "lightgreen" | "light_green" => Color::LightGreen,
+            "lightyellow" | "light_yellow" => Color::LightYellow,
+            "lightblue" | "light_blue" => Color::LightBlue,
+            "lightmagenta" | "light_magenta" => Color::LightMagenta,
+            "lightcyan" | "light_cyan" => Color::LightCyan,
             "white" => Color::White,
             _ => Color::Reset,
         }
@@ -479,6 +479,23 @@ show_expand_marker = false
     fn test_color_value_named_darkgray() {
         let cv = ColorValue::new("darkgray");
         assert_eq!(cv.resolve(), Color::DarkGray);
+    }
+
+    #[test]
+    fn test_color_value_underscore_variants() {
+        assert_eq!(ColorValue::new("dark_gray").resolve(), Color::DarkGray);
+        assert_eq!(ColorValue::new("light_red").resolve(), Color::LightRed);
+        assert_eq!(ColorValue::new("light_green").resolve(), Color::LightGreen);
+        assert_eq!(ColorValue::new("light_blue").resolve(), Color::LightBlue);
+        assert_eq!(
+            ColorValue::new("light_yellow").resolve(),
+            Color::LightYellow
+        );
+        assert_eq!(
+            ColorValue::new("light_magenta").resolve(),
+            Color::LightMagenta
+        );
+        assert_eq!(ColorValue::new("light_cyan").resolve(), Color::LightCyan);
     }
 
     #[test]

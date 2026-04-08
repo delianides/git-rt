@@ -206,8 +206,8 @@ pub fn resolve_status_token(token: char, state: &AppState) -> String {
             }
         }
         'a' => match state.ahead_behind() {
+            Some((0, 0)) | None => String::new(),
             Some((ahead, behind)) => format!("\u{2191}{ahead} \u{2193}{behind}"),
-            None => String::new(),
         },
         'g' => state.repo_state().unwrap_or("").to_string(),
         'H' => state.head_sha().to_string(),
@@ -723,6 +723,13 @@ mod tests {
     fn test_resolve_ahead_behind() {
         let state = test_state();
         assert_eq!(resolve_status_token('a', &state), "\u{2191}3 \u{2193}1");
+    }
+
+    #[test]
+    fn test_resolve_ahead_behind_synced_is_empty() {
+        let mut state = test_state();
+        state.set_ahead_behind(Some((0, 0)));
+        assert_eq!(resolve_status_token('a', &state), "");
     }
 
     #[test]

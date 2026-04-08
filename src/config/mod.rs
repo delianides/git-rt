@@ -658,8 +658,6 @@ staged = "#00CC00"
 conflicted = "#FF00FF"
 
 [display.colors.ui]
-status_bar_bg = "#222222"
-status_bar_fg = "#CCCCCC"
 selection_bg = "#444444"
 selection_fg = "#EEEEEE"
 flash_bg = "#665500"
@@ -706,6 +704,70 @@ empty_text = "#555555"
     }
 
     #[test]
+    fn test_statusbar_from_toml() {
+        let dir = std::env::temp_dir().join("git-rt-test-statusbar");
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("config.toml");
+        std::fs::write(
+            &path,
+            r##"
+[display.statusbar.top]
+status_line = "{dim}%h{/}"
+foreground_color = "cyan"
+
+[display.statusbar.bottom]
+status_line = "%b %c"
+background_color = "#222222"
+"##,
+        )
+        .unwrap();
+
+        let config = AppConfig::load(Some(&path)).unwrap();
+        assert_eq!(config.display.statusbar.top.status_line, "{dim}%h{/}");
+        assert_eq!(
+            config.display.statusbar.top.foreground_color.resolve(),
+            Color::Cyan
+        );
+        // Unspecified fields use defaults
+        assert_eq!(
+            config.display.statusbar.top.background_color.resolve(),
+            Color::Rgb(30, 30, 30)
+        );
+        assert_eq!(config.display.statusbar.bottom.status_line, "%b %c");
+        assert_eq!(
+            config.display.statusbar.bottom.background_color.resolve(),
+            Color::Rgb(34, 34, 34)
+        );
+        assert_eq!(
+            config.display.statusbar.bottom.foreground_color.resolve(),
+            Color::White
+        );
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn test_statusbar_empty_hides_bar() {
+        let dir = std::env::temp_dir().join("git-rt-test-statusbar-empty");
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("config.toml");
+        std::fs::write(
+            &path,
+            r#"
+[display.statusbar.bottom]
+status_line = ""
+"#,
+        )
+        .unwrap();
+
+        let config = AppConfig::load(Some(&path)).unwrap();
+        assert!(config.display.statusbar.top.status_line.is_empty());
+        assert!(config.display.statusbar.bottom.status_line.is_empty());
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
     fn test_default_statusbar_config() {
         let config = DisplayConfig::default();
         assert!(config.statusbar.top.status_line.is_empty());
@@ -729,15 +791,5 @@ empty_text = "#555555"
             config.statusbar.bottom.background_color.resolve(),
             Color::Rgb(30, 30, 30)
         );
-    }
-
-    #[test]
-    fn test_statusbar_bottom_empty_hides_bar() {
-        // An empty status_line string means the bar is hidden
-        let config = StatusBarConfig {
-            status_line: String::new(),
-            ..StatusBarConfig::default()
-        };
-        assert!(config.status_line.is_empty());
     }
 }

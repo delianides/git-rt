@@ -21,6 +21,8 @@ pub enum WorktreeEvent {
     Added(WorktreeInfo),
     Removed(String),
     Activity(String),
+    /// The .git/worktrees/ directory structure changed (worktree added or removed on disk)
+    StructureChanged,
 }
 
 /// Read a worktree's info from `.git/worktrees/<name>/`.
@@ -133,8 +135,7 @@ impl WorktreeMonitor {
             None,
             move |result: std::result::Result<Vec<DebouncedEvent>, Vec<notify::Error>>| {
                 if let Ok(_events) = result {
-                    let _ =
-                        structure_tx.try_send(WorktreeEvent::Activity("__structure__".to_string()));
+                    let _ = structure_tx.try_send(WorktreeEvent::StructureChanged);
                 }
             },
         )
@@ -191,6 +192,11 @@ impl WorktreeMonitor {
                 tracing::info!(worktree = %wt.name, path = ?wt.path, "Worktree added");
             }
         }
+    }
+
+    /// Get the name of the currently targeted worktree.
+    pub fn current_target(&self) -> Option<&str> {
+        self.current_target.as_deref()
     }
 
     /// Set the name of the currently targeted worktree (excluded from `most_recent_other`).

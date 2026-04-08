@@ -21,6 +21,9 @@ pub enum AppEvent {
     Tick,
 }
 
+/// Minimum time between automatic worktree switches.
+const SWITCH_COOLDOWN: Duration = Duration::from_secs(3);
+
 pub struct App {
     state: AppState,
     git: GitRepo,
@@ -36,6 +39,8 @@ pub struct App {
     worktree_monitor: Option<crate::watcher::worktree::WorktreeMonitor>,
     /// Receiver for worktree events
     wt_rx: Option<Receiver<crate::watcher::worktree::WorktreeEvent>>,
+    /// Last time we switched worktrees (for cooldown)
+    last_switch: Option<Instant>,
 }
 
 impl App {
@@ -87,6 +92,7 @@ impl App {
             watch_path,
             worktree_monitor,
             wt_rx,
+            last_switch: None,
         })
     }
 
@@ -241,36 +247,51 @@ impl App {
         match event {
             WorktreeEvent::Added(info) => {
                 tracing::info!(worktree = %info.name, "New worktree detected");
-                self.switch_to_worktree(info)?;
+                // Don't auto-switch — wait for activity to indicate user is working there
             }
             WorktreeEvent::Removed(name) => {
                 tracing::info!(worktree = %name, "Worktree removed");
-                if let Some(ref monitor) = self.worktree_monitor {
-                    if let Some(fallback) = monitor.most_recent_other() {
-                        let info = fallback.clone();
-                        self.switch_to_worktree(info)?;
-                    } else {
-                        self.switch_to_path(self.repo_path.clone())?;
+                let is_current = self
+                    .worktree_monitor
+                    .as_ref()
+                    .and_then(|m| m.current_target())
+                    .map(|t| t == name)
+                    .unwrap_or(false);
+                if is_current {
+                    if let Some(ref monitor) = self.worktree_monitor {
+                        if let Some(fallback) = monitor.most_recent_other() {
+                            let info = fallback.clone();
+                            self.switch_to_worktree(info)?;
+                        } else {
+                            self.switch_to_path(self.repo_path.clone())?;
+                        }
                     }
                 }
             }
             WorktreeEvent::Activity(name) => {
-                if name == "__structure__" {
-                    if let Some(ref mut monitor) = self.worktree_monitor {
-                        monitor.scan_and_reconcile();
-                    }
-                    return Ok(());
-                }
-
                 tracing::debug!(worktree = %name, "Activity in worktree");
                 if let Some(ref mut monitor) = self.worktree_monitor {
                     monitor.record_activity(&name);
-                    if let Some(most_recent) = monitor.most_recent_other() {
-                        if most_recent.name == name {
-                            let info = most_recent.clone();
-                            self.switch_to_worktree(info)?;
+
+                    // Check cooldown before switching
+                    let cooldown_elapsed = self
+                        .last_switch
+                        .map(|t| t.elapsed() >= SWITCH_COOLDOWN)
+                        .unwrap_or(true);
+
+                    if cooldown_elapsed {
+                        if let Some(most_recent) = monitor.most_recent_other() {
+                            if most_recent.name == name {
+                                let info = most_recent.clone();
+                                self.switch_to_worktree(info)?;
+                            }
                         }
                     }
+                }
+            }
+            WorktreeEvent::StructureChanged => {
+                if let Some(ref mut monitor) = self.worktree_monitor {
+                    monitor.scan_and_reconcile();
                 }
             }
         }
@@ -287,10 +308,14 @@ impl App {
         if let Some(ref mut monitor) = self.worktree_monitor {
             monitor.set_current_target(Some(name));
         }
+        self.last_switch = Some(Instant::now());
         Ok(())
     }
 
     fn switch_to_path(&mut self, path: PathBuf) -> Result<()> {
+        if path == self.watch_path {
+            return Ok(());
+        }
         let git = GitRepo::new(&path).context("Failed to open git repository at new path")?;
 
         let debounce = Duration::from_millis(self.config.debounce_ms);

@@ -17,7 +17,9 @@ use ratatui::{
 };
 use std::io;
 
-use crate::config::{DisplayConfig, StatusBarConfig};
+use std::collections::HashMap;
+
+use crate::config::{ColorValue, DisplayConfig, StatusBarConfig};
 use crate::git::DiffLineKind;
 use crate::state::AppState;
 
@@ -45,16 +47,26 @@ impl Terminal {
         Ok(())
     }
 
-    pub fn draw(&mut self, state: &AppState, display: &DisplayConfig) -> Result<()> {
+    pub fn draw(
+        &mut self,
+        state: &AppState,
+        display: &DisplayConfig,
+        palette: &HashMap<String, ColorValue>,
+    ) -> Result<()> {
         self.terminal.draw(|frame| {
-            render(frame, state, display);
+            render(frame, state, display, palette);
         })?;
         Ok(())
     }
 }
 
 /// Main render function
-fn render(frame: &mut Frame, state: &AppState, display: &DisplayConfig) {
+fn render(
+    frame: &mut Frame,
+    state: &AppState,
+    display: &DisplayConfig,
+    palette: &HashMap<String, ColorValue>,
+) {
     let area = frame.area();
 
     let top_height: u16 = if display.statusbar.top.status_line.is_empty() {
@@ -77,9 +89,9 @@ fn render(frame: &mut Frame, state: &AppState, display: &DisplayConfig) {
         ])
         .split(area);
 
-    render_status_bar(frame, state, &display.statusbar.top, chunks[0]);
+    render_status_bar(frame, state, &display.statusbar.top, chunks[0], palette);
     render_file_list(frame, state, display, chunks[1]);
-    render_bottom_status_bar(frame, state, &display.statusbar.bottom, chunks[2]);
+    render_bottom_status_bar(frame, state, &display.statusbar.bottom, chunks[2], palette);
 }
 
 /// Render the file list with optional expanded diff
@@ -202,6 +214,7 @@ fn render_bottom_status_bar(
     state: &AppState,
     bar: &StatusBarConfig,
     area: Rect,
+    palette: &HashMap<String, ColorValue>,
 ) {
     if area.height == 0 {
         return;
@@ -219,11 +232,17 @@ fn render_bottom_status_bar(
         return;
     }
 
-    render_status_bar(frame, state, bar, area);
+    render_status_bar(frame, state, bar, area, palette);
 }
 
 /// Render a single statusbar line using its own config
-fn render_status_bar(frame: &mut Frame, state: &AppState, bar: &StatusBarConfig, area: Rect) {
+fn render_status_bar(
+    frame: &mut Frame,
+    state: &AppState,
+    bar: &StatusBarConfig,
+    area: Rect,
+    palette: &HashMap<String, ColorValue>,
+) {
     if bar.status_line.is_empty() || area.height == 0 {
         return;
     }
@@ -237,7 +256,7 @@ fn render_status_bar(frame: &mut Frame, state: &AppState, bar: &StatusBarConfig,
         state,
         area.width.saturating_sub(1),
         default_fg,
-        &std::collections::HashMap::new(),
+        palette,
     );
 
     // Prepend a space for left padding

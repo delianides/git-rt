@@ -2,7 +2,7 @@
 members = ["cargo:."]
 
 [dist]
-cargo-dist-version = "0.30.2"
+cargo-dist-version = "0.31.0"
 ci = "github"
 installers = ["shell", "powershell", "homebrew"]
 tap = "delianides/homebrew-git-rt"
@@ -13,4 +13,5 @@ targets = [
   "aarch64-unknown-linux-musl",
 ]
 install-updater = false
+publish-jobs = ["homebrew"]
 allow-dirty = ["ci"]

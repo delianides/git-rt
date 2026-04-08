@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.2.2](https://github.com/delianides/git-rt/compare/v0.2.1...v0.2.2) (2026-04-08)
+
+
+### Bug Fixes
+
+* inject auth headers into Homebrew formula for private repo downloads ([#14](https://github.com/delianides/git-rt/issues/14)) ([0510995](https://github.com/delianides/git-rt/commit/0510995cc88a8e8abd2cfc3cdfdb018b76ca7276))
+
 ## [0.2.1](https://github.com/delianides/git-rt/compare/v0.2.0...v0.2.1) (2026-04-08)
 
 

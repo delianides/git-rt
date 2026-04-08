@@ -17,7 +17,7 @@ use ratatui::{
 };
 use std::io;
 
-use crate::config::DisplayConfig;
+use crate::config::{DisplayConfig, StatusBarConfig};
 use crate::git::DiffLineKind;
 use crate::state::AppState;
 
@@ -57,20 +57,29 @@ impl Terminal {
 fn render(frame: &mut Frame, state: &AppState, display: &DisplayConfig) {
     let area = frame.area();
 
-    // Layout: file list takes up available space, status bar at bottom
-    // TODO(Task 3): update to use display.statusbar top/bottom
-    let status_line_count = if display.statusbar.bottom.status_line.is_empty() {
-        0u16
+    let top_height: u16 = if display.statusbar.top.status_line.is_empty() {
+        0
     } else {
-        1u16
+        1
     };
+    let bottom_height: u16 = if display.statusbar.bottom.status_line.is_empty() {
+        0
+    } else {
+        1
+    };
+
     let chunks = Layout::default()
         .direction(Direction::Vertical)
-        .constraints([Constraint::Min(1), Constraint::Length(status_line_count)])
+        .constraints([
+            Constraint::Length(top_height),
+            Constraint::Min(1),
+            Constraint::Length(bottom_height),
+        ])
         .split(area);
 
-    render_file_list(frame, state, display, chunks[0]);
-    render_status_bar(frame, state, display, chunks[1]);
+    render_status_bar(frame, state, &display.statusbar.top, chunks[0]);
+    render_file_list(frame, state, display, chunks[1]);
+    render_status_bar(frame, state, &display.statusbar.bottom, chunks[2]);
 }
 
 /// Render the file list with optional expanded diff
@@ -193,19 +202,16 @@ fn render_file_list(frame: &mut Frame, state: &AppState, display: &DisplayConfig
     frame.render_stateful_widget(list, area, &mut list_state);
 }
 
-/// Render the bottom status bar using configurable format strings
-/// TODO(Task 3): fully update to use display.statusbar top/bottom configs
-fn render_status_bar(frame: &mut Frame, state: &AppState, display: &DisplayConfig, area: Rect) {
-    let bottom = &display.statusbar.bottom;
-    if bottom.status_line.is_empty() {
+/// Render a single statusbar line using its own config
+fn render_status_bar(frame: &mut Frame, state: &AppState, bar: &StatusBarConfig, area: Rect) {
+    if bar.status_line.is_empty() || area.height == 0 {
         return;
     }
 
-    let default_fg = bottom.foreground_color.resolve();
-    let bg = bottom.background_color.resolve();
+    let default_fg = bar.foreground_color.resolve();
+    let bg = bar.background_color.resolve();
 
-    let format_str = &bottom.status_line;
-    let segments = status_format::parse_status_format(format_str);
+    let segments = status_format::parse_status_format(&bar.status_line);
     let line = status_format::render_status_line(
         &segments,
         state,
@@ -218,6 +224,6 @@ fn render_status_bar(frame: &mut Frame, state: &AppState, display: &DisplayConfi
     spans.extend(line.spans);
     let padded_line = Line::from(spans);
 
-    let bar = Paragraph::new(padded_line).style(Style::default().bg(bg));
-    frame.render_widget(bar, area);
+    let bar_widget = Paragraph::new(padded_line).style(Style::default().bg(bg));
+    frame.render_widget(bar_widget, area);
 }

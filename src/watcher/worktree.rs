@@ -1,6 +1,11 @@
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
+use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result};
+use crossbeam_channel::{bounded, Receiver, Sender};
+use notify::{RecommendedWatcher, RecursiveMode};
+use notify_debouncer_full::{new_debouncer, DebouncedEvent, Debouncer, RecommendedCache};
 
 /// Information about a known worktree
 #[derive(Debug, Clone)]
@@ -98,6 +103,151 @@ pub fn resolve_branch_arg(git_worktrees_dir: &Path, branch: &str) -> Result<Work
         .into_iter()
         .find(|wt| wt.branch.as_deref() == Some(branch))
         .with_context(|| format!("No worktree found for branch: {branch}"))
+}
+
+/// Monitors .git/worktrees/ for structural changes and tracks
+/// file activity across known worktrees to determine which is active.
+pub struct WorktreeMonitor {
+    _structure_debouncer: Debouncer<RecommendedWatcher, RecommendedCache>,
+    activity_watchers: HashMap<String, Debouncer<RecommendedWatcher, RecommendedCache>>,
+    activity_times: HashMap<String, Instant>,
+    known_worktrees: HashMap<String, WorktreeInfo>,
+    current_target: Option<String>,
+    git_worktrees_dir: PathBuf,
+    event_tx: Sender<WorktreeEvent>,
+    debounce: Duration,
+}
+
+impl WorktreeMonitor {
+    /// Create a new `WorktreeMonitor` for the given repo root.
+    ///
+    /// Returns a receiver for `WorktreeEvent`s and the monitor handle (must be kept alive).
+    pub fn new(repo_path: &Path, debounce: Duration) -> Result<(Receiver<WorktreeEvent>, Self)> {
+        let git_worktrees_dir = repo_path.join(".git").join("worktrees");
+        let (event_tx, event_rx) = bounded::<WorktreeEvent>(16);
+
+        // Watch .git/worktrees/ for structural changes (new/removed worktrees)
+        let structure_tx = event_tx.clone();
+        let mut structure_debouncer = new_debouncer(
+            debounce,
+            None,
+            move |result: std::result::Result<Vec<DebouncedEvent>, Vec<notify::Error>>| {
+                if let Ok(_events) = result {
+                    let _ =
+                        structure_tx.try_send(WorktreeEvent::Activity("__structure__".to_string()));
+                }
+            },
+        )
+        .context("Failed to create worktree structure debouncer")?;
+
+        if !git_worktrees_dir.exists() {
+            std::fs::create_dir_all(&git_worktrees_dir).ok();
+        }
+
+        structure_debouncer
+            .watch(&git_worktrees_dir, RecursiveMode::NonRecursive)
+            .context("Failed to watch .git/worktrees/")?;
+
+        let mut monitor = Self {
+            _structure_debouncer: structure_debouncer,
+            activity_watchers: HashMap::new(),
+            activity_times: HashMap::new(),
+            known_worktrees: HashMap::new(),
+            current_target: None,
+            git_worktrees_dir,
+            event_tx,
+            debounce,
+        };
+
+        monitor.scan_and_reconcile();
+
+        Ok((event_rx, monitor))
+    }
+
+    /// Scan .git/worktrees/ and emit Added/Removed events for any changes.
+    pub fn scan_and_reconcile(&mut self) {
+        let current = list_worktrees(&self.git_worktrees_dir);
+        let current_names: std::collections::HashSet<String> =
+            current.iter().map(|w| w.name.clone()).collect();
+        let known_names: std::collections::HashSet<String> =
+            self.known_worktrees.keys().cloned().collect();
+
+        // Detect removed
+        for name in known_names.difference(&current_names) {
+            self.known_worktrees.remove(name);
+            self.activity_times.remove(name);
+            self.activity_watchers.remove(name);
+            let _ = self.event_tx.try_send(WorktreeEvent::Removed(name.clone()));
+            tracing::info!(worktree = %name, "Worktree removed");
+        }
+
+        // Detect added
+        for wt in &current {
+            if !known_names.contains(&wt.name) {
+                self.start_activity_watcher(wt);
+                self.known_worktrees.insert(wt.name.clone(), wt.clone());
+                self.activity_times.insert(wt.name.clone(), Instant::now());
+                let _ = self.event_tx.try_send(WorktreeEvent::Added(wt.clone()));
+                tracing::info!(worktree = %wt.name, path = ?wt.path, "Worktree added");
+            }
+        }
+    }
+
+    /// Set the name of the currently targeted worktree (excluded from `most_recent_other`).
+    pub fn set_current_target(&mut self, name: Option<String>) {
+        self.current_target = name;
+    }
+
+    /// Get the most recently active worktree that is NOT the current target.
+    pub fn most_recent_other(&self) -> Option<&WorktreeInfo> {
+        self.activity_times
+            .iter()
+            .filter(|(name, _)| self.current_target.as_ref() != Some(name))
+            .max_by_key(|(_, time)| *time)
+            .and_then(|(name, _)| self.known_worktrees.get(name))
+    }
+
+    /// Start a file activity watcher for a worktree.
+    fn start_activity_watcher(&mut self, wt: &WorktreeInfo) {
+        let name = wt.name.clone();
+        let tx = self.event_tx.clone();
+
+        let watcher_name = name.clone();
+        let debouncer = new_debouncer(
+            self.debounce,
+            None,
+            move |result: std::result::Result<Vec<DebouncedEvent>, Vec<notify::Error>>| {
+                if let Ok(events) = result {
+                    let relevant = events.iter().any(|e| {
+                        e.event
+                            .paths
+                            .iter()
+                            .any(|p| !p.to_string_lossy().contains("/.git/"))
+                    });
+                    if relevant {
+                        let _ = tx.try_send(WorktreeEvent::Activity(watcher_name.clone()));
+                    }
+                }
+            },
+        );
+
+        match debouncer {
+            Ok(mut d) => {
+                if d.watch(&wt.path, RecursiveMode::Recursive).is_ok() {
+                    self.activity_watchers.insert(name, d);
+                    tracing::debug!(worktree = %wt.name, "Activity watcher started");
+                }
+            }
+            Err(e) => {
+                tracing::warn!(worktree = %wt.name, error = %e, "Failed to start activity watcher");
+            }
+        }
+    }
+
+    /// Record activity for a worktree by name.
+    pub fn record_activity(&mut self, name: &str) {
+        self.activity_times.insert(name.to_string(), Instant::now());
+    }
 }
 
 #[cfg(test)]

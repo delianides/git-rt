@@ -19,7 +19,7 @@ use std::io;
 
 use std::collections::HashMap;
 
-use crate::config::{ColorValue, DisplayConfig, StatusBarConfig};
+use crate::config::{ColorValue, DisplayConfig, StatusLineConfig};
 use crate::git::DiffLineKind;
 use crate::state::AppState;
 
@@ -69,12 +69,12 @@ fn render(
 ) {
     let area = frame.area();
 
-    let top_height: u16 = if display.statusbar.top.status_line.is_empty() {
+    let top_height: u16 = if display.statusline.top.status_line.is_empty() {
         0
     } else {
         1
     };
-    let bottom_height: u16 = if display.statusbar.bottom.status_line.is_empty() {
+    let bottom_height: u16 = if display.statusline.bottom.status_line.is_empty() {
         0
     } else {
         1
@@ -89,9 +89,9 @@ fn render(
         ])
         .split(area);
 
-    render_status_bar(frame, state, &display.statusbar.top, chunks[0], palette);
+    render_statusline(frame, state, &display.statusline.top, chunks[0], palette);
     render_file_list(frame, state, display, chunks[1]);
-    render_bottom_status_bar(frame, state, &display.statusbar.bottom, chunks[2], palette);
+    render_bottom_status_line(frame, state, &display.statusline.bottom, chunks[2], palette);
 }
 
 /// Render the file list with optional expanded diff
@@ -208,11 +208,11 @@ fn render_file_list(frame: &mut Frame, state: &AppState, display: &DisplayConfig
     frame.render_stateful_widget(list, area, &mut list_state);
 }
 
-/// Render the bottom statusbar, showing flash message if active
-fn render_bottom_status_bar(
+/// Render the bottom statusline, showing flash message if active
+fn render_bottom_status_line(
     frame: &mut Frame,
     state: &AppState,
-    bar: &StatusBarConfig,
+    bar: &StatusLineConfig,
     area: Rect,
     palette: &HashMap<String, ColorValue>,
 ) {
@@ -232,14 +232,14 @@ fn render_bottom_status_bar(
         return;
     }
 
-    render_status_bar(frame, state, bar, area, palette);
+    render_statusline(frame, state, bar, area, palette);
 }
 
-/// Render a single statusbar line using its own config
-fn render_status_bar(
+/// Render a single statusline using its own config
+fn render_statusline(
     frame: &mut Frame,
     state: &AppState,
-    bar: &StatusBarConfig,
+    bar: &StatusLineConfig,
     area: Rect,
     palette: &HashMap<String, ColorValue>,
 ) {

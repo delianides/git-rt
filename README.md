@@ -46,7 +46,7 @@ Create `~/.config/git-rt/config.toml` to customize behavior.
 
 ### Color Palette
 
-Define custom named colors in the top-level `[colors]` section. These can be referenced in statusbar format strings using `{name}...{/}` tags. The 16 built-in terminal color names (red, green, blue, yellow, cyan, magenta, white, black, gray, darkgray, lightred, lightgreen, lightyellow, lightblue, lightmagenta, lightcyan) are always available without defining them. Palette entries can override built-in names.
+Define custom named colors in the top-level `[colors]` section. These can be referenced in statusline format strings using `{name}...{/}` tags. The 16 built-in terminal color names (red, green, blue, yellow, cyan, magenta, white, black, gray, darkgray, lightred, lightgreen, lightyellow, lightblue, lightmagenta, lightcyan) are always available without defining them. Palette entries can override built-in names.
 
 ```toml
 [colors]
@@ -56,21 +56,21 @@ branch = "#BD93F9"
 muted = "#6272A4"
 ```
 
-### Statusbar
+### Statusline
 
-Top and bottom statusbars are independently configurable with format strings. The top bar is hidden by default. Pass an empty string to hide either bar.
+Top and bottom statuslines are independently configurable with format strings. The top bar is hidden by default. Pass an empty string to hide either bar.
 
 Format tokens: `%b` (branch), `%c` (file count), `%+` (total insertions), `%-` (total deletions), `%R` (refresh counter), `%h` (HEAD short SHA), `%H` (HEAD message), `%w` (worktree name), `%n` (repo name), `%a` (ahead/behind), `%m` (modified count), `%u` (untracked count), `%s` (staged count), `%S` (stash count), `%G` (git state), `%?` (help), `%=` (right-align marker).
 
 Style tags: `{color}...{/}`, `{bold}...{/}`, `{dim}...{/}`. Colors can be palette names, built-in names, or hex (`{#FF5555}...{/}`).
 
 ```toml
-[display.statusbar.top]
+[display.statusline.top]
 status_line = "{dim}%n{/}  {muted}%h{/}"
 foreground_color = "white"
 background_color = "#1E1E1E"
 
-[display.statusbar.bottom]
+[display.statusline.bottom]
 status_line = "{branch}%b{/}  %c files  {del}%-{/} {ins}%+{/}  %=%R"
 foreground_color = "white"
 background_color = "#1E1E1E"
@@ -128,12 +128,12 @@ flash_duration_ms = 600
 file_line = "%s %f %= %- %+"
 show_expand_marker = true
 
-[display.statusbar.top]
+[display.statusline.top]
 status_line = "{dim}%n{/}"
 foreground_color = "white"
 background_color = "#282A36"
 
-[display.statusbar.bottom]
+[display.statusline.bottom]
 status_line = "{branch}%b{/}  %c files  {del}%-{/} {ins}%+{/}  %=%R"
 foreground_color = "white"
 background_color = "#282A36"

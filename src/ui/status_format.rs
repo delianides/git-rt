@@ -9,7 +9,7 @@ use crate::config::ColorValue;
 use crate::git::FileStatus;
 use crate::state::AppState;
 
-/// A parsed segment of a statusbar format string
+/// A parsed segment of a statusline format string
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum StatusSegment {
     /// A data token like %b, %c, %+, etc.
@@ -32,7 +32,7 @@ pub enum StyleTag {
     Dim,
 }
 
-/// Parse a statusbar format string into segments.
+/// Parse a statusline format string into segments.
 /// Handles %tokens, {color}...{/} style tags, and %= right-align.
 pub fn parse_status_format(fmt: &str) -> Vec<StatusSegment> {
     let mut segments = Vec::new();

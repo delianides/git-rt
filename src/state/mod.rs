@@ -43,7 +43,7 @@ pub struct AppState {
     ahead_behind: Option<(usize, usize)>,
     /// Repo state (REBASING, MERGING, etc.), None if clean
     repo_state: Option<String>,
-    /// Temporary message displayed on the bottom statusbar
+    /// Temporary message displayed on the bottom statusline
     flash_message: Option<(String, Instant)>,
 }
 
@@ -201,7 +201,7 @@ impl AppState {
         })
     }
 
-    /// Set a temporary flash message on the bottom statusbar
+    /// Set a temporary flash message on the bottom statusline
     pub fn set_flash_message(&mut self, message: String) {
         self.flash_message = Some((message, Instant::now()));
     }

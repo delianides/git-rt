@@ -28,24 +28,35 @@ pub struct App {
     fs_rx: Receiver<()>,
     config: AppConfig,
     tick_rate: Duration,
+    /// The root repo path (for resolving worktrees)
+    repo_path: PathBuf,
+    /// The path currently being watched
+    watch_path: PathBuf,
+    /// Worktree monitor (None if auto-follow is disabled)
+    worktree_monitor: Option<crate::watcher::worktree::WorktreeMonitor>,
+    /// Receiver for worktree events
+    wt_rx: Option<Receiver<crate::watcher::worktree::WorktreeEvent>>,
 }
 
 impl App {
-    pub fn new(repo_path: PathBuf, config: AppConfig, debounce_ms: u64) -> Result<Self> {
-        let git = GitRepo::new(&repo_path).context("Failed to open git repository")?;
+    pub fn new(
+        watch_path: PathBuf,
+        repo_path: PathBuf,
+        config: AppConfig,
+        debounce_ms: u64,
+        auto_follow: bool,
+    ) -> Result<Self> {
+        let git = GitRepo::new(&watch_path).context("Failed to open git repository")?;
 
-        // Initial git status computation
         let files = git.status()?;
         let branch = git.branch_name().unwrap_or_else(|_| "HEAD".to_string());
 
         let flash_duration = Duration::from_millis(config.display.flash_duration_ms);
         let mut state = AppState::new(files, flash_duration, branch);
 
-        // Static metadata (computed once)
         state.set_repo_name(git.repo_name());
         state.set_worktree_name(git.worktree_name());
 
-        // Initial dynamic metadata
         if let Ok((sha, msg)) = git.head_info() {
             state.set_head_info(sha, msg);
         }
@@ -53,7 +64,17 @@ impl App {
         state.set_ahead_behind(git.ahead_behind().unwrap_or(None));
         state.set_repo_state(git.repo_state());
 
-        let (fs_rx, watcher) = FsWatcher::new(&repo_path, Duration::from_millis(debounce_ms))?;
+        let debounce = Duration::from_millis(debounce_ms);
+        let (fs_rx, watcher) = FsWatcher::new(&watch_path, debounce)?;
+
+        let (wt_rx, worktree_monitor) = if auto_follow {
+            let (rx, mut monitor) =
+                crate::watcher::worktree::WorktreeMonitor::new(&repo_path, debounce)?;
+            monitor.set_current_target(None);
+            (Some(rx), Some(monitor))
+        } else {
+            (None, None)
+        };
 
         Ok(Self {
             state,
@@ -62,6 +83,10 @@ impl App {
             fs_rx,
             config,
             tick_rate: Duration::from_millis(250),
+            repo_path,
+            watch_path,
+            worktree_monitor,
+            wt_rx,
         })
     }
 
@@ -100,6 +125,16 @@ impl App {
             // Check for filesystem events (non-blocking)
             while self.fs_rx.try_recv().is_ok() {
                 self.handle_fs_change()?;
+            }
+
+            // Handle worktree events — drain into a vec first to release the borrow on self.wt_rx
+            let wt_events: Vec<_> = self
+                .wt_rx
+                .as_ref()
+                .map(|rx| std::iter::from_fn(|| rx.try_recv().ok()).collect())
+                .unwrap_or_default();
+            for wt_event in wt_events {
+                self.handle_worktree_event(wt_event)?;
             }
 
             // Tick
@@ -194,6 +229,94 @@ impl App {
                 self.state.expand_selected(diff);
             }
         }
+        Ok(())
+    }
+
+    fn handle_worktree_event(
+        &mut self,
+        event: crate::watcher::worktree::WorktreeEvent,
+    ) -> Result<()> {
+        use crate::watcher::worktree::WorktreeEvent;
+
+        match event {
+            WorktreeEvent::Added(info) => {
+                tracing::info!(worktree = %info.name, "New worktree detected");
+                self.switch_to_worktree(info)?;
+            }
+            WorktreeEvent::Removed(name) => {
+                tracing::info!(worktree = %name, "Worktree removed");
+                if let Some(ref monitor) = self.worktree_monitor {
+                    if let Some(fallback) = monitor.most_recent_other() {
+                        let info = fallback.clone();
+                        self.switch_to_worktree(info)?;
+                    } else {
+                        self.switch_to_path(self.repo_path.clone())?;
+                    }
+                }
+            }
+            WorktreeEvent::Activity(name) => {
+                if name == "__structure__" {
+                    if let Some(ref mut monitor) = self.worktree_monitor {
+                        monitor.scan_and_reconcile();
+                    }
+                    return Ok(());
+                }
+
+                tracing::debug!(worktree = %name, "Activity in worktree");
+                if let Some(ref mut monitor) = self.worktree_monitor {
+                    monitor.record_activity(&name);
+                    if let Some(most_recent) = monitor.most_recent_other() {
+                        if most_recent.name == name {
+                            let info = most_recent.clone();
+                            self.switch_to_worktree(info)?;
+                        }
+                    }
+                }
+            }
+        }
+
+        Ok(())
+    }
+
+    fn switch_to_worktree(&mut self, info: crate::watcher::worktree::WorktreeInfo) -> Result<()> {
+        tracing::info!(worktree = %info.name, path = ?info.path, "Switching to worktree");
+        let name = info.name.clone();
+        self.switch_to_path(info.path)?;
+        self.state
+            .set_flash_message(format!("Switched to worktree: {name}"));
+        if let Some(ref mut monitor) = self.worktree_monitor {
+            monitor.set_current_target(Some(name));
+        }
+        Ok(())
+    }
+
+    fn switch_to_path(&mut self, path: PathBuf) -> Result<()> {
+        let git = GitRepo::new(&path).context("Failed to open git repository at new path")?;
+
+        let debounce = Duration::from_millis(self.config.debounce_ms);
+        let (fs_rx, watcher) = FsWatcher::new(&path, debounce)?;
+
+        let files = git.status()?;
+        let branch = git.branch_name().unwrap_or_else(|_| "HEAD".to_string());
+        let repo_name = git.repo_name();
+        let worktree_name = git.worktree_name();
+
+        self.state
+            .reset_for_switch(files, branch, repo_name, worktree_name);
+
+        if let Ok((sha, msg)) = git.head_info() {
+            self.state.set_head_info(sha, msg);
+        }
+        self.state.set_stash_count(git.stash_count().unwrap_or(0));
+        self.state
+            .set_ahead_behind(git.ahead_behind().unwrap_or(None));
+        self.state.set_repo_state(git.repo_state());
+
+        self.git = git;
+        self._watcher = watcher;
+        self.fs_rx = fs_rx;
+        self.watch_path = path;
+
         Ok(())
     }
 }

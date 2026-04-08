@@ -131,26 +131,36 @@ impl GitRepo {
 
         let status_str = String::from_utf8_lossy(&status_output.stdout);
 
-        // Get numstat for insertion/deletion counts
+        // Get numstat for insertion/deletion counts (unstaged worktree changes)
         let numstat_output = Command::new("git")
             .args(["diff", "--numstat"])
             .current_dir(&self.repo_path)
             .output()
             .context("Failed to run git diff --numstat")?;
 
-        let numstat_str = String::from_utf8_lossy(&numstat_output.stdout);
+        // Get numstat for staged changes (index vs HEAD)
+        let cached_numstat_output = Command::new("git")
+            .args(["diff", "--cached", "--numstat"])
+            .current_dir(&self.repo_path)
+            .output()
+            .context("Failed to run git diff --cached --numstat")?;
 
-        // Build a map of path -> (insertions, deletions)
+        let numstat_str = String::from_utf8_lossy(&numstat_output.stdout);
+        let cached_numstat_str = String::from_utf8_lossy(&cached_numstat_output.stdout);
+
+        // Build a map of path -> (insertions, deletions), combining staged + unstaged
         let mut stats: std::collections::HashMap<String, (usize, usize)> =
             std::collections::HashMap::new();
 
-        for line in numstat_str.lines() {
+        for line in numstat_str.lines().chain(cached_numstat_str.lines()) {
             let parts: Vec<&str> = line.split('\t').collect();
             if parts.len() >= 3 {
                 let ins = parts[0].parse::<usize>().unwrap_or(0);
                 let del = parts[1].parse::<usize>().unwrap_or(0);
                 let path = parts[2].to_string();
-                stats.insert(path, (ins, del));
+                let entry = stats.entry(path).or_insert((0, 0));
+                entry.0 += ins;
+                entry.1 += del;
             }
         }
 

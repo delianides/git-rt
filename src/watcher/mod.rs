@@ -73,11 +73,17 @@ impl FsWatcher {
 }
 
 /// Returns true if the given path represents a relevant change
-/// (i.e., not inside .git/ except for .git/index)
+/// (i.e., not inside .git/ except for paths that indicate
+/// index changes, commits, or branch switches)
 fn is_relevant_path(path: &Path) -> bool {
     let path_str = path.to_string_lossy();
     if path_str.contains("/.git/") {
+        // .git/index — staging changes
+        // .git/refs/ — commits (refs/heads), tags, remote updates
+        // .git/HEAD — branch switches, detached HEAD changes
         path_str.ends_with("/.git/index")
+            || path_str.contains("/.git/refs/")
+            || path_str.ends_with("/.git/HEAD")
     } else {
         true
     }
@@ -97,10 +103,10 @@ mod tests {
     #[test]
     fn test_git_internal_files_not_relevant() {
         assert!(!is_relevant_path(Path::new("/repo/.git/objects/ab/cd1234")));
-        assert!(!is_relevant_path(Path::new("/repo/.git/refs/heads/main")));
-        assert!(!is_relevant_path(Path::new("/repo/.git/HEAD")));
         assert!(!is_relevant_path(Path::new("/repo/.git/COMMIT_EDITMSG")));
         assert!(!is_relevant_path(Path::new("/repo/.git/logs/HEAD")));
+        assert!(!is_relevant_path(Path::new("/repo/.git/config")));
+        assert!(!is_relevant_path(Path::new("/repo/.git/MERGE_HEAD")));
     }
 
     #[test]
@@ -111,6 +117,23 @@ mod tests {
     #[test]
     fn test_git_index_lock_not_relevant() {
         assert!(!is_relevant_path(Path::new("/repo/.git/index.lock")));
+    }
+
+    #[test]
+    fn test_git_refs_are_relevant() {
+        assert!(is_relevant_path(Path::new("/repo/.git/refs/heads/main")));
+        assert!(is_relevant_path(Path::new(
+            "/repo/.git/refs/heads/feature/foo"
+        )));
+        assert!(is_relevant_path(Path::new("/repo/.git/refs/tags/v1.0")));
+        assert!(is_relevant_path(Path::new(
+            "/repo/.git/refs/remotes/origin/main"
+        )));
+    }
+
+    #[test]
+    fn test_git_head_is_relevant() {
+        assert!(is_relevant_path(Path::new("/repo/.git/HEAD")));
     }
 
     #[test]

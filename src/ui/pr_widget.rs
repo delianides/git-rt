@@ -160,45 +160,44 @@ fn render_pr_info(
         ),
     ]));
 
-    // Checks
+    // Checks: "passed/total (skipped skipped)"
     let checks = &info.checks;
-    let checks_summary = format!("{}/{} passing", checks.passed, checks.total);
-    lines.push(Line::from(vec![
-        Span::styled("Checks: ", Style::default().fg(theme.header_separator)),
-        Span::styled(checks_summary, Style::default().fg(theme.fg)),
-    ]));
+    let mut check_spans = vec![Span::styled(
+        "Checks: ",
+        Style::default().fg(theme.header_separator),
+    )];
 
-    // Individual failing/running checks (show up to 5)
-    let notable_checks: Vec<_> = checks
-        .checks
-        .iter()
-        .filter(|c| {
-            matches!(
-                c.status,
-                CheckStatus::Failed | CheckStatus::Running | CheckStatus::Pending
-            )
-        })
-        .take(5)
-        .collect();
-    if !notable_checks.is_empty() {
-        let check_names: Vec<&str> = notable_checks.iter().map(|c| c.name.as_str()).collect();
-        lines.push(Line::from(Span::styled(
-            format!("  {}", check_names.join(" · ")),
-            Style::default().fg(theme.fg),
-        )));
+    let summary_color = if checks.failed > 0 {
+        Color::Red
+    } else if checks.pending > 0 {
+        Color::Yellow
+    } else {
+        Color::Green
+    };
+    check_spans.push(Span::styled(
+        format!("{}/{}", checks.passed, checks.total),
+        Style::default().fg(summary_color),
+    ));
+
+    if checks.skipped > 0 {
+        check_spans.push(Span::styled(
+            format!(" ({} skipped)", checks.skipped),
+            Style::default().fg(Color::Gray),
+        ));
     }
 
-    // Individual checks (show up to 5)
-    for check in checks.checks.iter().take(5) {
-        let (icon, color) = match check.status {
-            CheckStatus::Passed => ("  ✓", Color::Green),
-            CheckStatus::Failed => ("  ✗", Color::Red),
-            CheckStatus::Pending => ("  ●", Color::Yellow),
-            CheckStatus::Running => ("  ●", Color::Cyan),
-        };
+    lines.push(Line::from(check_spans));
+
+    // Only show individual checks that failed
+    let failed_checks: Vec<_> = checks
+        .checks
+        .iter()
+        .filter(|c| c.status == CheckStatus::Failed)
+        .collect();
+    for check in failed_checks.iter().take(5) {
         lines.push(Line::from(vec![
-            Span::styled(icon, Style::default().fg(color)),
-            Span::styled(format!(" {}", check.name), Style::default().fg(theme.fg)),
+            Span::styled("  ✗ ", Style::default().fg(Color::Red)),
+            Span::styled(check.name.clone(), Style::default().fg(theme.fg)),
         ]));
     }
 

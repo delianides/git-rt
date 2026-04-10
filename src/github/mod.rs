@@ -206,6 +206,7 @@ pub fn fetch_pr_data(
     let mut passed = 0usize;
     let mut failed = 0usize;
     let mut pending = 0usize;
+    let mut skipped = 0usize;
     let checks: Vec<CheckInfo> = check_runs
         .check_runs
         .iter()
@@ -219,6 +220,10 @@ pub fn fetch_pr_data(
                     Some("failure") | Some("timed_out") | Some("cancelled") => {
                         failed += 1;
                         CheckStatus::Failed
+                    }
+                    Some("skipped") => {
+                        skipped += 1;
+                        CheckStatus::Skipped
                     }
                     _ => {
                         pending += 1;
@@ -278,6 +283,7 @@ pub fn fetch_pr_data(
             passed,
             failed,
             pending,
+            skipped,
             checks,
         },
         comment_count: comments.len() as u64,
@@ -469,6 +475,7 @@ mod tests {
                 passed: 0,
                 failed: 0,
                 pending: 0,
+                skipped: 0,
                 checks: vec![],
             },
             comment_count: 0,
@@ -493,6 +500,7 @@ mod tests {
                 passed: 0,
                 failed: 0,
                 pending: 0,
+                skipped: 0,
                 checks: vec![],
             },
             comment_count: 0,

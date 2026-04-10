@@ -61,6 +61,7 @@ pub struct ChecksInfo {
     pub passed: usize,
     pub failed: usize,
     pub pending: usize,
+    pub skipped: usize,
     pub checks: Vec<CheckInfo>,
 }
 
@@ -76,6 +77,7 @@ pub enum CheckStatus {
     Failed,
     Pending,
     Running,
+    Skipped,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -821,6 +823,7 @@ mod tests {
                 passed: 0,
                 failed: 0,
                 pending: 0,
+                skipped: 0,
                 checks: vec![],
             },
             comment_count: 5,
@@ -847,6 +850,7 @@ mod tests {
                 passed: 0,
                 failed: 0,
                 pending: 0,
+                skipped: 0,
                 checks: vec![],
             },
             comment_count: 0,

@@ -286,6 +286,9 @@ fn render_file_list(
     let files = state.files();
 
     if files.is_empty() {
+        if area.height < 2 || area.width < 20 {
+            return;
+        }
         let msg = Paragraph::new("  No changes detected. Watching for file changes...")
             .style(Style::default().fg(theme.empty_text));
         frame.render_widget(msg, area);

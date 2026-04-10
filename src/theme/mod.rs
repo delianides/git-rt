@@ -229,6 +229,27 @@ mod tests {
     }
 
     #[test]
+    fn test_all_builtin_themes_resolve() {
+        let builtins = [
+            "catppuccin-mocha",
+            "catppuccin-latte",
+            "one-dark",
+            "dracula",
+            "gruvbox-dark",
+            "nord",
+            "tokyo-night",
+            "solarized-dark",
+            "rose-pine",
+            "kanagawa",
+            "everforest-dark",
+        ];
+        for name in builtins {
+            let theme = load_theme(name, None);
+            assert_eq!(theme.name, name, "theme {name} did not load correctly");
+        }
+    }
+
+    #[test]
     fn test_load_unknown_theme_falls_back() {
         let theme = load_theme("this-does-not-exist", None);
         assert_eq!(theme.name, DEFAULT_THEME_NAME);

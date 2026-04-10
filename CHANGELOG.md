@@ -1,5 +1,16 @@
 # Changelog
 
+## [0.3.0](https://github.com/delianides/git-rt/compare/v0.2.3...v0.3.0) (2026-04-10)
+
+
+### Features
+
+* cold-start auto-switch to most active worktree ([#23](https://github.com/delianides/git-rt/issues/23)) ([b950cc2](https://github.com/delianides/git-rt/commit/b950cc2e9baee254544b5d6ac13aafecc7a93b09))
+* migrate git operations to gix and add transient error recovery ([#22](https://github.com/delianides/git-rt/issues/22)) ([6a48131](https://github.com/delianides/git-rt/commit/6a48131d15cc2fa204c9075439a849b6455cf981))
+* theme file system with TOML/JSON support and --theme flag ([#21](https://github.com/delianides/git-rt/issues/21)) ([dac7bc4](https://github.com/delianides/git-rt/commit/dac7bc49fbc1bff6ea61c39e863395c4a316fb18))
+* UI revamp with theme system and GitHub PR widget ([#19](https://github.com/delianides/git-rt/issues/19)) ([5f03ad2](https://github.com/delianides/git-rt/commit/5f03ad2205af21e8ebab235f4cfad823f0b0a1e8))
+* **ui:** flash pane border on worktree switch ([b950cc2](https://github.com/delianides/git-rt/commit/b950cc2e9baee254544b5d6ac13aafecc7a93b09))
+
 ## [0.2.3](https://github.com/delianides/git-rt/compare/v0.2.2...v0.2.3) (2026-04-08)
 
 

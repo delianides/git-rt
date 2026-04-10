@@ -5,6 +5,7 @@
 //! selection via configuration.
 
 pub mod catalog;
+pub mod color;
 
 use ratatui::style::Color;
 

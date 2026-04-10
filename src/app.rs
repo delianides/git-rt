@@ -41,6 +41,8 @@ pub struct App {
     wt_rx: Option<Receiver<crate::watcher::worktree::WorktreeEvent>>,
     /// Last time we switched worktrees (for cooldown)
     last_switch: Option<Instant>,
+    /// Receiver for GitHub PR events
+    gh_rx: Option<Receiver<crate::github::GitHubEvent>>,
 }
 
 impl App {
@@ -81,6 +83,18 @@ impl App {
             (None, None)
         };
 
+        let gh_rx = if config.pr.enabled {
+            if let Some(token) = crate::github::resolve_auth_token() {
+                let branch = state.branch().to_string();
+                Some(crate::github::start_polling(&watch_path, &branch, &token))
+            } else {
+                tracing::warn!("PR widget enabled but no GitHub auth token found");
+                None
+            }
+        } else {
+            None
+        };
+
         Ok(Self {
             state,
             git,
@@ -93,6 +107,7 @@ impl App {
             worktree_monitor,
             wt_rx,
             last_switch: None,
+            gh_rx,
         })
     }
 
@@ -142,6 +157,24 @@ impl App {
                 .unwrap_or_default();
             for wt_event in wt_events {
                 self.handle_worktree_event(wt_event)?;
+            }
+
+            // Handle GitHub PR events
+            if let Some(ref gh_rx) = self.gh_rx {
+                while let Ok(event) = gh_rx.try_recv() {
+                    match event {
+                        crate::github::GitHubEvent::PrUpdate(info) => {
+                            self.state.set_pr_info(info);
+                        }
+                        crate::github::GitHubEvent::NoPr => {
+                            self.state.clear_pr();
+                        }
+                        crate::github::GitHubEvent::Error(err) => {
+                            tracing::warn!(error = %err, "GitHub API error");
+                            self.state.set_pr_error(err);
+                        }
+                    }
+                }
             }
 
             // Tick

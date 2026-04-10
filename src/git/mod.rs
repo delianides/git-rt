@@ -5,13 +5,27 @@ use anyhow::{Context, Result};
 use thiserror::Error;
 
 #[derive(Error, Debug)]
-pub enum GitError {
+pub enum GitFailure {
     #[error("Not a git repository: {0}")]
     NotARepo(PathBuf),
-    #[error("Failed to compute status: {0}")]
-    StatusFailed(String),
-    #[error("Failed to compute diff: {0}")]
-    DiffFailed(String),
+
+    /// Git environment is in flux (e.g., worktree cleanup in progress,
+    /// index.lock present, refs being rewritten). The caller should hold
+    /// the last known state and try again on the next refresh.
+    #[error("Git environment changed: {0}")]
+    EnvChange(String),
+
+    /// A real failure: corrupt repo, I/O error, unexpected gix error, etc.
+    #[error("Git operation failed: {0}")]
+    Failed(String),
+}
+
+impl GitFailure {
+    /// Returns true if this failure indicates a transient env change
+    /// (not a fatal error).
+    pub fn is_env_change(&self) -> bool {
+        matches!(self, GitFailure::EnvChange(_))
+    }
 }
 
 /// Status of a file relative to the git index/HEAD
@@ -132,7 +146,7 @@ impl GitRepo {
             .context("Failed to run git")?;
 
         if !output.status.success() {
-            return Err(GitError::NotARepo(path.to_path_buf()).into());
+            return Err(GitFailure::NotARepo(path.to_path_buf()).into());
         }
 
         let repo_root = String::from_utf8(output.stdout)
@@ -636,6 +650,13 @@ index abc1234..def5678 100644
         assert!(result.is_some());
         // The common dir should contain a HEAD file
         assert!(result.unwrap().join("HEAD").exists());
+    }
+
+    #[test]
+    fn test_gitfailure_is_env_change() {
+        assert!(GitFailure::EnvChange("x".into()).is_env_change());
+        assert!(!GitFailure::Failed("x".into()).is_env_change());
+        assert!(!GitFailure::NotARepo(std::path::PathBuf::from("/")).is_env_change());
     }
 
     #[test]

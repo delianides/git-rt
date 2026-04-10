@@ -46,6 +46,11 @@ struct Cli {
     /// Pin to the worktree with this branch checked out. Disables auto-follow.
     #[arg(long, conflicts_with = "worktree")]
     branch: Option<String>,
+
+    /// Theme name or path to a theme file (TOML or JSON).
+    /// Overrides the theme set in the config file.
+    #[arg(long)]
+    theme: Option<String>,
 }
 
 fn main() -> Result<()> {
@@ -99,6 +104,13 @@ fn main() -> Result<()> {
         None => (repo_path.clone(), true),
     };
 
-    let mut app = app::App::new(watch_path, repo_path, config, cli.debounce, auto_follow)?;
+    let mut app = app::App::new(
+        watch_path,
+        repo_path,
+        config,
+        cli.debounce,
+        auto_follow,
+        cli.theme,
+    )?;
     app.run()
 }

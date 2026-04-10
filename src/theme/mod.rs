@@ -1,93 +1,215 @@
 //! Theme system for git-rt.
 //!
-//! Provides a set of built-in colour themes that can be selected by name.
-//! All theme data is static — there are no user-defined themes, only theme
-//! selection via configuration.
+//! Themes are parsed from TOML or JSON files. Built-in themes are embedded
+//! in the binary via `include_str!`. Users can place custom themes in
+//! `~/.config/git-rt/themes/` (or the platform equivalent) to override
+//! built-ins or add new themes. Themes may use `extends = "<name>"` to
+//! inherit missing fields from another theme.
 
-pub mod catalog;
+pub mod color;
+pub mod parser;
+pub mod resolver;
 
+use std::collections::HashMap;
+use std::path::{Path, PathBuf};
+
+use anyhow::{anyhow, Context, Result};
 use ratatui::style::Color;
 
-pub use catalog::ALL_THEMES;
+use parser::ThemeFile;
 
-/// A complete colour theme for the git-rt TUI.
-///
-/// Every field is a [`Color`] value from ratatui so it can be used directly
-/// in [`Style`](ratatui::style::Style) calls without conversion.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+/// A complete, fully-resolved colour theme for the git-rt TUI.
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Theme {
-    /// Human-readable identifier (e.g. `"catppuccin-mocha"`).
-    pub name: &'static str,
+    pub name: String,
 
-    // ── Pane borders ──────────────────────────────────────────────────────
-    /// Default (unfocused) border colour.
     pub border: Color,
-    /// Focused pane border colour.
     pub border_focused: Color,
 
-    // ── Header bar ────────────────────────────────────────────────────────
-    /// Header text / title colour.
     pub header_text: Color,
-    /// Separator line in the header.
     pub header_separator: Color,
 
-    // ── File list ─────────────────────────────────────────────────────────
-    /// File path text colour.
     pub file_path: Color,
-    /// Insertion count (`+N`) colour.
     pub file_insertions: Color,
-    /// Deletion count (`-N`) colour.
     pub file_deletions: Color,
 
-    // ── UI state ──────────────────────────────────────────────────────────
-    /// Background of the selected row.
     pub selection_bg: Color,
-    /// Foreground of the selected row.
     pub selection_fg: Color,
-    /// Background used for brief "flash" feedback.
     pub flash_bg: Color,
-    /// Colour for "nothing to show" placeholder text.
     pub empty_text: Color,
 
-    // ── Diff rendering ────────────────────────────────────────────────────
-    /// Foreground for added lines (`+`).
     pub diff_add_fg: Color,
-    /// Background for added lines.
     pub diff_add_bg: Color,
-    /// Foreground for removed lines (`-`).
     pub diff_del_fg: Color,
-    /// Background for removed lines.
     pub diff_del_bg: Color,
-    /// Colour for context (unchanged) diff lines.
     pub diff_context: Color,
-    /// Colour for hunk headers (`@@ … @@`).
     pub diff_hunk_header: Color,
-    /// Colour for line numbers in the diff gutter.
     pub diff_line_number: Color,
-    /// Border around the inline diff panel.
     pub diff_border: Color,
 
-    // ── Base ──────────────────────────────────────────────────────────────
-    /// Terminal background colour.
     pub bg: Color,
-    /// Default foreground / text colour.
     pub fg: Color,
 }
 
-/// Return the theme matching `name` (case-insensitive).
-///
-/// Falls back to the first theme in [`ALL_THEMES`] when no match is found.
-pub fn get_theme(name: &str) -> &'static Theme {
-    let lower = name.to_lowercase();
-    ALL_THEMES
-        .iter()
-        .find(|t| t.name.to_lowercase() == lower)
-        .unwrap_or(&ALL_THEMES[0])
+/// Name of the default theme used when resolution fails or none is specified.
+pub const DEFAULT_THEME_NAME: &str = "catppuccin-mocha";
+
+/// Built-in theme TOML sources, embedded at compile time.
+const BUILTIN_THEMES: &[(&str, &str)] = &[
+    (
+        "catppuccin-mocha",
+        include_str!("builtin/catppuccin-mocha.toml"),
+    ),
+    (
+        "catppuccin-latte",
+        include_str!("builtin/catppuccin-latte.toml"),
+    ),
+    ("one-dark", include_str!("builtin/one-dark.toml")),
+    ("dracula", include_str!("builtin/dracula.toml")),
+    ("gruvbox-dark", include_str!("builtin/gruvbox-dark.toml")),
+    ("nord", include_str!("builtin/nord.toml")),
+    ("tokyo-night", include_str!("builtin/tokyo-night.toml")),
+    (
+        "solarized-dark",
+        include_str!("builtin/solarized-dark.toml"),
+    ),
+    ("rose-pine", include_str!("builtin/rose-pine.toml")),
+    ("kanagawa", include_str!("builtin/kanagawa.toml")),
+    (
+        "everforest-dark",
+        include_str!("builtin/everforest-dark.toml"),
+    ),
+];
+
+/// Default path to the user themes directory.
+/// Follows the same resolution logic as the config file: `~/.config/git-rt/themes/`
+/// or the platform-specific config directory fallback.
+pub fn default_user_themes_dir() -> Option<PathBuf> {
+    let xdg = dirs::home_dir().map(|h| h.join(".config").join("git-rt").join("themes"));
+    if let Some(ref p) = xdg {
+        if p.exists() {
+            return xdg;
+        }
+    }
+    dirs::config_dir().map(|d| d.join("git-rt").join("themes"))
 }
 
-/// Return the names of all available themes.
-pub fn list_themes() -> Vec<&'static str> {
-    ALL_THEMES.iter().map(|t| t.name).collect()
+/// Build the theme registry by parsing all built-in themes and any user themes
+/// in the given directory. User themes override built-ins with the same name.
+pub fn build_registry(user_themes_dir: Option<&Path>) -> HashMap<String, ThemeFile> {
+    let mut registry: HashMap<String, ThemeFile> = HashMap::new();
+
+    // Load built-ins
+    for (name, contents) in BUILTIN_THEMES {
+        match parser::parse_toml(contents) {
+            Ok(file) => {
+                registry.insert(file.name.clone(), file);
+            }
+            Err(e) => {
+                tracing::warn!(theme = name, error = %e, "failed to parse built-in theme");
+            }
+        }
+    }
+
+    // Load user themes (TOML and JSON)
+    if let Some(dir) = user_themes_dir {
+        if dir.is_dir() {
+            match std::fs::read_dir(dir) {
+                Ok(entries) => {
+                    for entry in entries.flatten() {
+                        let path = entry.path();
+                        let ext = path
+                            .extension()
+                            .and_then(|s| s.to_str())
+                            .map(str::to_lowercase);
+                        if !matches!(ext.as_deref(), Some("toml") | Some("json")) {
+                            continue;
+                        }
+                        match parser::parse_file(&path) {
+                            Ok(file) => {
+                                tracing::debug!(
+                                    name = %file.name,
+                                    path = %path.display(),
+                                    "loaded user theme"
+                                );
+                                registry.insert(file.name.clone(), file);
+                            }
+                            Err(e) => {
+                                tracing::warn!(
+                                    path = %path.display(),
+                                    error = %e,
+                                    "failed to parse user theme"
+                                );
+                            }
+                        }
+                    }
+                }
+                Err(e) => {
+                    tracing::warn!(dir = %dir.display(), error = %e, "failed to read user themes dir");
+                }
+            }
+        }
+    }
+
+    registry
+}
+
+/// Determine whether `name_or_path` looks like a filesystem path.
+fn looks_like_path(s: &str) -> bool {
+    s.contains('/') || s.contains('\\') || s.ends_with(".toml") || s.ends_with(".json")
+}
+
+/// Load and resolve a theme by name or file path.
+///
+/// Resolution order:
+/// 1. If `name_or_path` looks like a path, load the file directly
+/// 2. Otherwise, look up the name in the registry
+/// 3. Resolve the `extends` chain, filling any missing fields from the root theme
+///
+/// On any error, logs a warning and falls back to the default theme.
+pub fn load_theme(name_or_path: &str, user_themes_dir: Option<&Path>) -> Theme {
+    match try_load_theme(name_or_path, user_themes_dir) {
+        Ok(theme) => theme,
+        Err(e) => {
+            tracing::warn!(
+                theme = name_or_path,
+                error = %e,
+                "failed to load theme, falling back to default"
+            );
+            let registry = build_registry(user_themes_dir);
+            let default_file = registry
+                .get(DEFAULT_THEME_NAME)
+                .cloned()
+                .expect("built-in default theme must always exist in registry");
+            resolver::resolve(&default_file, &registry)
+                .expect("built-in default theme must always resolve")
+        }
+    }
+}
+
+/// Fallible version of `load_theme`. Returns an error instead of falling back.
+pub fn try_load_theme(name_or_path: &str, user_themes_dir: Option<&Path>) -> Result<Theme> {
+    let registry = build_registry(user_themes_dir);
+
+    let file = if looks_like_path(name_or_path) {
+        parser::parse_file(Path::new(name_or_path))
+            .with_context(|| format!("failed to load theme file: {name_or_path}"))?
+    } else {
+        registry
+            .get(name_or_path)
+            .cloned()
+            .ok_or_else(|| anyhow!("unknown theme: '{name_or_path}'"))?
+    };
+
+    resolver::resolve(&file, &registry)
+}
+
+/// Return the names of all available themes (built-in + user).
+pub fn list_themes(user_themes_dir: Option<&Path>) -> Vec<String> {
+    let registry = build_registry(user_themes_dir);
+    let mut names: Vec<String> = registry.keys().cloned().collect();
+    names.sort();
+    names
 }
 
 #[cfg(test)]
@@ -95,43 +217,133 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_get_default_theme() {
-        let theme = get_theme("catppuccin-mocha");
-        assert_eq!(theme.name, "catppuccin-mocha");
+    fn test_load_default_theme() {
+        let theme = load_theme(DEFAULT_THEME_NAME, None);
+        assert_eq!(theme.name, DEFAULT_THEME_NAME);
     }
 
     #[test]
-    fn test_get_theme_case_insensitive() {
-        let theme = get_theme("Catppuccin-Mocha");
-        assert_eq!(theme.name, "catppuccin-mocha");
+    fn test_load_known_builtin_theme() {
+        let theme = load_theme("dracula", None);
+        assert_eq!(theme.name, "dracula");
     }
 
     #[test]
-    fn test_get_theme_fallback() {
-        let theme = get_theme("this-theme-does-not-exist");
-        // Should fall back to the first theme (catppuccin-mocha)
-        assert_eq!(theme.name, ALL_THEMES[0].name);
+    fn test_all_builtin_themes_resolve() {
+        let builtins = [
+            "catppuccin-mocha",
+            "catppuccin-latte",
+            "one-dark",
+            "dracula",
+            "gruvbox-dark",
+            "nord",
+            "tokyo-night",
+            "solarized-dark",
+            "rose-pine",
+            "kanagawa",
+            "everforest-dark",
+        ];
+        for name in builtins {
+            let theme = load_theme(name, None);
+            assert_eq!(theme.name, name, "theme {name} did not load correctly");
+        }
     }
 
     #[test]
-    fn test_list_themes_not_empty() {
-        let themes = list_themes();
-        assert!(
-            themes.len() >= 5,
-            "expected at least 5 themes, got {}",
-            themes.len()
-        );
+    fn test_load_unknown_theme_falls_back() {
+        let theme = load_theme("this-does-not-exist", None);
+        assert_eq!(theme.name, DEFAULT_THEME_NAME);
     }
 
     #[test]
-    fn test_all_themes_have_distinct_names() {
-        let mut names: Vec<&str> = ALL_THEMES.iter().map(|t| t.name).collect();
-        let original_len = names.len();
-        names.dedup();
-        // Also sort+dedup to catch non-adjacent duplicates
-        let mut sorted = ALL_THEMES.iter().map(|t| t.name).collect::<Vec<_>>();
-        sorted.sort_unstable();
-        sorted.dedup();
-        assert_eq!(sorted.len(), original_len, "duplicate theme names detected");
+    fn test_list_themes_includes_builtins() {
+        let themes = list_themes(None);
+        assert!(themes.contains(&"catppuccin-mocha".to_string()));
+        assert!(themes.contains(&"dracula".to_string()));
+        assert!(themes.len() >= 11);
+    }
+
+    #[test]
+    fn test_looks_like_path() {
+        assert!(looks_like_path("/absolute/path.toml"));
+        assert!(looks_like_path("relative/path.toml"));
+        assert!(looks_like_path("file.toml"));
+        assert!(looks_like_path("file.json"));
+        assert!(!looks_like_path("catppuccin-mocha"));
+        assert!(!looks_like_path("my-theme"));
+    }
+
+    #[test]
+    fn test_load_from_file_path() {
+        let dir = std::env::temp_dir().join("git-rt-theme-file-load");
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("test.toml");
+        std::fs::write(
+            &path,
+            r##"
+name = "file-theme"
+extends = "catppuccin-mocha"
+
+[colors]
+bg = "#123456"
+"##,
+        )
+        .unwrap();
+
+        let theme = load_theme(path.to_str().unwrap(), None);
+        assert_eq!(theme.name, "file-theme");
+        assert_eq!(theme.bg, Color::Rgb(0x12, 0x34, 0x56));
+        // fg inherited from catppuccin-mocha
+        assert_eq!(theme.fg, Color::Rgb(0xcd, 0xd6, 0xf4));
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn test_user_themes_override_builtins() {
+        let dir = std::env::temp_dir().join("git-rt-theme-override");
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("dracula.toml");
+        std::fs::write(
+            &path,
+            r##"
+name = "dracula"
+extends = "catppuccin-mocha"
+
+[colors]
+bg = "#aabbcc"
+"##,
+        )
+        .unwrap();
+
+        let theme = load_theme("dracula", Some(&dir));
+        assert_eq!(theme.name, "dracula");
+        assert_eq!(theme.bg, Color::Rgb(0xaa, 0xbb, 0xcc));
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn test_user_themes_json_format() {
+        let dir = std::env::temp_dir().join("git-rt-theme-json");
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("my-json-theme.json");
+        std::fs::write(
+            &path,
+            r##"{
+                "name": "my-json-theme",
+                "extends": "catppuccin-mocha",
+                "colors": {
+                    "bg": "#ff0000"
+                }
+            }"##,
+        )
+        .unwrap();
+
+        let theme = load_theme("my-json-theme", Some(&dir));
+        assert_eq!(theme.name, "my-json-theme");
+        assert_eq!(theme.bg, Color::Rgb(0xff, 0, 0));
+
+        std::fs::remove_dir_all(&dir).ok();
     }
 }

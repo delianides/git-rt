@@ -30,6 +30,7 @@ pub struct App {
     _watcher: FsWatcher,
     fs_rx: Receiver<()>,
     config: AppConfig,
+    theme: crate::theme::Theme,
     tick_rate: Duration,
     /// The root repo path (for resolving worktrees)
     repo_path: PathBuf,
@@ -52,6 +53,7 @@ impl App {
         config: AppConfig,
         debounce_ms: u64,
         auto_follow: bool,
+        theme_override: Option<String>,
     ) -> Result<Self> {
         let git = GitRepo::new(&watch_path).context("Failed to open git repository")?;
 
@@ -70,6 +72,10 @@ impl App {
         state.set_stash_count(git.stash_count().unwrap_or(0));
         state.set_ahead_behind(git.ahead_behind().unwrap_or(None));
         state.set_repo_state(git.repo_state());
+
+        let user_themes_dir = crate::theme::default_user_themes_dir();
+        let theme_name_or_path = theme_override.as_deref().unwrap_or(&config.theme);
+        let theme = crate::theme::load_theme(theme_name_or_path, user_themes_dir.as_deref());
 
         let debounce = Duration::from_millis(debounce_ms);
         let (fs_rx, watcher) = FsWatcher::new(&watch_path, debounce)?;
@@ -101,6 +107,7 @@ impl App {
             _watcher: watcher,
             fs_rx,
             config,
+            theme,
             tick_rate: Duration::from_millis(250),
             repo_path,
             watch_path,
@@ -123,11 +130,10 @@ impl App {
 
     fn event_loop(&mut self, terminal: &mut Terminal) -> Result<()> {
         let mut last_tick = Instant::now();
-        let theme = crate::theme::get_theme(&self.config.theme);
 
         loop {
             // Render current state
-            terminal.draw(&self.state, &self.config, theme)?;
+            terminal.draw(&self.state, &self.config, &self.theme)?;
 
             // Calculate timeout until next tick
             let timeout = self

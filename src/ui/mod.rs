@@ -235,6 +235,14 @@ fn render_file_list(
     theme: &Theme,
     area: Rect,
 ) {
+    // Add a 1-row top padding inside the pane
+    let area = Rect {
+        x: area.x,
+        y: area.y + 1,
+        width: area.width,
+        height: area.height.saturating_sub(1),
+    };
+
     let files = state.files();
 
     if files.is_empty() {

@@ -190,7 +190,16 @@ fn build_header(state: &AppState, theme: &Theme) -> Line<'static> {
     let text_style = Style::default().fg(theme.header_text);
 
     let mut spans: Vec<Span<'static>> = Vec::new();
-    spans.push(Span::styled(format!(" {} files", file_count), text_style));
+
+    let repo = state.repo_name();
+    if !repo.is_empty() {
+        spans.push(Span::styled(format!(" {}", repo), text_style));
+        spans.push(Span::styled(" · ", sep_style));
+    } else {
+        spans.push(Span::raw(" "));
+    }
+
+    spans.push(Span::styled(format!("{} files", file_count), text_style));
     spans.push(Span::styled(" · ", sep_style));
     spans.push(Span::styled(
         format!("+{}", total_ins),
@@ -201,12 +210,6 @@ fn build_header(state: &AppState, theme: &Theme) -> Line<'static> {
         format!("-{}", total_del),
         Style::default().fg(theme.file_deletions),
     ));
-
-    let repo = state.repo_name();
-    if !repo.is_empty() {
-        spans.push(Span::styled(" · ", sep_style));
-        spans.push(Span::styled(repo.to_string(), text_style));
-    }
 
     let branch = state.branch();
     if !branch.is_empty() {

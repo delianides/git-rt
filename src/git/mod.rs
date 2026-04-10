@@ -265,8 +265,18 @@ impl GitRepo {
         Ok(parse_unified_diff(&diff_str))
     }
 
-    /// Get the repository name (basename of repo_path)
+    /// Get the repository name (basename of the main repo, even in a linked worktree).
+    /// Uses the common git dir to find the parent repo path.
     pub fn repo_name(&self) -> String {
+        if let Some(common_dir) = resolve_common_git_dir(&self.repo_path) {
+            // common_dir is e.g. /path/to/repo/.git — parent is the repo root
+            if let Some(repo_root) = common_dir.parent() {
+                if let Some(name) = repo_root.file_name() {
+                    return name.to_string_lossy().to_string();
+                }
+            }
+        }
+        // Fallback to basename of repo_path
         self.repo_path
             .file_name()
             .map(|n| n.to_string_lossy().to_string())

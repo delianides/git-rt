@@ -301,42 +301,78 @@ impl GitRepo {
         Ok((sha, message))
     }
 
-    /// Count the number of stash entries
-    pub fn stash_count(&self) -> Result<usize> {
-        let output = Command::new("git")
-            .args(["stash", "list"])
-            .current_dir(&self.repo_path)
-            .output()
-            .context("Failed to run git stash list")?;
+    /// Count the number of stash entries.
+    /// Stashes are stored as reflog entries on refs/stash.
+    pub fn stash_count(&self) -> Result<usize, GitFailure> {
+        // Try to find the stash ref. If missing, return 0.
+        let stash_ref = match self.repo.find_reference("refs/stash") {
+            Ok(r) => r,
+            Err(_) => return Ok(0), // no stash ref = no stashes
+        };
 
-        let text = String::from_utf8_lossy(&output.stdout);
-        let count = text.lines().filter(|l| !l.is_empty()).count();
-        Ok(count)
+        // Count reflog entries
+        match stash_ref.log_iter().all() {
+            Ok(Some(iter)) => Ok(iter.count()),
+            Ok(None) => Ok(0),
+            Err(e) => Err(GitFailure::EnvChange(format!("stash_count: {e}"))),
+        }
     }
 
     /// Get ahead/behind counts relative to upstream.
     /// Returns None if there is no upstream configured.
-    pub fn ahead_behind(&self) -> Result<Option<(usize, usize)>> {
-        let output = Command::new("git")
-            .args(["rev-list", "--left-right", "--count", "HEAD...@{upstream}"])
-            .current_dir(&self.repo_path)
-            .output()
-            .context("Failed to run git rev-list")?;
+    pub fn ahead_behind(&self) -> Result<Option<(usize, usize)>, GitFailure> {
+        // Get HEAD commit id
+        let head_commit = match self.repo.head_commit() {
+            Ok(c) => c,
+            Err(_) => return Ok(None),
+        };
+        let head_id = head_commit.id().detach();
 
-        if !output.status.success() {
-            // No upstream configured
-            return Ok(None);
-        }
+        // Resolve upstream commit id
+        let upstream_id = match self.upstream_commit_id() {
+            Some(id) => id,
+            None => return Ok(None), // no upstream configured
+        };
 
-        let text = String::from_utf8_lossy(&output.stdout).trim().to_string();
-        let parts: Vec<&str> = text.split('\t').collect();
-        if parts.len() == 2 {
-            let ahead = parts[0].parse::<usize>().unwrap_or(0);
-            let behind = parts[1].parse::<usize>().unwrap_or(0);
-            Ok(Some((ahead, behind)))
-        } else {
-            Ok(None)
-        }
+        // Compute ahead/behind by walking commits
+        let ahead = count_reachable_exclusive(&self.repo, head_id, upstream_id)
+            .map_err(|e| GitFailure::EnvChange(format!("ahead_behind ahead: {e}")))?;
+        let behind = count_reachable_exclusive(&self.repo, upstream_id, head_id)
+            .map_err(|e| GitFailure::EnvChange(format!("ahead_behind behind: {e}")))?;
+
+        Ok(Some((ahead, behind)))
+    }
+
+    /// Try to find the commit id of the current branch's upstream.
+    fn upstream_commit_id(&self) -> Option<gix::ObjectId> {
+        // Get current branch short name
+        let head_name = self.repo.head_name().ok().flatten()?;
+        let short = head_name.shorten().to_string();
+
+        // Look up branch config
+        let config = self.repo.config_snapshot();
+        let remote_key = format!("branch.{short}.remote");
+        let merge_key = format!("branch.{short}.merge");
+
+        let remote = config.string(remote_key.as_str())?;
+        let merge_ref = config.string(merge_key.as_str())?;
+
+        // merge_ref is "refs/heads/<branch>", strip to get branch name
+        let merge_branch = merge_ref.strip_prefix(b"refs/heads/" as &[u8])?;
+
+        // Construct tracking ref: refs/remotes/<remote>/<branch>
+        let mut tracking = Vec::new();
+        tracking.extend_from_slice(b"refs/remotes/");
+        tracking.extend_from_slice(remote.as_ref());
+        tracking.push(b'/');
+        tracking.extend_from_slice(merge_branch);
+        let tracking_str = std::str::from_utf8(&tracking).ok()?;
+
+        // Resolve the tracking ref to a commit id
+        let reference = self.repo.find_reference(tracking_str).ok()?;
+        // Peel to commit (in case it's a tag or symbolic ref)
+        let id = reference.id();
+        Some(id.detach())
     }
 
     /// Check if the repo is in a special state (rebase, merge, cherry-pick, etc.)
@@ -378,6 +414,36 @@ impl GitRepo {
             }],
         })
     }
+}
+
+/// Count commits reachable from `from` but not from `exclude`.
+fn count_reachable_exclusive(
+    repo: &gix::Repository,
+    from: gix::ObjectId,
+    exclude: gix::ObjectId,
+) -> Result<usize, Box<dyn std::error::Error + Send + Sync>> {
+    // Walk all ancestors of `exclude` into a hash set
+    let excluded: std::collections::HashSet<gix::ObjectId> = {
+        let mut set = std::collections::HashSet::new();
+        let walk = repo.rev_walk([exclude]).all()?;
+        for info in walk {
+            let info = info?;
+            set.insert(info.id);
+        }
+        set
+    };
+
+    // Walk ancestors of `from`, counting those not in `excluded`
+    let mut count = 0;
+    let walk = repo.rev_walk([from]).all()?;
+    for info in walk {
+        let info = info?;
+        if !excluded.contains(&info.id) {
+            count += 1;
+        }
+    }
+
+    Ok(count)
 }
 
 /// Parse a unified diff string into structured hunks

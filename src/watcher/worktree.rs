@@ -125,7 +125,11 @@ impl WorktreeMonitor {
     ///
     /// Returns a receiver for `WorktreeEvent`s and the monitor handle (must be kept alive).
     pub fn new(repo_path: &Path, debounce: Duration) -> Result<(Receiver<WorktreeEvent>, Self)> {
-        let git_worktrees_dir = repo_path.join(".git").join("worktrees");
+        // Resolve the actual .git directory (handles linked worktrees where .git is a file).
+        // Then find the common git dir to locate the worktrees/ subdirectory.
+        let common_git_dir =
+            crate::git::resolve_common_git_dir(repo_path).unwrap_or_else(|| repo_path.join(".git"));
+        let git_worktrees_dir = common_git_dir.join("worktrees");
         let (event_tx, event_rx) = bounded::<WorktreeEvent>(16);
 
         // Watch .git/worktrees/ for structural changes (new/removed worktrees)

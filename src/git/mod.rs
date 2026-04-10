@@ -123,40 +123,24 @@ pub fn resolve_common_git_dir(repo_path: &Path) -> Option<PathBuf> {
     }
 }
 
-/// Git repository handle
+/// Git repository handle backed by gix (gitoxide).
 pub struct GitRepo {
+    repo: gix::Repository,
     repo_path: PathBuf,
-    // TODO: Replace with gix::Repository once we wire up gitoxide properly.
-    // For the initial scaffold we shell out to git for correctness,
-    // then migrate to gix for performance.
-    //
-    // gix integration plan:
-    //   let repo = gix::open(&repo_path)?;
-    //   let status = repo.status(...)? for file listing
-    //   let diff = repo.diff_tree_to_workdir(...)? for diffs
 }
 
 impl GitRepo {
     pub fn new(path: &Path) -> Result<Self> {
-        // Verify this is a git repo
-        let output = Command::new("git")
-            .args(["rev-parse", "--show-toplevel"])
-            .current_dir(path)
-            .output()
-            .context("Failed to run git")?;
+        let repo = gix::open(path).map_err(|_e| GitFailure::NotARepo(path.to_path_buf()))?;
 
-        if !output.status.success() {
-            return Err(GitFailure::NotARepo(path.to_path_buf()).into());
-        }
+        // Resolve the canonical work dir path for downstream methods that still
+        // use filesystem paths (e.g., diff_untracked which reads the file).
+        let repo_path = repo
+            .work_dir()
+            .map(|p| p.to_path_buf())
+            .unwrap_or_else(|| path.to_path_buf());
 
-        let repo_root = String::from_utf8(output.stdout)
-            .context("Invalid UTF-8 in git output")?
-            .trim()
-            .to_string();
-
-        Ok(Self {
-            repo_path: PathBuf::from(repo_root),
-        })
+        Ok(Self { repo, repo_path })
     }
 
     /// Get the current branch name, or "HEAD" if detached
@@ -671,5 +655,21 @@ index abc1234..def5678 100644
         assert_eq!(cloned.path, "test.rs");
         assert_eq!(cloned.insertions, 5);
         assert_eq!(cloned.deletions, 3);
+    }
+
+    #[test]
+    fn test_new_opens_gix_repo_on_valid_path() {
+        let repo = GitRepo::new(std::path::Path::new(".")).unwrap();
+        // repo_path should be populated
+        assert!(!repo.repo_path.as_os_str().is_empty());
+    }
+
+    #[test]
+    fn test_new_returns_not_a_repo_for_invalid_path() {
+        let temp = std::env::temp_dir().join("git-rt-test-not-a-repo-task2");
+        std::fs::create_dir_all(&temp).unwrap();
+        let result = GitRepo::new(&temp);
+        assert!(result.is_err());
+        std::fs::remove_dir_all(&temp).ok();
     }
 }

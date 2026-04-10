@@ -6,6 +6,7 @@
 
 pub mod catalog;
 pub mod color;
+pub mod parser;
 
 use ratatui::style::Color;
 

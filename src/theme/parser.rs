@@ -157,6 +157,113 @@ bg = "#000000"
     }
 
     #[test]
+    fn test_builtin_themes_parse() {
+        let files = [
+            (
+                "catppuccin-mocha",
+                include_str!("builtin/catppuccin-mocha.toml"),
+            ),
+            (
+                "catppuccin-latte",
+                include_str!("builtin/catppuccin-latte.toml"),
+            ),
+            ("one-dark", include_str!("builtin/one-dark.toml")),
+            ("dracula", include_str!("builtin/dracula.toml")),
+            ("gruvbox-dark", include_str!("builtin/gruvbox-dark.toml")),
+            ("nord", include_str!("builtin/nord.toml")),
+            ("tokyo-night", include_str!("builtin/tokyo-night.toml")),
+            (
+                "solarized-dark",
+                include_str!("builtin/solarized-dark.toml"),
+            ),
+            ("rose-pine", include_str!("builtin/rose-pine.toml")),
+            ("kanagawa", include_str!("builtin/kanagawa.toml")),
+            (
+                "everforest-dark",
+                include_str!("builtin/everforest-dark.toml"),
+            ),
+        ];
+
+        for (name, content) in files {
+            let parsed =
+                parse_toml(content).unwrap_or_else(|e| panic!("failed to parse {name}: {e}"));
+            assert_eq!(parsed.name, name, "name mismatch for {name}");
+            assert!(parsed.colors.bg.is_some(), "{name}: missing bg");
+            assert!(parsed.colors.fg.is_some(), "{name}: missing fg");
+            assert!(parsed.colors.border.is_some(), "{name}: missing border");
+            assert!(
+                parsed.colors.border_focused.is_some(),
+                "{name}: missing border_focused"
+            );
+            assert!(
+                parsed.colors.header_text.is_some(),
+                "{name}: missing header_text"
+            );
+            assert!(
+                parsed.colors.header_separator.is_some(),
+                "{name}: missing header_separator"
+            );
+            assert!(
+                parsed.colors.file_path.is_some(),
+                "{name}: missing file_path"
+            );
+            assert!(
+                parsed.colors.file_insertions.is_some(),
+                "{name}: missing file_insertions"
+            );
+            assert!(
+                parsed.colors.file_deletions.is_some(),
+                "{name}: missing file_deletions"
+            );
+            assert!(
+                parsed.colors.selection_bg.is_some(),
+                "{name}: missing selection_bg"
+            );
+            assert!(
+                parsed.colors.selection_fg.is_some(),
+                "{name}: missing selection_fg"
+            );
+            assert!(parsed.colors.flash_bg.is_some(), "{name}: missing flash_bg");
+            assert!(
+                parsed.colors.empty_text.is_some(),
+                "{name}: missing empty_text"
+            );
+            assert!(
+                parsed.colors.diff_add_fg.is_some(),
+                "{name}: missing diff_add_fg"
+            );
+            assert!(
+                parsed.colors.diff_add_bg.is_some(),
+                "{name}: missing diff_add_bg"
+            );
+            assert!(
+                parsed.colors.diff_del_fg.is_some(),
+                "{name}: missing diff_del_fg"
+            );
+            assert!(
+                parsed.colors.diff_del_bg.is_some(),
+                "{name}: missing diff_del_bg"
+            );
+            assert!(
+                parsed.colors.diff_context.is_some(),
+                "{name}: missing diff_context"
+            );
+            assert!(
+                parsed.colors.diff_hunk_header.is_some(),
+                "{name}: missing diff_hunk_header"
+            );
+            assert!(
+                parsed.colors.diff_line_number.is_some(),
+                "{name}: missing diff_line_number"
+            );
+            assert!(
+                parsed.colors.diff_border.is_some(),
+                "{name}: missing diff_border"
+            );
+        }
+    }
+
+    #[test]
     fn test_parse_file_dispatches_by_extension() {
         use std::io::Write;
         let dir = std::env::temp_dir().join("git-rt-theme-parse-test");

@@ -134,6 +134,8 @@ pub struct AppState {
     overlay_visible: bool,
     /// PR widget state
     pr_state: PrState,
+    /// When set, the pane border should flash until this instant.
+    border_flash_until: Option<Instant>,
 }
 
 impl AppState {
@@ -162,6 +164,7 @@ impl AppState {
             flash_message: None,
             overlay_visible: false,
             pr_state: PrState::default(),
+            border_flash_until: None,
         }
     }
 
@@ -214,6 +217,14 @@ impl AppState {
 
     pub fn is_focused(&self) -> bool {
         self.focused
+    }
+
+    /// Returns true if the pane border is currently in a flash state.
+    pub fn is_border_flashing(&self) -> bool {
+        match self.border_flash_until {
+            Some(until) => Instant::now() < until,
+            None => false,
+        }
     }
 
     pub fn set_focused(&mut self, focused: bool) {
@@ -419,6 +430,8 @@ impl AppState {
         self.repo_state = None;
         self.overlay_visible = false;
         self.pr_state = PrState::default();
+        // Activate border flash for visual feedback on switch
+        self.border_flash_until = Some(Instant::now() + self.flash_duration);
     }
 
     /// Update the file list from a fresh git status computation.
@@ -861,6 +874,38 @@ mod tests {
         state.reset_for_switch(vec![], "main".to_string(), "r".to_string(), "w".to_string());
         assert!(!state.is_overlay_visible());
         assert!(state.pr_state().info.is_none());
+    }
+
+    #[test]
+    fn test_border_flash_initially_off() {
+        let state = AppState::new(vec![], Duration::from_millis(600), "main".to_string());
+        assert!(!state.is_border_flashing());
+    }
+
+    #[test]
+    fn test_border_flash_set_on_switch() {
+        let files = vec![make_entry("a.rs", 1, 0)];
+        let mut state = AppState::new(files, Duration::from_millis(600), "main".to_string());
+
+        state.reset_for_switch(
+            vec![make_entry("b.rs", 2, 1)],
+            "feature".to_string(),
+            "repo".to_string(),
+            "wt".to_string(),
+        );
+        assert!(
+            state.is_border_flashing(),
+            "flash should be set after reset_for_switch"
+        );
+    }
+
+    #[test]
+    fn test_border_flash_expires() {
+        let mut state = AppState::new(vec![], Duration::from_millis(1), "main".to_string());
+        state.reset_for_switch(vec![], "x".to_string(), "r".to_string(), "w".to_string());
+        assert!(state.is_border_flashing());
+        std::thread::sleep(Duration::from_millis(5));
+        assert!(!state.is_border_flashing());
     }
 
     #[test]

@@ -160,7 +160,9 @@ fn render_main_pane(
 ) {
     let header = build_header(state, theme, area.width);
 
-    let border_color = if state.is_focused() {
+    let border_color = if state.is_border_flashing() {
+        theme.flash_bg
+    } else if state.is_focused() {
         theme.border_focused
     } else {
         theme.border

@@ -139,15 +139,15 @@ fn render_pr_info(
     )));
     lines.push(Line::default());
 
-    // Mergeable
+    // Conflicts
     let (merge_text, merge_color) = match info.mergeable {
-        MergeableStatus::Clean => ("Clean", Color::Green),
-        MergeableStatus::Conflicts => ("Conflicts", Color::Red),
-        MergeableStatus::Behind => ("Behind", Color::Yellow),
-        MergeableStatus::Unknown => ("Unknown", Color::Gray),
+        MergeableStatus::Clean => ("No conflicts", Color::Green),
+        MergeableStatus::Conflicts => ("Has conflicts", Color::Red),
+        MergeableStatus::Behind => ("Behind base branch", Color::Yellow),
+        MergeableStatus::Unknown => ("Checking...", Color::Gray),
     };
     lines.push(Line::from(vec![
-        Span::styled("Mergeable: ", Style::default().fg(theme.header_separator)),
+        Span::styled("Conflicts: ", Style::default().fg(theme.header_separator)),
         Span::styled(merge_text, Style::default().fg(merge_color)),
     ]));
 

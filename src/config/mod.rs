@@ -2,7 +2,6 @@ use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result};
-use ratatui::style::Color;
 use serde::{Deserialize, Serialize};
 
 /// Top-level application configuration
@@ -21,9 +20,6 @@ pub struct AppConfig {
     pub keys: KeyConfig,
     /// Named actions that can be triggered on files
     pub actions: HashMap<String, ActionConfig>,
-    /// User-defined color palette (compat shim — to be removed in Task 5/6)
-    #[serde(default)]
-    pub colors: HashMap<String, ColorValue>,
 }
 
 impl Default for AppConfig {
@@ -35,7 +31,6 @@ impl Default for AppConfig {
             pr: PrConfig::default(),
             keys: KeyConfig::default(),
             actions: HashMap::new(),
-            colors: HashMap::new(),
         }
     }
 }
@@ -50,17 +45,6 @@ pub struct DisplayConfig {
     pub flash_on_change: bool,
     /// Duration in milliseconds for the flash effect
     pub flash_duration_ms: u64,
-    // ── Compat fields — to be removed in Task 5 ──────────────────────────────
-    /// Vim-style format string for file rows
-    pub file_line: String,
-    /// Top and bottom statusline configuration
-    pub statusline: StatusLineSectionConfig,
-    /// Show expand marker (▼/space) before each file row
-    pub show_expand_marker: bool,
-    /// Padding around the file list area
-    pub padding: PaddingConfig,
-    /// Color theme configuration
-    pub colors: ColorConfig,
 }
 
 impl Default for DisplayConfig {
@@ -69,11 +53,6 @@ impl Default for DisplayConfig {
             context_lines: 3,
             flash_on_change: true,
             flash_duration_ms: 600,
-            file_line: "%s %f %- %+".to_string(),
-            statusline: StatusLineSectionConfig::default(),
-            show_expand_marker: true,
-            padding: PaddingConfig::default(),
-            colors: ColorConfig::default(),
         }
     }
 }
@@ -184,147 +163,6 @@ impl AppConfig {
         )
     }
 }
-
-// ── Compatibility shims ────────────────────────────────────────────────────────
-// These types exist solely to keep ui/mod.rs and ui/status_format.rs compiling
-// while they are rewritten in Task 5. They will be deleted in that task.
-
-/// A color value that can be a named color or hex RGB string.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(transparent)]
-pub struct ColorValue(pub String);
-
-impl ColorValue {
-    /// Construct from a raw string.
-    pub fn new(s: &str) -> Self {
-        Self(s.to_string())
-    }
-
-    /// Resolve to a ratatui `Color`.
-    pub fn resolve(&self) -> Color {
-        let s = self.0.trim();
-        if let Some(hex) = s.strip_prefix('#') {
-            if hex.len() == 6 {
-                let r = u8::from_str_radix(&hex[0..2], 16);
-                let g = u8::from_str_radix(&hex[2..4], 16);
-                let b = u8::from_str_radix(&hex[4..6], 16);
-                if let (Ok(r), Ok(g), Ok(b)) = (r, g, b) {
-                    return Color::Rgb(r, g, b);
-                }
-            }
-            return Color::Reset;
-        }
-        match s.to_lowercase().as_str() {
-            "black" => Color::Black,
-            "red" => Color::Red,
-            "green" => Color::Green,
-            "yellow" => Color::Yellow,
-            "blue" => Color::Blue,
-            "magenta" => Color::Magenta,
-            "cyan" => Color::Cyan,
-            "gray" | "grey" => Color::Gray,
-            "darkgray" | "darkgrey" | "dark_gray" | "dark_grey" => Color::DarkGray,
-            "lightred" | "light_red" => Color::LightRed,
-            "lightgreen" | "light_green" => Color::LightGreen,
-            "lightyellow" | "light_yellow" => Color::LightYellow,
-            "lightblue" | "light_blue" => Color::LightBlue,
-            "lightmagenta" | "light_magenta" => Color::LightMagenta,
-            "lightcyan" | "light_cyan" => Color::LightCyan,
-            "white" => Color::White,
-            _ => Color::Reset,
-        }
-    }
-}
-
-/// Compat shim: single statusline bar config (to be removed in Task 5).
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(default)]
-pub struct StatusLineConfig {
-    pub status_line: String,
-    pub foreground_color: ColorValue,
-    pub background_color: ColorValue,
-}
-
-impl Default for StatusLineConfig {
-    fn default() -> Self {
-        Self {
-            status_line: String::new(),
-            foreground_color: ColorValue::new("white"),
-            background_color: ColorValue::new("#1E1E1E"),
-        }
-    }
-}
-
-/// Compat shim: top/bottom statusline container (to be removed in Task 5).
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(default)]
-pub struct StatusLineSectionConfig {
-    pub top: StatusLineConfig,
-    pub bottom: StatusLineConfig,
-}
-
-impl Default for StatusLineSectionConfig {
-    fn default() -> Self {
-        Self {
-            top: StatusLineConfig::default(),
-            bottom: StatusLineConfig {
-                status_line: "%b  %c files  {red}%-{/} {green}%+{/}  %=%R".to_string(),
-                ..StatusLineConfig::default()
-            },
-        }
-    }
-}
-
-/// Compat shim: UI color palette (to be removed in Task 5).
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(default)]
-pub struct UiColors {
-    pub selection_bg: ColorValue,
-    pub selection_fg: ColorValue,
-    pub flash_bg: ColorValue,
-    pub empty_text: ColorValue,
-}
-
-impl Default for UiColors {
-    fn default() -> Self {
-        Self {
-            selection_bg: ColorValue::new("darkgray"),
-            selection_fg: ColorValue::new("white"),
-            flash_bg: ColorValue::new("#64641E"),
-            empty_text: ColorValue::new("darkgray"),
-        }
-    }
-}
-
-/// Compat shim: color config wrapper (to be removed in Task 5).
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
-#[serde(default)]
-pub struct ColorConfig {
-    pub ui: UiColors,
-}
-
-/// Compat shim: padding config (to be removed in Task 5).
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(default)]
-pub struct PaddingConfig {
-    pub top: u16,
-    pub bottom: u16,
-    pub left: u16,
-    pub right: u16,
-}
-
-impl Default for PaddingConfig {
-    fn default() -> Self {
-        Self {
-            top: 1,
-            bottom: 0,
-            left: 0,
-            right: 2,
-        }
-    }
-}
-
-// ── End compatibility shims ───────────────────────────────────────────────────
 
 #[cfg(test)]
 mod tests {

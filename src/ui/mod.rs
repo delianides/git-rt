@@ -158,7 +158,7 @@ fn render_main_pane(
     theme: &Theme,
     area: Rect,
 ) {
-    let header = build_header(state, theme);
+    let header = build_header(state, theme, area.width);
 
     let border_color = if state.is_focused() {
         theme.border_focused
@@ -179,19 +179,51 @@ fn render_main_pane(
     render_file_list(frame, state, config, theme, inner);
 }
 
-/// Build the header line: "5 files . +32 -12 . repo . branch . worktree"
-fn build_header(state: &AppState, theme: &Theme) -> Line<'static> {
+/// Build the header line, progressively dropping elements if the window is too narrow.
+/// Priority (kept longest): repo name, file count > diff stats > branch > worktree
+fn build_header(state: &AppState, theme: &Theme, width: u16) -> Line<'static> {
     let files = state.files();
     let file_count = files.len();
     let total_ins: usize = files.iter().map(|f| f.insertions).sum();
     let total_del: usize = files.iter().map(|f| f.deletions).sum();
+
+    let repo = state.repo_name();
+    let branch = state.branch().to_string();
+    let worktree = state.worktree_name().to_string();
+    let show_worktree = !worktree.is_empty() && worktree != repo;
+
+    // Calculate widths of each segment (including separators)
+    let repo_w = if repo.is_empty() { 1 } else { repo.len() + 4 }; // " repo · "
+    let files_w = format!("{} files", file_count).len();
+    let stats_w = format!(" · +{} -{}", total_ins, total_del).len();
+    let branch_w = if branch.is_empty() {
+        0
+    } else {
+        branch.len() + 3 // " · branch"
+    };
+    let wt_w = if show_worktree {
+        worktree.len() + 3 // " · worktree"
+    } else {
+        0
+    };
+    let trailing = 2; // " " + border
+
+    let available = width as usize;
+
+    // Determine what fits, dropping from the end
+    let full = repo_w + files_w + stats_w + branch_w + wt_w + trailing;
+    let include_worktree = show_worktree && full <= available;
+    let without_wt = repo_w + files_w + stats_w + branch_w + trailing;
+    let include_branch = !branch.is_empty() && without_wt <= available;
+    let without_branch = repo_w + files_w + stats_w + trailing;
+    let include_stats = without_branch <= available;
 
     let sep_style = Style::default().fg(theme.header_separator);
     let text_style = Style::default().fg(theme.header_text);
 
     let mut spans: Vec<Span<'static>> = Vec::new();
 
-    let repo = state.repo_name();
+    // Repo name (always shown)
     if !repo.is_empty() {
         spans.push(Span::styled(format!(" {}", repo), text_style));
         spans.push(Span::styled(" · ", sep_style));
@@ -199,28 +231,33 @@ fn build_header(state: &AppState, theme: &Theme) -> Line<'static> {
         spans.push(Span::raw(" "));
     }
 
+    // File count (always shown)
     spans.push(Span::styled(format!("{} files", file_count), text_style));
-    spans.push(Span::styled(" · ", sep_style));
-    spans.push(Span::styled(
-        format!("+{}", total_ins),
-        Style::default().fg(theme.file_insertions),
-    ));
-    spans.push(Span::raw(" "));
-    spans.push(Span::styled(
-        format!("-{}", total_del),
-        Style::default().fg(theme.file_deletions),
-    ));
 
-    let branch = state.branch();
-    if !branch.is_empty() {
+    // Diff stats
+    if include_stats {
         spans.push(Span::styled(" · ", sep_style));
-        spans.push(Span::styled(branch.to_string(), text_style));
+        spans.push(Span::styled(
+            format!("+{}", total_ins),
+            Style::default().fg(theme.file_insertions),
+        ));
+        spans.push(Span::raw(" "));
+        spans.push(Span::styled(
+            format!("-{}", total_del),
+            Style::default().fg(theme.file_deletions),
+        ));
     }
 
-    let worktree = state.worktree_name();
-    if !worktree.is_empty() && worktree != repo {
+    // Branch
+    if include_branch {
         spans.push(Span::styled(" · ", sep_style));
-        spans.push(Span::styled(worktree.to_string(), text_style));
+        spans.push(Span::styled(branch, text_style));
+    }
+
+    // Worktree
+    if include_worktree {
+        spans.push(Span::styled(" · ", sep_style));
+        spans.push(Span::styled(worktree, text_style));
     }
 
     spans.push(Span::raw(" "));

@@ -1,25 +1,23 @@
 //! Theme system for git-rt.
 //!
-//! Provides a set of built-in colour themes that can be selected by name.
-//! All theme data is static — there are no user-defined themes, only theme
-//! selection via configuration.
+//! Themes are loaded from TOML/JSON files and resolved into fully-specified
+//! `Theme` values via the `resolver` module. The `parser` module handles raw
+//! file parsing; `color` handles color string parsing.
 
-pub mod catalog;
 pub mod color;
 pub mod parser;
+pub mod resolver;
 
 use ratatui::style::Color;
-
-pub use catalog::ALL_THEMES;
 
 /// A complete colour theme for the git-rt TUI.
 ///
 /// Every field is a [`Color`] value from ratatui so it can be used directly
 /// in [`Style`](ratatui::style::Style) calls without conversion.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Theme {
     /// Human-readable identifier (e.g. `"catppuccin-mocha"`).
-    pub name: &'static str,
+    pub name: String,
 
     // ── Pane borders ──────────────────────────────────────────────────────
     /// Default (unfocused) border colour.
@@ -76,64 +74,35 @@ pub struct Theme {
     pub fg: Color,
 }
 
-/// Return the theme matching `name` (case-insensitive).
+/// Temporary stub so the binary continues to compile while the theme system
+/// is being rewritten. Task 5 replaces this with a real registry + loader.
 ///
-/// Falls back to the first theme in [`ALL_THEMES`] when no match is found.
-pub fn get_theme(name: &str) -> &'static Theme {
-    let lower = name.to_lowercase();
-    ALL_THEMES
-        .iter()
-        .find(|t| t.name.to_lowercase() == lower)
-        .unwrap_or(&ALL_THEMES[0])
-}
-
-/// Return the names of all available themes.
-pub fn list_themes() -> Vec<&'static str> {
-    ALL_THEMES.iter().map(|t| t.name).collect()
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn test_get_default_theme() {
-        let theme = get_theme("catppuccin-mocha");
-        assert_eq!(theme.name, "catppuccin-mocha");
-    }
-
-    #[test]
-    fn test_get_theme_case_insensitive() {
-        let theme = get_theme("Catppuccin-Mocha");
-        assert_eq!(theme.name, "catppuccin-mocha");
-    }
-
-    #[test]
-    fn test_get_theme_fallback() {
-        let theme = get_theme("this-theme-does-not-exist");
-        // Should fall back to the first theme (catppuccin-mocha)
-        assert_eq!(theme.name, ALL_THEMES[0].name);
-    }
-
-    #[test]
-    fn test_list_themes_not_empty() {
-        let themes = list_themes();
-        assert!(
-            themes.len() >= 5,
-            "expected at least 5 themes, got {}",
-            themes.len()
-        );
-    }
-
-    #[test]
-    fn test_all_themes_have_distinct_names() {
-        let mut names: Vec<&str> = ALL_THEMES.iter().map(|t| t.name).collect();
-        let original_len = names.len();
-        names.dedup();
-        // Also sort+dedup to catch non-adjacent duplicates
-        let mut sorted = ALL_THEMES.iter().map(|t| t.name).collect::<Vec<_>>();
-        sorted.sort_unstable();
-        sorted.dedup();
-        assert_eq!(sorted.len(), original_len, "duplicate theme names detected");
+/// Returns a minimal placeholder theme. The name is preserved so call sites
+/// that inspect it still work.
+#[doc(hidden)]
+pub fn get_theme(name: &str) -> Theme {
+    Theme {
+        name: name.to_string(),
+        bg: Color::Reset,
+        fg: Color::Reset,
+        border: Color::Reset,
+        border_focused: Color::Reset,
+        header_text: Color::Reset,
+        header_separator: Color::Reset,
+        file_path: Color::Reset,
+        file_insertions: Color::Green,
+        file_deletions: Color::Red,
+        selection_bg: Color::DarkGray,
+        selection_fg: Color::White,
+        flash_bg: Color::DarkGray,
+        empty_text: Color::Gray,
+        diff_add_fg: Color::Green,
+        diff_add_bg: Color::Reset,
+        diff_del_fg: Color::Red,
+        diff_del_bg: Color::Reset,
+        diff_context: Color::Gray,
+        diff_hunk_header: Color::Cyan,
+        diff_line_number: Color::DarkGray,
+        diff_border: Color::Reset,
     }
 }

@@ -127,12 +127,20 @@ pub fn fetch_pr_data(
         .read_json()
         .context("Failed to parse PR search response")?;
 
-    let pr = match prs.into_iter().next() {
-        Some(pr) => pr,
+    let number = match prs.first() {
+        Some(pr) => pr.number,
         None => return Ok(None),
     };
 
-    let number = pr.number;
+    // Fetch the individual PR endpoint — the list endpoint returns
+    // mergeable/mergeable_state as null since GitHub computes them async.
+    let pr_url = format!("https://api.github.com/repos/{owner}/{repo}/pulls/{number}");
+    let pr: GitHubPr = github_get(&agent, &pr_url, token)
+        .call()
+        .context("Failed to fetch PR details")?
+        .body_mut()
+        .read_json()
+        .context("Failed to parse PR details response")?;
 
     // Fetch reviews
     let reviews_url = format!("https://api.github.com/repos/{owner}/{repo}/pulls/{number}/reviews");

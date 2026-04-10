@@ -5,6 +5,7 @@ mod app;
 mod config;
 mod git;
 mod state;
+mod theme;
 mod ui;
 mod watcher;
 

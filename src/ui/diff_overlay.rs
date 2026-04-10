@@ -91,7 +91,7 @@ pub fn render_diff_overlay(
     for hunk in &diff.hunks {
         // Hunk header line
         lines.push(Line::from(vec![
-            Span::styled("      ", Style::default().fg(theme.diff_line_number)),
+            Span::styled("         ", Style::default().fg(theme.diff_line_number)),
             Span::styled(
                 &hunk.header,
                 Style::default()
@@ -105,7 +105,7 @@ pub fn render_diff_overlay(
         for diff_line in &hunk.lines {
             let (gutter, style) = match diff_line.kind {
                 DiffLineKind::Addition => {
-                    let g = format!("{:>4}  ", new_line);
+                    let g = format!("{:>4}{:>4} ", "    ", new_line);
                     new_line += 1;
                     (
                         g,
@@ -113,7 +113,7 @@ pub fn render_diff_overlay(
                     )
                 }
                 DiffLineKind::Deletion => {
-                    let g = format!("{:>4}  ", old_line);
+                    let g = format!("{:>4}{:>4} ", old_line, "    ");
                     old_line += 1;
                     (
                         g,
@@ -121,13 +121,13 @@ pub fn render_diff_overlay(
                     )
                 }
                 DiffLineKind::Context => {
-                    let g = format!("{:>4}  ", old_line);
+                    let g = format!("{:>4}{:>4} ", old_line, new_line);
                     old_line += 1;
                     new_line += 1;
                     (g, Style::default().fg(theme.diff_context))
                 }
                 DiffLineKind::HunkHeader => (
-                    "      ".to_string(),
+                    "         ".to_string(),
                     Style::default().fg(theme.diff_hunk_header),
                 ),
             };

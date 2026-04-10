@@ -137,22 +137,39 @@ fn render_pr_info(
 
     // Checks
     let checks = &info.checks;
-    let checks_summary = format!(
-        "{}/{} passed, {} failed, {} pending",
-        checks.passed, checks.total, checks.failed, checks.pending
-    );
+    let checks_summary = format!("{}/{} passing", checks.passed, checks.total);
     lines.push(Line::from(vec![
         Span::styled("Checks: ", Style::default().fg(theme.header_separator)),
         Span::styled(checks_summary, Style::default().fg(theme.fg)),
     ]));
 
+    // Individual failing/running checks (show up to 5)
+    let notable_checks: Vec<_> = checks
+        .checks
+        .iter()
+        .filter(|c| {
+            matches!(
+                c.status,
+                CheckStatus::Failed | CheckStatus::Running | CheckStatus::Pending
+            )
+        })
+        .take(5)
+        .collect();
+    if !notable_checks.is_empty() {
+        let check_names: Vec<&str> = notable_checks.iter().map(|c| c.name.as_str()).collect();
+        lines.push(Line::from(Span::styled(
+            format!("  {}", check_names.join(" · ")),
+            Style::default().fg(theme.fg),
+        )));
+    }
+
     // Individual checks (show up to 5)
     for check in checks.checks.iter().take(5) {
         let (icon, color) = match check.status {
-            CheckStatus::Passed => ("  +", Color::Green),
-            CheckStatus::Failed => ("  x", Color::Red),
-            CheckStatus::Pending => ("  o", Color::Yellow),
-            CheckStatus::Running => ("  ~", Color::Cyan),
+            CheckStatus::Passed => ("  ✓", Color::Green),
+            CheckStatus::Failed => ("  ✗", Color::Red),
+            CheckStatus::Pending => ("  ●", Color::Yellow),
+            CheckStatus::Running => ("  ●", Color::Cyan),
         };
         lines.push(Line::from(vec![
             Span::styled(icon, Style::default().fg(color)),
@@ -170,11 +187,11 @@ fn render_pr_info(
 
         for review in &info.reviews {
             let (icon, color) = match review.state {
-                ReviewState::Approved => ("+", Color::Green),
-                ReviewState::ChangesRequested => ("!", Color::Red),
-                ReviewState::Pending => ("o", Color::Yellow),
-                ReviewState::Commented => (".", Color::Cyan),
-                ReviewState::Dismissed => ("-", Color::Gray),
+                ReviewState::Approved => ("✓", Color::Green),
+                ReviewState::ChangesRequested => ("✗", Color::Red),
+                ReviewState::Pending => ("●", Color::Yellow),
+                ReviewState::Commented => ("◆", Color::Cyan),
+                ReviewState::Dismissed => ("–", Color::Gray),
             };
             lines.push(Line::from(vec![
                 Span::styled(format!("  {icon}"), Style::default().fg(color)),

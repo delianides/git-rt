@@ -4,6 +4,7 @@ mod actions;
 mod app;
 mod config;
 mod git;
+mod github;
 mod state;
 mod theme;
 mod ui;

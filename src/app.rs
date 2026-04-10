@@ -111,7 +111,8 @@ impl App {
 
         loop {
             // Render current state
-            terminal.draw(&self.state, &self.config.display, &self.config.colors)?;
+            let theme = crate::theme::get_theme(&self.config.theme);
+            terminal.draw(&self.state, &self.config, theme)?;
 
             // Calculate timeout until next tick
             let timeout = self

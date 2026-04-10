@@ -136,7 +136,7 @@ impl GitRepo {
         // Resolve the canonical work dir path for downstream methods that still
         // use filesystem paths (e.g., diff_untracked which reads the file).
         let repo_path = repo
-            .work_dir()
+            .workdir()
             .map(|p| p.to_path_buf())
             .unwrap_or_else(|| path.to_path_buf());
 
@@ -255,7 +255,7 @@ impl GitRepo {
     /// Uses gix to load the index blob and diffs it against the worktree file.
     /// For untracked files, synthesizes a diff where every line is an addition.
     pub fn diff_file(&self, path: &str) -> Result<FileDiff, GitFailure> {
-        let work_dir = match self.repo.work_dir() {
+        let work_dir = match self.repo.workdir() {
             Some(d) => d.to_path_buf(),
             None => return Ok(FileDiff::default()),
         };
@@ -325,7 +325,7 @@ impl GitRepo {
     /// Handles linked worktrees where the work dir differs from the main repo.
     pub fn worktree_name(&self) -> String {
         self.repo
-            .work_dir()
+            .workdir()
             .and_then(|p| p.file_name())
             .map(|n| n.to_string_lossy().to_string())
             .unwrap_or_else(|| self.repo_name())
@@ -602,21 +602,19 @@ fn synthesize_deletion_diff(old: &str) -> FileDiff {
 /// Classify a gix index-worktree status item into our (path, FileStatus).
 /// Returns `None` for items we don't want to show (e.g., NeedsUpdate
 /// bookkeeping items or tracked directory entries).
-fn classify_status_item(
-    item: &gix::status::index_worktree::iter::Item,
-) -> Option<(String, FileStatus)> {
+fn classify_status_item(item: &gix::status::index_worktree::Item) -> Option<(String, FileStatus)> {
     use gix::bstr::ByteSlice;
-    use gix::status::index_worktree::iter::Item;
+    use gix::status::index_worktree::Item;
     use gix::status::plumbing::index_as_worktree::{Change, EntryStatus};
 
     let path = item.rela_path().to_str().ok()?.to_string();
 
     let status = match item {
         Item::Modification { status, .. } => match status {
-            EntryStatus::Conflict(_) => FileStatus::Conflicted,
+            EntryStatus::Conflict { .. } => FileStatus::Conflicted,
             EntryStatus::Change(change) => match change {
                 Change::Removed => FileStatus::Deleted,
-                Change::Type => FileStatus::Modified,
+                Change::Type { .. } => FileStatus::Modified,
                 Change::Modification { .. } => FileStatus::Modified,
                 Change::SubmoduleModification(_) => FileStatus::Modified,
             },

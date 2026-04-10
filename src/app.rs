@@ -123,7 +123,10 @@ impl App {
 
     fn event_loop(&mut self, terminal: &mut Terminal) -> Result<()> {
         let mut last_tick = Instant::now();
-        let theme = crate::theme::get_theme(&self.config.theme);
+        let theme = crate::theme::load_theme(
+            &self.config.theme,
+            crate::theme::default_user_themes_dir().as_deref(),
+        );
 
         loop {
             // Render current state

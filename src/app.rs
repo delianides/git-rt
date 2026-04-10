@@ -271,25 +271,31 @@ impl App {
     /// Recompute git status on filesystem change
     fn handle_fs_change(&mut self) -> Result<()> {
         tracing::debug!("Filesystem change detected, recomputing status");
-        let files = self.git.status()?;
-        let branch = self
-            .git
-            .branch_name()
-            .unwrap_or_else(|_| "HEAD".to_string());
-        tracing::debug!(file_count = files.len(), "Git status returned");
-        for f in &files {
-            tracing::debug!(path = %f.path, ins = f.insertions, del = f.deletions, "  file");
-        }
-        self.state.set_branch(branch);
-        self.state.update_files(files);
 
+        match self.git.status() {
+            Ok(files) => {
+                tracing::debug!(file_count = files.len(), "Git status returned");
+                self.state.update_files(files);
+            }
+            Err(e) if e.is_env_change() => {
+                tracing::debug!(error = %e, "git env changed during status, holding state");
+                return Ok(());
+            }
+            Err(e) => return Err(e.into()),
+        }
+
+        if let Ok(branch) = self.git.branch_name() {
+            self.state.set_branch(branch);
+        }
         if let Ok((sha, msg)) = self.git.head_info() {
             self.state.set_head_info(sha, msg);
         }
-        self.state
-            .set_stash_count(self.git.stash_count().unwrap_or(0));
-        self.state
-            .set_ahead_behind(self.git.ahead_behind().unwrap_or(None));
+        if let Ok(count) = self.git.stash_count() {
+            self.state.set_stash_count(count);
+        }
+        if let Ok(ab) = self.git.ahead_behind() {
+            self.state.set_ahead_behind(ab);
+        }
         self.state.set_repo_state(self.git.repo_state());
 
         Ok(())
@@ -303,14 +309,26 @@ impl App {
                 if self.state.is_expanded(&path) {
                     self.state.collapse_selected();
                 } else {
-                    let diff = self.git.diff_file(&path)?;
-                    self.state.expand_selected(diff);
+                    match self.git.diff_file(&path) {
+                        Ok(diff) => self.state.expand_selected(diff),
+                        Err(e) if e.is_env_change() => {
+                            tracing::debug!(error = %e, "git env changed during diff, skipping expand");
+                        }
+                        Err(e) => return Err(e.into()),
+                    }
                 }
             } else {
                 // Overlay behavior (default)
-                let diff = self.git.diff_file(&path)?;
-                self.state.expand_selected(diff);
-                self.state.show_overlay();
+                match self.git.diff_file(&path) {
+                    Ok(diff) => {
+                        self.state.expand_selected(diff);
+                        self.state.show_overlay();
+                    }
+                    Err(e) if e.is_env_change() => {
+                        tracing::debug!(error = %e, "git env changed during diff, skipping expand");
+                    }
+                    Err(e) => return Err(e.into()),
+                }
             }
         }
         Ok(())

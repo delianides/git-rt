@@ -15,8 +15,7 @@ ratatui = "0.29"
 crossterm = "0.28"
 
 # Git
-gix = { version = "0.68", default-features = false, features = [
-    "basic",
+gix = { version = "0.81", features = [
     "index",
     "worktree-mutation",
     "blob-diff",

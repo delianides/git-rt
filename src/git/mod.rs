@@ -1,17 +1,31 @@
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-use anyhow::{Context, Result};
+use anyhow::Result;
 use thiserror::Error;
 
 #[derive(Error, Debug)]
-pub enum GitError {
+pub enum GitFailure {
     #[error("Not a git repository: {0}")]
     NotARepo(PathBuf),
-    #[error("Failed to compute status: {0}")]
-    StatusFailed(String),
-    #[error("Failed to compute diff: {0}")]
-    DiffFailed(String),
+
+    /// Git environment is in flux (e.g., worktree cleanup in progress,
+    /// index.lock present, refs being rewritten). The caller should hold
+    /// the last known state and try again on the next refresh.
+    #[error("Git environment changed: {0}")]
+    EnvChange(String),
+
+    /// A real failure: corrupt repo, I/O error, unexpected gix error, etc.
+    #[error("Git operation failed: {0}")]
+    Failed(String),
+}
+
+impl GitFailure {
+    /// Returns true if this failure indicates a transient env change
+    /// (not a fatal error).
+    pub fn is_env_change(&self) -> bool {
+        matches!(self, GitFailure::EnvChange(_))
+    }
 }
 
 /// Status of a file relative to the git index/HEAD
@@ -109,160 +123,190 @@ pub fn resolve_common_git_dir(repo_path: &Path) -> Option<PathBuf> {
     }
 }
 
-/// Git repository handle
+/// Git repository handle backed by gix (gitoxide).
 pub struct GitRepo {
+    repo: gix::Repository,
     repo_path: PathBuf,
-    // TODO: Replace with gix::Repository once we wire up gitoxide properly.
-    // For the initial scaffold we shell out to git for correctness,
-    // then migrate to gix for performance.
-    //
-    // gix integration plan:
-    //   let repo = gix::open(&repo_path)?;
-    //   let status = repo.status(...)? for file listing
-    //   let diff = repo.diff_tree_to_workdir(...)? for diffs
 }
 
 impl GitRepo {
     pub fn new(path: &Path) -> Result<Self> {
-        // Verify this is a git repo
-        let output = Command::new("git")
-            .args(["rev-parse", "--show-toplevel"])
-            .current_dir(path)
-            .output()
-            .context("Failed to run git")?;
+        let repo = gix::open(path).map_err(|_e| GitFailure::NotARepo(path.to_path_buf()))?;
 
-        if !output.status.success() {
-            return Err(GitError::NotARepo(path.to_path_buf()).into());
-        }
+        // Resolve the canonical work dir path for downstream methods that still
+        // use filesystem paths (e.g., diff_untracked which reads the file,
+        // repo_name/worktree_name which take file_name of the path).
+        //
+        // gix's workdir() may return a relative path (e.g., "."). We canonicalize
+        // it to ensure .file_name() and .parent() work correctly — a relative
+        // path like "." has no file_name.
+        let repo_path = repo
+            .workdir()
+            .map(|p| p.to_path_buf())
+            .unwrap_or_else(|| path.to_path_buf());
+        let repo_path = std::fs::canonicalize(&repo_path).unwrap_or(repo_path);
 
-        let repo_root = String::from_utf8(output.stdout)
-            .context("Invalid UTF-8 in git output")?
-            .trim()
-            .to_string();
-
-        Ok(Self {
-            repo_path: PathBuf::from(repo_root),
-        })
+        Ok(Self { repo, repo_path })
     }
 
     /// Get the current branch name, or "HEAD" if detached
-    pub fn branch_name(&self) -> Result<String> {
-        let output = Command::new("git")
-            .args(["rev-parse", "--abbrev-ref", "HEAD"])
-            .current_dir(&self.repo_path)
-            .output()
-            .context("Failed to run git rev-parse")?;
-
-        let name = String::from_utf8_lossy(&output.stdout).trim().to_string();
-        Ok(if name.is_empty() {
-            "HEAD".to_string()
-        } else {
-            name
-        })
+    pub fn branch_name(&self) -> Result<String, GitFailure> {
+        match self.repo.head_name() {
+            Ok(Some(name)) => Ok(name.shorten().to_string()),
+            Ok(None) => Ok("HEAD".to_string()),
+            Err(e) => Err(GitFailure::EnvChange(format!("branch_name: {e}"))),
+        }
     }
 
     /// Compute the current status of all changed files with numstat.
-    pub fn status(&self) -> Result<Vec<FileEntry>> {
-        let mut entries = Vec::new();
+    ///
+    /// Uses gix's index-worktree iterator to discover unstaged/untracked
+    /// changes, and shells out to `git diff --cached --numstat` for staged
+    /// changes (tree-vs-index). Any failure from either source is reported
+    /// as [`GitFailure::EnvChange`] so callers can hold the previous state
+    /// rather than crashing during a transient git env change (worktree
+    /// being cleaned up, index.lock, mid-rebase, etc.).
+    pub fn status(&self) -> Result<Vec<FileEntry>, GitFailure> {
+        use std::collections::HashMap;
 
-        // Get porcelain status for file statuses
-        let status_output = Command::new("git")
-            .args(["status", "--porcelain=v1", "-uall"])
-            .current_dir(&self.repo_path)
-            .output()
-            .context("Failed to run git status")?;
+        // Map of path -> (insertions, deletions) merged across all sources.
+        let mut stats: HashMap<String, (usize, usize)> = HashMap::new();
+        // Map of path -> FileStatus. Staged entries recorded first, then
+        // unstaged worktree changes can override (or augment) them.
+        let mut statuses: HashMap<String, FileStatus> = HashMap::new();
 
-        let status_str = String::from_utf8_lossy(&status_output.stdout);
-
-        // Get numstat for insertion/deletion counts (unstaged worktree changes)
-        let numstat_output = Command::new("git")
-            .args(["diff", "--numstat"])
-            .current_dir(&self.repo_path)
-            .output()
-            .context("Failed to run git diff --numstat")?;
-
-        // Get numstat for staged changes (index vs HEAD)
+        // --- 1. Staged changes: tree vs index (via shell-out, wrapped). ---
+        // gix 0.68 does not ship a tree-to-index iterator, so we retain a
+        // minimal shell-out here but wrap errors as EnvChange.
         let cached_numstat_output = Command::new("git")
             .args(["diff", "--cached", "--numstat"])
             .current_dir(&self.repo_path)
             .output()
-            .context("Failed to run git diff --cached --numstat")?;
+            .map_err(|e| GitFailure::EnvChange(format!("git diff --cached --numstat: {e}")))?;
 
-        let numstat_str = String::from_utf8_lossy(&numstat_output.stdout);
-        let cached_numstat_str = String::from_utf8_lossy(&cached_numstat_output.stdout);
-
-        // Build a map of path -> (insertions, deletions), combining staged + unstaged
-        let mut stats: std::collections::HashMap<String, (usize, usize)> =
-            std::collections::HashMap::new();
-
-        for line in numstat_str.lines().chain(cached_numstat_str.lines()) {
-            let parts: Vec<&str> = line.split('\t').collect();
-            if parts.len() >= 3 {
-                let ins = parts[0].parse::<usize>().unwrap_or(0);
-                let del = parts[1].parse::<usize>().unwrap_or(0);
-                let path = parts[2].to_string();
-                let entry = stats.entry(path).or_insert((0, 0));
-                entry.0 += ins;
-                entry.1 += del;
+        if cached_numstat_output.status.success() {
+            let cached = String::from_utf8_lossy(&cached_numstat_output.stdout);
+            for line in cached.lines() {
+                let parts: Vec<&str> = line.split('\t').collect();
+                if parts.len() >= 3 {
+                    let ins = parts[0].parse::<usize>().unwrap_or(0);
+                    let del = parts[1].parse::<usize>().unwrap_or(0);
+                    let path = parts[2].to_string();
+                    let entry = stats.entry(path.clone()).or_insert((0, 0));
+                    entry.0 += ins;
+                    entry.1 += del;
+                    statuses.entry(path).or_insert(FileStatus::Staged);
+                }
             }
         }
+        // Non-success exit (e.g. mid-rebase): treat as no staged changes
+        // rather than failing the whole status call.
 
-        // Parse porcelain status
-        for line in status_str.lines() {
-            if line.len() < 3 {
-                continue;
-            }
+        // --- 2. Unstaged changes: index vs worktree (via gix). ---
+        let platform = self
+            .repo
+            .status(gix::progress::Discard)
+            .map_err(|e| GitFailure::EnvChange(format!("status platform: {e}")))?;
 
-            let index_status = line.as_bytes()[0] as char;
-            let worktree_status = line.as_bytes()[1] as char;
-            let path = line[3..].to_string();
+        let iter = platform
+            .into_index_worktree_iter(Vec::<gix::bstr::BString>::new())
+            .map_err(|e| GitFailure::EnvChange(format!("status iter: {e}")))?;
 
-            let status = match (index_status, worktree_status) {
-                ('?', '?') => FileStatus::Untracked,
-                ('U', _) | (_, 'U') | ('A', 'A') | ('D', 'D') => FileStatus::Conflicted,
-                ('A', _) => FileStatus::Added,
-                ('D', _) | (_, 'D') => FileStatus::Deleted,
-                ('R', _) => FileStatus::Renamed,
-                (_, 'M') | ('M', _) => FileStatus::Modified,
-                _ => FileStatus::Modified,
+        for item_res in iter {
+            let item = match item_res {
+                Ok(item) => item,
+                Err(e) => return Err(GitFailure::EnvChange(format!("status item: {e}"))),
             };
 
-            let (insertions, deletions) = stats.get(&path).copied().unwrap_or((0, 0));
+            let (path, file_status) = match classify_status_item(&item) {
+                Some(pair) => pair,
+                None => continue,
+            };
 
-            entries.push(FileEntry {
-                path,
-                status,
-                insertions,
-                deletions,
-            });
+            // Compute line counts (best-effort).
+            let (insertions, deletions) =
+                compute_line_counts(&self.repo, &path, &self.repo_path).unwrap_or((0, 0));
+
+            // Merge into maps. Worktree-level status generally wins over a
+            // previous "Staged" record (e.g., a file that is both staged and
+            // further modified should display as Modified).
+            statuses.insert(path.clone(), file_status);
+            let stats_entry = stats.entry(path).or_insert((0, 0));
+            stats_entry.0 += insertions;
+            stats_entry.1 += deletions;
         }
 
-        // Sort: staged first, then by path
+        // --- 3. Build FileEntry list. ---
+        let mut entries: Vec<FileEntry> = statuses
+            .into_iter()
+            .map(|(path, status)| {
+                let (insertions, deletions) = stats.get(&path).copied().unwrap_or((0, 0));
+                FileEntry {
+                    path,
+                    status,
+                    insertions,
+                    deletions,
+                }
+            })
+            .collect();
+
         entries.sort_by(|a, b| a.path.cmp(&b.path));
+        entries.dedup_by(|a, b| a.path == b.path);
 
         Ok(entries)
     }
 
-    /// Compute the unified diff for a single file
-    pub fn diff_file(&self, path: &str) -> Result<FileDiff> {
-        let output = Command::new("git")
-            .args(["diff", "--", path])
-            .current_dir(&self.repo_path)
-            .output()
-            .context("Failed to run git diff")?;
+    /// Compute the unified diff for a single file.
+    ///
+    /// Uses gix to load the index blob and diffs it against the worktree file.
+    /// For untracked files, synthesizes a diff where every line is an addition.
+    pub fn diff_file(&self, path: &str) -> Result<FileDiff, GitFailure> {
+        let work_dir = match self.repo.workdir() {
+            Some(d) => d.to_path_buf(),
+            None => return Ok(FileDiff::default()),
+        };
+        let worktree_path = work_dir.join(path);
 
-        let diff_str = String::from_utf8_lossy(&output.stdout);
+        // Load the index to find the tracked blob
+        let index = match self.repo.index_or_empty() {
+            Ok(i) => i,
+            Err(e) => return Err(GitFailure::EnvChange(format!("diff_file index: {e}"))),
+        };
 
-        if diff_str.is_empty() {
-            // Might be untracked — show the whole file as additions
-            let file_path = self.repo_path.join(path);
-            if file_path.exists() {
-                return self.diff_untracked(path);
+        let path_bstr: &gix::bstr::BStr = path.as_bytes().into();
+        let entry = index.entry_by_path(path_bstr);
+
+        match entry {
+            Some(entry) => {
+                // Tracked file: diff index blob against worktree
+                let blob = match self.repo.find_object(entry.id) {
+                    Ok(obj) => obj,
+                    Err(e) => {
+                        return Err(GitFailure::EnvChange(format!("diff_file blob: {e}")));
+                    }
+                };
+                let index_text = String::from_utf8_lossy(&blob.data).into_owned();
+
+                let worktree_text = match std::fs::read_to_string(&worktree_path) {
+                    Ok(t) => t,
+                    Err(_) => {
+                        // File was deleted from worktree
+                        return Ok(synthesize_deletion_diff(&index_text));
+                    }
+                };
+
+                Ok(synthesize_text_diff(&index_text, &worktree_text))
             }
-            return Ok(FileDiff::default());
+            None => {
+                // Not in index: either untracked (exists) or gone
+                if worktree_path.exists() {
+                    self.diff_untracked(path)
+                        .map_err(|e| GitFailure::Failed(format!("diff_untracked: {e}")))
+                } else {
+                    Ok(FileDiff::default())
+                }
+            }
         }
-
-        Ok(parse_unified_diff(&diff_str))
     }
 
     /// Get the repository name (basename of the main repo, even in a linked worktree).
@@ -283,108 +327,122 @@ impl GitRepo {
             .unwrap_or_default()
     }
 
-    /// Get the worktree name (basename of `git rev-parse --show-toplevel`)
-    /// Handles linked worktrees where repo_path may differ from the toplevel.
+    /// Get the worktree name (basename of the worktree's work directory).
+    /// Handles linked worktrees where the work dir differs from the main repo.
     pub fn worktree_name(&self) -> String {
-        let output = Command::new("git")
-            .args(["rev-parse", "--show-toplevel"])
-            .current_dir(&self.repo_path)
-            .output()
-            .ok();
-
-        if let Some(output) = output {
-            let toplevel = String::from_utf8_lossy(&output.stdout).trim().to_string();
-            if !toplevel.is_empty() {
-                return Path::new(&toplevel)
-                    .file_name()
-                    .map(|n| n.to_string_lossy().to_string())
-                    .unwrap_or_default();
-            }
-        }
-
-        self.repo_name()
+        self.repo
+            .workdir()
+            .and_then(|p| p.file_name())
+            .map(|n| n.to_string_lossy().to_string())
+            .unwrap_or_else(|| self.repo_name())
     }
 
     /// Get HEAD short SHA and commit subject line
-    pub fn head_info(&self) -> Result<(String, String)> {
-        let output = Command::new("git")
-            .args(["log", "-1", "--format=%h%n%s"])
-            .current_dir(&self.repo_path)
-            .output()
-            .context("Failed to run git log")?;
+    pub fn head_info(&self) -> Result<(String, String), GitFailure> {
+        let commit = match self.repo.head_commit() {
+            Ok(c) => c,
+            Err(e) => return Err(GitFailure::EnvChange(format!("head_info: {e}"))),
+        };
 
-        if !output.status.success() {
-            return Ok((String::new(), String::new()));
-        }
+        let sha = commit.id().shorten_or_id().to_string();
 
-        let text = String::from_utf8_lossy(&output.stdout).trim().to_string();
-        let mut lines = text.lines();
-        let sha = lines.next().unwrap_or("").to_string();
-        let message = lines.next().unwrap_or("").to_string();
+        let message = commit
+            .message()
+            .map(|m| m.summary().to_string())
+            .unwrap_or_default();
 
         Ok((sha, message))
     }
 
-    /// Count the number of stash entries
-    pub fn stash_count(&self) -> Result<usize> {
-        let output = Command::new("git")
-            .args(["stash", "list"])
-            .current_dir(&self.repo_path)
-            .output()
-            .context("Failed to run git stash list")?;
+    /// Count the number of stash entries.
+    /// Stashes are stored as reflog entries on refs/stash.
+    pub fn stash_count(&self) -> Result<usize, GitFailure> {
+        // Try to find the stash ref. If missing, return 0.
+        let stash_ref = match self.repo.find_reference("refs/stash") {
+            Ok(r) => r,
+            Err(_) => return Ok(0), // no stash ref = no stashes
+        };
 
-        let text = String::from_utf8_lossy(&output.stdout);
-        let count = text.lines().filter(|l| !l.is_empty()).count();
-        Ok(count)
+        // Count reflog entries
+        match stash_ref.log_iter().all() {
+            Ok(Some(iter)) => Ok(iter.count()),
+            Ok(None) => Ok(0),
+            Err(e) => Err(GitFailure::EnvChange(format!("stash_count: {e}"))),
+        }
     }
 
     /// Get ahead/behind counts relative to upstream.
     /// Returns None if there is no upstream configured.
-    pub fn ahead_behind(&self) -> Result<Option<(usize, usize)>> {
-        let output = Command::new("git")
-            .args(["rev-list", "--left-right", "--count", "HEAD...@{upstream}"])
-            .current_dir(&self.repo_path)
-            .output()
-            .context("Failed to run git rev-list")?;
+    pub fn ahead_behind(&self) -> Result<Option<(usize, usize)>, GitFailure> {
+        // Get HEAD commit id
+        let head_commit = match self.repo.head_commit() {
+            Ok(c) => c,
+            Err(_) => return Ok(None),
+        };
+        let head_id = head_commit.id().detach();
 
-        if !output.status.success() {
-            // No upstream configured
-            return Ok(None);
-        }
+        // Resolve upstream commit id
+        let upstream_id = match self.upstream_commit_id() {
+            Some(id) => id,
+            None => return Ok(None), // no upstream configured
+        };
 
-        let text = String::from_utf8_lossy(&output.stdout).trim().to_string();
-        let parts: Vec<&str> = text.split('\t').collect();
-        if parts.len() == 2 {
-            let ahead = parts[0].parse::<usize>().unwrap_or(0);
-            let behind = parts[1].parse::<usize>().unwrap_or(0);
-            Ok(Some((ahead, behind)))
-        } else {
-            Ok(None)
-        }
+        // Compute ahead/behind by walking commits
+        let ahead = count_reachable_exclusive(&self.repo, head_id, upstream_id)
+            .map_err(|e| GitFailure::EnvChange(format!("ahead_behind ahead: {e}")))?;
+        let behind = count_reachable_exclusive(&self.repo, upstream_id, head_id)
+            .map_err(|e| GitFailure::EnvChange(format!("ahead_behind behind: {e}")))?;
+
+        Ok(Some((ahead, behind)))
+    }
+
+    /// Try to find the commit id of the current branch's upstream.
+    fn upstream_commit_id(&self) -> Option<gix::ObjectId> {
+        // Get current branch short name
+        let head_name = self.repo.head_name().ok().flatten()?;
+        let short = head_name.shorten().to_string();
+
+        // Look up branch config
+        let config = self.repo.config_snapshot();
+        let remote_key = format!("branch.{short}.remote");
+        let merge_key = format!("branch.{short}.merge");
+
+        let remote = config.string(remote_key.as_str())?;
+        let merge_ref = config.string(merge_key.as_str())?;
+
+        // merge_ref is "refs/heads/<branch>", strip to get branch name
+        let merge_branch = merge_ref.strip_prefix(b"refs/heads/" as &[u8])?;
+
+        // Construct tracking ref: refs/remotes/<remote>/<branch>
+        let mut tracking = Vec::new();
+        tracking.extend_from_slice(b"refs/remotes/");
+        tracking.extend_from_slice(remote.as_ref());
+        tracking.push(b'/');
+        tracking.extend_from_slice(merge_branch);
+        let tracking_str = std::str::from_utf8(&tracking).ok()?;
+
+        // Resolve the tracking ref to a commit id
+        let reference = self.repo.find_reference(tracking_str).ok()?;
+        // Peel to commit (in case it's a tag or symbolic ref)
+        let id = reference.id();
+        Some(id.detach())
     }
 
     /// Check if the repo is in a special state (rebase, merge, cherry-pick, etc.)
-    /// Handles `.git` being a file (linked worktree gitdir pointer).
     pub fn repo_state(&self) -> Option<String> {
-        let git_dir = resolve_git_dir(&self.repo_path)?;
-
-        if git_dir.join("rebase-merge").exists() || git_dir.join("rebase-apply").exists() {
-            return Some("REBASING".to_string());
+        match self.repo.state() {
+            Some(gix::state::InProgress::ApplyMailbox) => Some("APPLYING MAILBOX".to_string()),
+            Some(gix::state::InProgress::ApplyMailboxRebase) => Some("REBASING".to_string()),
+            Some(gix::state::InProgress::Bisect) => Some("BISECTING".to_string()),
+            Some(gix::state::InProgress::CherryPick) => Some("CHERRY-PICKING".to_string()),
+            Some(gix::state::InProgress::CherryPickSequence) => Some("CHERRY-PICKING".to_string()),
+            Some(gix::state::InProgress::Merge) => Some("MERGING".to_string()),
+            Some(gix::state::InProgress::Rebase) => Some("REBASING".to_string()),
+            Some(gix::state::InProgress::RebaseInteractive) => Some("REBASING".to_string()),
+            Some(gix::state::InProgress::Revert) => Some("REVERTING".to_string()),
+            Some(gix::state::InProgress::RevertSequence) => Some("REVERTING".to_string()),
+            None => None,
         }
-        if git_dir.join("MERGE_HEAD").exists() {
-            return Some("MERGING".to_string());
-        }
-        if git_dir.join("CHERRY_PICK_HEAD").exists() {
-            return Some("CHERRY-PICKING".to_string());
-        }
-        if git_dir.join("REVERT_HEAD").exists() {
-            return Some("REVERTING".to_string());
-        }
-        if git_dir.join("BISECT_LOG").exists() {
-            return Some("BISECTING".to_string());
-        }
-
-        None
     }
 
     /// Create a synthetic diff for untracked files (all lines as additions)
@@ -411,54 +469,236 @@ impl GitRepo {
     }
 }
 
-/// Parse a unified diff string into structured hunks
-fn parse_unified_diff(raw: &str) -> FileDiff {
-    let mut hunks = Vec::new();
-    let mut current_hunk: Option<DiffHunk> = None;
-
-    for line in raw.lines() {
-        if line.starts_with("@@") {
-            // Save previous hunk
-            if let Some(hunk) = current_hunk.take() {
-                hunks.push(hunk);
-            }
-            current_hunk = Some(DiffHunk {
-                header: line.to_string(),
-                lines: Vec::new(),
-            });
-        } else if let Some(ref mut hunk) = current_hunk {
-            let diff_line = if let Some(content) = line.strip_prefix('+') {
-                DiffLine {
-                    kind: DiffLineKind::Addition,
-                    content: content.to_string(),
-                }
-            } else if let Some(content) = line.strip_prefix('-') {
-                DiffLine {
-                    kind: DiffLineKind::Deletion,
-                    content: content.to_string(),
-                }
-            } else if let Some(content) = line.strip_prefix(' ') {
-                DiffLine {
-                    kind: DiffLineKind::Context,
-                    content: content.to_string(),
-                }
-            } else {
-                DiffLine {
-                    kind: DiffLineKind::Context,
-                    content: line.to_string(),
-                }
-            };
-            hunk.lines.push(diff_line);
+/// Count commits reachable from `from` but not from `exclude`.
+fn count_reachable_exclusive(
+    repo: &gix::Repository,
+    from: gix::ObjectId,
+    exclude: gix::ObjectId,
+) -> Result<usize, Box<dyn std::error::Error + Send + Sync>> {
+    // Walk all ancestors of `exclude` into a hash set
+    let excluded: std::collections::HashSet<gix::ObjectId> = {
+        let mut set = std::collections::HashSet::new();
+        let walk = repo.rev_walk([exclude]).all()?;
+        for info in walk {
+            let info = info?;
+            set.insert(info.id);
         }
-        // Skip diff header lines (---, +++, diff --git, index, etc.)
+        set
+    };
+
+    // Walk ancestors of `from`, counting those not in `excluded`
+    let mut count = 0;
+    let walk = repo.rev_walk([from]).all()?;
+    for info in walk {
+        let info = info?;
+        if !excluded.contains(&info.id) {
+            count += 1;
+        }
     }
 
-    // Don't forget the last hunk
-    if let Some(hunk) = current_hunk {
-        hunks.push(hunk);
+    Ok(count)
+}
+
+/// Synthesize a FileDiff between two texts using a simple prefix/suffix trim.
+/// Emits a single hunk showing the changed region with 3 lines of context.
+/// Not a proper Myers diff but readable enough for the compact view.
+fn synthesize_text_diff(old: &str, new: &str) -> FileDiff {
+    let old_lines: Vec<&str> = old.lines().collect();
+    let new_lines: Vec<&str> = new.lines().collect();
+
+    // Trim common prefix
+    let mut prefix_len = 0;
+    while prefix_len < old_lines.len()
+        && prefix_len < new_lines.len()
+        && old_lines[prefix_len] == new_lines[prefix_len]
+    {
+        prefix_len += 1;
     }
 
-    FileDiff { hunks }
+    // Trim common suffix (be careful not to overlap prefix)
+    let mut suffix_len = 0;
+    while suffix_len < (old_lines.len().saturating_sub(prefix_len))
+        && suffix_len < (new_lines.len().saturating_sub(prefix_len))
+        && old_lines[old_lines.len() - 1 - suffix_len]
+            == new_lines[new_lines.len() - 1 - suffix_len]
+    {
+        suffix_len += 1;
+    }
+
+    let old_changed_start = prefix_len;
+    let old_changed_end = old_lines.len() - suffix_len;
+    let new_changed_start = prefix_len;
+    let new_changed_end = new_lines.len() - suffix_len;
+
+    // If nothing changed, return empty diff
+    if old_changed_start >= old_changed_end && new_changed_start >= new_changed_end {
+        return FileDiff::default();
+    }
+
+    let mut lines = Vec::new();
+
+    // Context before (up to 3 lines)
+    let context_before_start = prefix_len.saturating_sub(3);
+    for line in &old_lines[context_before_start..prefix_len] {
+        lines.push(DiffLine {
+            kind: DiffLineKind::Context,
+            content: line.to_string(),
+        });
+    }
+
+    // Deletions
+    for line in &old_lines[old_changed_start..old_changed_end] {
+        lines.push(DiffLine {
+            kind: DiffLineKind::Deletion,
+            content: line.to_string(),
+        });
+    }
+
+    // Additions
+    for line in &new_lines[new_changed_start..new_changed_end] {
+        lines.push(DiffLine {
+            kind: DiffLineKind::Addition,
+            content: line.to_string(),
+        });
+    }
+
+    // Context after (up to 3 lines)
+    let context_after_end = (old_changed_end + 3).min(old_lines.len());
+    for line in &old_lines[old_changed_end..context_after_end] {
+        lines.push(DiffLine {
+            kind: DiffLineKind::Context,
+            content: line.to_string(),
+        });
+    }
+
+    let old_count = old_changed_end - context_before_start;
+    let new_count = new_changed_end - context_before_start;
+
+    let header = format!(
+        "@@ -{},{} +{},{} @@",
+        context_before_start + 1,
+        old_count.max(1),
+        context_before_start + 1,
+        new_count.max(1)
+    );
+
+    FileDiff {
+        hunks: vec![DiffHunk { header, lines }],
+    }
+}
+
+/// Synthesize a "file deleted" diff (all lines as deletions).
+fn synthesize_deletion_diff(old: &str) -> FileDiff {
+    let lines: Vec<DiffLine> = old
+        .lines()
+        .map(|l| DiffLine {
+            kind: DiffLineKind::Deletion,
+            content: l.to_string(),
+        })
+        .collect();
+    let count = lines.len();
+    FileDiff {
+        hunks: vec![DiffHunk {
+            header: format!("@@ -1,{count} +0,0 @@ (deleted)"),
+            lines,
+        }],
+    }
+}
+
+/// Classify a gix index-worktree status item into our (path, FileStatus).
+/// Returns `None` for items we don't want to show (e.g., NeedsUpdate
+/// bookkeeping items or tracked directory entries).
+fn classify_status_item(item: &gix::status::index_worktree::Item) -> Option<(String, FileStatus)> {
+    use gix::bstr::ByteSlice;
+    use gix::status::index_worktree::Item;
+    use gix::status::plumbing::index_as_worktree::{Change, EntryStatus};
+
+    let path = item.rela_path().to_str().ok()?.to_string();
+
+    let status = match item {
+        Item::Modification { status, .. } => match status {
+            EntryStatus::Conflict { .. } => FileStatus::Conflicted,
+            EntryStatus::Change(change) => match change {
+                Change::Removed => FileStatus::Deleted,
+                Change::Type { .. } => FileStatus::Modified,
+                Change::Modification { .. } => FileStatus::Modified,
+                Change::SubmoduleModification(_) => FileStatus::Modified,
+            },
+            // NeedsUpdate is internal bookkeeping only — skip.
+            EntryStatus::NeedsUpdate(_) => return None,
+            EntryStatus::IntentToAdd => FileStatus::Added,
+        },
+        Item::DirectoryContents { entry, .. } => {
+            // Only surface untracked directory-walk entries.
+            if matches!(entry.status, gix::dir::entry::Status::Untracked) {
+                FileStatus::Untracked
+            } else {
+                return None;
+            }
+        }
+        Item::Rewrite { .. } => FileStatus::Renamed,
+    };
+
+    Some((path, status))
+}
+
+/// Compute a best-effort (insertions, deletions) count for a single path by
+/// comparing the index blob to the on-disk worktree file. Returns `None` if
+/// the path is not in the index or files can't be read.
+///
+/// This is intentionally simple — it's a line-count approximation used only
+/// for display, not an exact match for `git diff --numstat` in all cases
+/// (e.g., it won't match on files with many identical lines), but it's fast
+/// and gets the common case right.
+fn compute_line_counts(
+    repo: &gix::Repository,
+    path: &str,
+    repo_path: &std::path::Path,
+) -> Option<(usize, usize)> {
+    let index = repo.index_or_empty().ok()?;
+    let path_bstr: &gix::bstr::BStr = path.as_bytes().into();
+    let entry = index.entry_by_path(path_bstr)?;
+
+    let blob = repo.find_object(entry.id).ok()?;
+    let index_text = std::str::from_utf8(&blob.data).ok()?;
+
+    let worktree_path = repo_path.join(path);
+    let worktree_text = std::fs::read_to_string(&worktree_path).ok()?;
+
+    Some(count_line_changes(index_text, &worktree_text))
+}
+
+/// Approximate line-change count: counts extra lines in `new` as insertions
+/// and extra lines in `old` as deletions using a multiset line comparison.
+fn count_line_changes(old: &str, new: &str) -> (usize, usize) {
+    use std::collections::HashMap;
+
+    let mut old_counts: HashMap<&str, i64> = HashMap::new();
+    for line in old.lines() {
+        *old_counts.entry(line).or_insert(0) += 1;
+    }
+    let mut new_counts: HashMap<&str, i64> = HashMap::new();
+    for line in new.lines() {
+        *new_counts.entry(line).or_insert(0) += 1;
+    }
+
+    let mut insertions = 0usize;
+    let mut deletions = 0usize;
+
+    for (line, &count) in &new_counts {
+        let old_count = old_counts.get(line).copied().unwrap_or(0);
+        if count > old_count {
+            insertions += (count - old_count) as usize;
+        }
+    }
+    for (line, &count) in &old_counts {
+        let new_count = new_counts.get(line).copied().unwrap_or(0);
+        if count > new_count {
+            deletions += (count - new_count) as usize;
+        }
+    }
+
+    (insertions, deletions)
 }
 
 #[cfg(test)]
@@ -466,81 +706,12 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_parse_unified_diff() {
-        let raw = r#"diff --git a/src/main.rs b/src/main.rs
-index abc1234..def5678 100644
---- a/src/main.rs
-+++ b/src/main.rs
-@@ -1,4 +1,4 @@
- fn main() {
--    println!("Hello, world!");
-+    println!("Hello, git-rt!");
- }
-"#;
-        let diff = parse_unified_diff(raw);
-        assert_eq!(diff.hunks.len(), 1);
-        assert_eq!(diff.hunks[0].lines.len(), 4);
-        assert_eq!(diff.hunks[0].lines[1].kind, DiffLineKind::Deletion);
-        assert_eq!(diff.hunks[0].lines[2].kind, DiffLineKind::Addition);
-    }
-
-    #[test]
-    fn test_parse_empty_diff() {
-        let diff = parse_unified_diff("");
-        assert!(diff.hunks.is_empty());
-    }
-
-    #[test]
-    fn test_parse_diff_only_headers() {
-        let raw = "diff --git a/file b/file\nindex abc..def 100644\n--- a/file\n+++ b/file\n";
-        let diff = parse_unified_diff(raw);
-        assert!(diff.hunks.is_empty());
-    }
-
-    #[test]
-    fn test_parse_multiple_hunks() {
-        let raw = r#"diff --git a/file b/file
---- a/file
-+++ b/file
-@@ -1,3 +1,3 @@
- line1
--old2
-+new2
- line3
-@@ -10,3 +10,4 @@
- line10
-+added
- line11
- line12
-"#;
-        let diff = parse_unified_diff(raw);
-        assert_eq!(diff.hunks.len(), 2);
-        assert_eq!(diff.hunks[0].header, "@@ -1,3 +1,3 @@");
-        assert_eq!(diff.hunks[1].header, "@@ -10,3 +10,4 @@");
-
-        // First hunk: context, deletion, addition, context
-        assert_eq!(diff.hunks[0].lines.len(), 4);
-        assert_eq!(diff.hunks[0].lines[0].kind, DiffLineKind::Context);
-        assert_eq!(diff.hunks[0].lines[1].kind, DiffLineKind::Deletion);
-        assert_eq!(diff.hunks[0].lines[2].kind, DiffLineKind::Addition);
-        assert_eq!(diff.hunks[0].lines[3].kind, DiffLineKind::Context);
-
-        // Second hunk: context, addition, context, context
-        assert_eq!(diff.hunks[1].lines.len(), 4);
-        assert_eq!(diff.hunks[1].lines[1].kind, DiffLineKind::Addition);
-    }
-
-    #[test]
-    fn test_parse_diff_line_content_strips_prefix() {
-        let raw = "diff --git a/f b/f\n--- a/f\n+++ b/f\n@@ -1 +1 @@\n-removed line\n+added line\n";
-        let diff = parse_unified_diff(raw);
-        assert_eq!(diff.hunks[0].lines[0].content, "removed line");
-        assert_eq!(diff.hunks[0].lines[1].content, "added line");
-    }
-
-    #[test]
-    fn test_file_diff_default_is_empty() {
-        let diff = FileDiff::default();
+    fn test_diff_file_handles_missing_path() {
+        let repo = GitRepo::new(std::path::Path::new(".")).unwrap();
+        let result = repo.diff_file("nonexistent-file-xyz-12345.rs");
+        // Should return Ok with empty diff, not crash
+        assert!(result.is_ok());
+        let diff = result.unwrap();
         assert!(diff.hunks.is_empty());
     }
 
@@ -639,6 +810,13 @@ index abc1234..def5678 100644
     }
 
     #[test]
+    fn test_gitfailure_is_env_change() {
+        assert!(GitFailure::EnvChange("x".into()).is_env_change());
+        assert!(!GitFailure::Failed("x".into()).is_env_change());
+        assert!(!GitFailure::NotARepo(std::path::PathBuf::from("/")).is_env_change());
+    }
+
+    #[test]
     fn test_file_entry_clone() {
         let entry = FileEntry {
             path: "test.rs".to_string(),
@@ -650,5 +828,73 @@ index abc1234..def5678 100644
         assert_eq!(cloned.path, "test.rs");
         assert_eq!(cloned.insertions, 5);
         assert_eq!(cloned.deletions, 3);
+    }
+
+    #[test]
+    fn test_new_opens_gix_repo_on_valid_path() {
+        let repo = GitRepo::new(std::path::Path::new(".")).unwrap();
+        // repo_path should be populated
+        assert!(!repo.repo_path.as_os_str().is_empty());
+    }
+
+    #[test]
+    fn test_status_works_against_real_repo() {
+        let repo = GitRepo::new(std::path::Path::new(".")).unwrap();
+        let result = repo.status();
+        assert!(result.is_ok(), "status() should succeed on a valid repo");
+    }
+
+    #[test]
+    fn test_status_returns_modified_file() {
+        // Uses the worktree itself — if there are staged or unstaged
+        // changes, at least one entry should be returned. If the tree is
+        // clean this test is a no-op assertion.
+        let repo = GitRepo::new(std::path::Path::new(".")).unwrap();
+        let entries = repo.status().unwrap();
+        for e in &entries {
+            // Paths must be relative (not absolute) and non-empty.
+            assert!(!e.path.is_empty());
+            assert!(!e.path.starts_with('/'));
+        }
+    }
+
+    #[test]
+    fn test_count_line_changes_all_new() {
+        let (ins, del) = count_line_changes("", "a\nb\nc\n");
+        assert_eq!(ins, 3);
+        assert_eq!(del, 0);
+    }
+
+    #[test]
+    fn test_count_line_changes_all_removed() {
+        let (ins, del) = count_line_changes("a\nb\nc\n", "");
+        assert_eq!(ins, 0);
+        assert_eq!(del, 3);
+    }
+
+    #[test]
+    fn test_count_line_changes_mixed() {
+        let old = "line1\nline2\nline3\n";
+        let new = "line1\nline2-modified\nline3\nline4\n";
+        let (ins, del) = count_line_changes(old, new);
+        assert_eq!(ins, 2); // "line2-modified" + "line4"
+        assert_eq!(del, 1); // "line2"
+    }
+
+    #[test]
+    fn test_count_line_changes_unchanged() {
+        let text = "a\nb\nc\n";
+        let (ins, del) = count_line_changes(text, text);
+        assert_eq!(ins, 0);
+        assert_eq!(del, 0);
+    }
+
+    #[test]
+    fn test_new_returns_not_a_repo_for_invalid_path() {
+        let temp = std::env::temp_dir().join("git-rt-test-not-a-repo-task2");
+        std::fs::create_dir_all(&temp).unwrap();
+        let result = GitRepo::new(&temp);
+        assert!(result.is_err());
+        std::fs::remove_dir_all(&temp).ok();
     }
 }

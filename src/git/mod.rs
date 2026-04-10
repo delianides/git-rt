@@ -144,19 +144,12 @@ impl GitRepo {
     }
 
     /// Get the current branch name, or "HEAD" if detached
-    pub fn branch_name(&self) -> Result<String> {
-        let output = Command::new("git")
-            .args(["rev-parse", "--abbrev-ref", "HEAD"])
-            .current_dir(&self.repo_path)
-            .output()
-            .context("Failed to run git rev-parse")?;
-
-        let name = String::from_utf8_lossy(&output.stdout).trim().to_string();
-        Ok(if name.is_empty() {
-            "HEAD".to_string()
-        } else {
-            name
-        })
+    pub fn branch_name(&self) -> Result<String, GitFailure> {
+        match self.repo.head_name() {
+            Ok(Some(name)) => Ok(name.shorten().to_string()),
+            Ok(None) => Ok("HEAD".to_string()),
+            Err(e) => Err(GitFailure::EnvChange(format!("branch_name: {e}"))),
+        }
     }
 
     /// Compute the current status of all changed files with numstat.
@@ -281,44 +274,29 @@ impl GitRepo {
             .unwrap_or_default()
     }
 
-    /// Get the worktree name (basename of `git rev-parse --show-toplevel`)
-    /// Handles linked worktrees where repo_path may differ from the toplevel.
+    /// Get the worktree name (basename of the worktree's work directory).
+    /// Handles linked worktrees where the work dir differs from the main repo.
     pub fn worktree_name(&self) -> String {
-        let output = Command::new("git")
-            .args(["rev-parse", "--show-toplevel"])
-            .current_dir(&self.repo_path)
-            .output()
-            .ok();
-
-        if let Some(output) = output {
-            let toplevel = String::from_utf8_lossy(&output.stdout).trim().to_string();
-            if !toplevel.is_empty() {
-                return Path::new(&toplevel)
-                    .file_name()
-                    .map(|n| n.to_string_lossy().to_string())
-                    .unwrap_or_default();
-            }
-        }
-
-        self.repo_name()
+        self.repo
+            .work_dir()
+            .and_then(|p| p.file_name())
+            .map(|n| n.to_string_lossy().to_string())
+            .unwrap_or_else(|| self.repo_name())
     }
 
     /// Get HEAD short SHA and commit subject line
-    pub fn head_info(&self) -> Result<(String, String)> {
-        let output = Command::new("git")
-            .args(["log", "-1", "--format=%h%n%s"])
-            .current_dir(&self.repo_path)
-            .output()
-            .context("Failed to run git log")?;
+    pub fn head_info(&self) -> Result<(String, String), GitFailure> {
+        let commit = match self.repo.head_commit() {
+            Ok(c) => c,
+            Err(e) => return Err(GitFailure::EnvChange(format!("head_info: {e}"))),
+        };
 
-        if !output.status.success() {
-            return Ok((String::new(), String::new()));
-        }
+        let sha = commit.id().shorten_or_id().to_string();
 
-        let text = String::from_utf8_lossy(&output.stdout).trim().to_string();
-        let mut lines = text.lines();
-        let sha = lines.next().unwrap_or("").to_string();
-        let message = lines.next().unwrap_or("").to_string();
+        let message = commit
+            .message()
+            .map(|m| m.summary().to_string())
+            .unwrap_or_default();
 
         Ok((sha, message))
     }
@@ -362,27 +340,20 @@ impl GitRepo {
     }
 
     /// Check if the repo is in a special state (rebase, merge, cherry-pick, etc.)
-    /// Handles `.git` being a file (linked worktree gitdir pointer).
     pub fn repo_state(&self) -> Option<String> {
-        let git_dir = resolve_git_dir(&self.repo_path)?;
-
-        if git_dir.join("rebase-merge").exists() || git_dir.join("rebase-apply").exists() {
-            return Some("REBASING".to_string());
+        match self.repo.state() {
+            Some(gix::state::InProgress::ApplyMailbox) => Some("APPLYING MAILBOX".to_string()),
+            Some(gix::state::InProgress::ApplyMailboxRebase) => Some("REBASING".to_string()),
+            Some(gix::state::InProgress::Bisect) => Some("BISECTING".to_string()),
+            Some(gix::state::InProgress::CherryPick) => Some("CHERRY-PICKING".to_string()),
+            Some(gix::state::InProgress::CherryPickSequence) => Some("CHERRY-PICKING".to_string()),
+            Some(gix::state::InProgress::Merge) => Some("MERGING".to_string()),
+            Some(gix::state::InProgress::Rebase) => Some("REBASING".to_string()),
+            Some(gix::state::InProgress::RebaseInteractive) => Some("REBASING".to_string()),
+            Some(gix::state::InProgress::Revert) => Some("REVERTING".to_string()),
+            Some(gix::state::InProgress::RevertSequence) => Some("REVERTING".to_string()),
+            None => None,
         }
-        if git_dir.join("MERGE_HEAD").exists() {
-            return Some("MERGING".to_string());
-        }
-        if git_dir.join("CHERRY_PICK_HEAD").exists() {
-            return Some("CHERRY-PICKING".to_string());
-        }
-        if git_dir.join("REVERT_HEAD").exists() {
-            return Some("REVERTING".to_string());
-        }
-        if git_dir.join("BISECT_LOG").exists() {
-            return Some("BISECTING".to_string());
-        }
-
-        None
     }
 
     /// Create a synthetic diff for untracked files (all lines as additions)

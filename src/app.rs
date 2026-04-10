@@ -108,10 +108,10 @@ impl App {
 
     fn event_loop(&mut self, terminal: &mut Terminal) -> Result<()> {
         let mut last_tick = Instant::now();
+        let theme = crate::theme::get_theme(&self.config.theme);
 
         loop {
             // Render current state
-            let theme = crate::theme::get_theme(&self.config.theme);
             terminal.draw(&self.state, &self.config, theme)?;
 
             // Calculate timeout until next tick
@@ -155,6 +155,27 @@ impl App {
     fn handle_terminal_event(&mut self, event: TermEvent) -> Result<bool> {
         match event {
             TermEvent::Key(key) => {
+                // Overlay mode: intercept keys before normal handling
+                if self.state.is_overlay_visible() {
+                    match (key.modifiers, key.code) {
+                        (KeyModifiers::CONTROL, KeyCode::Char('c')) => return Ok(true),
+                        (_, KeyCode::Esc)
+                        | (_, KeyCode::Char('q'))
+                        | (_, KeyCode::Char('h'))
+                        | (_, KeyCode::Left) => {
+                            self.state.hide_overlay();
+                        }
+                        (_, KeyCode::Char('j')) | (_, KeyCode::Down) => {
+                            self.state.scroll_diff_down();
+                        }
+                        (_, KeyCode::Char('k')) | (_, KeyCode::Up) => {
+                            self.state.scroll_diff_up();
+                        }
+                        _ => {}
+                    }
+                    return Ok(false);
+                }
+
                 match (key.modifiers, key.code) {
                     // Quit
                     (_, KeyCode::Char('q')) => return Ok(true),
@@ -170,7 +191,7 @@ impl App {
 
                     // Expand / collapse diff
                     (_, KeyCode::Enter) | (_, KeyCode::Char('l')) | (_, KeyCode::Right) => {
-                        self.toggle_expand()?;
+                        self.handle_expand()?;
                     }
                     (_, KeyCode::Char('h')) | (_, KeyCode::Left) => {
                         self.state.collapse_selected();
@@ -179,6 +200,11 @@ impl App {
                     // Refresh manually
                     (_, KeyCode::Char('r')) => {
                         self.handle_fs_change()?;
+                    }
+
+                    // Open external difftool (stub)
+                    (_, KeyCode::Char('d')) => {
+                        // TODO: open external difftool
                     }
 
                     _ => {}
@@ -225,15 +251,22 @@ impl App {
         Ok(())
     }
 
-    /// Toggle expanded diff for the currently selected file
-    fn toggle_expand(&mut self) -> Result<()> {
+    /// Expand or show overlay diff for the currently selected file, depending on config
+    fn handle_expand(&mut self) -> Result<()> {
         if let Some(path) = self.state.selected_path() {
-            if self.state.is_expanded(&path) {
-                self.state.collapse_selected();
+            if self.config.keys.enter == "inline" {
+                // Inline toggle behavior
+                if self.state.is_expanded(&path) {
+                    self.state.collapse_selected();
+                } else {
+                    let diff = self.git.diff_file(&path)?;
+                    self.state.expand_selected(diff);
+                }
             } else {
-                // Compute diff for this file
+                // Overlay behavior (default)
                 let diff = self.git.diff_file(&path)?;
                 self.state.expand_selected(diff);
+                self.state.show_overlay();
             }
         }
         Ok(())

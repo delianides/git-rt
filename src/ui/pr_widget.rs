@@ -25,6 +25,27 @@ fn pr_border_color(status: &PrStatus) -> Color {
     }
 }
 
+/// Foreground colour for text on the PR state badge background.
+/// Ensures readable contrast against the badge bg color.
+fn pr_badge_fg(status: &PrStatus) -> Color {
+    match status {
+        PrStatus::Open => Color::Rgb(20, 20, 20), // dark on green
+        PrStatus::Closed => Color::Rgb(255, 255, 255), // white on red
+        PrStatus::Merged => Color::Rgb(255, 255, 255), // white on magenta
+        PrStatus::Draft => Color::Rgb(20, 20, 20), // dark on gray
+    }
+}
+
+/// All-caps label for the PR status badge.
+fn pr_status_label(status: &PrStatus) -> &'static str {
+    match status {
+        PrStatus::Open => "OPEN",
+        PrStatus::Closed => "CLOSED",
+        PrStatus::Merged => "MERGED",
+        PrStatus::Draft => "DRAFT",
+    }
+}
+
 /// Render the PR widget into `area`.
 ///
 /// If the PR state has no data (and is not loading/errored), this renders
@@ -81,14 +102,30 @@ fn render_pr_info(
     area: Rect,
 ) {
     let border_color = pr_border_color(&info.state);
+    let badge_fg = pr_badge_fg(&info.state);
+    let badge_label = pr_status_label(&info.state);
 
-    let title = format!(" PR #{} ", info.number);
+    // Build title line: " OPEN  PR #142 · title "
+    let title = Line::from(vec![
+        Span::raw(" "),
+        Span::styled(
+            format!(" {} ", badge_label),
+            Style::default()
+                .fg(badge_fg)
+                .bg(border_color)
+                .add_modifier(Modifier::BOLD),
+        ),
+        Span::styled(
+            format!(" PR #{} ", info.number),
+            Style::default().fg(border_color),
+        ),
+    ]);
+
     let block = Block::default()
         .borders(Borders::ALL)
         .border_type(BorderType::Rounded)
         .border_style(Style::default().fg(border_color))
-        .title(title)
-        .title_style(Style::default().fg(theme.header_text));
+        .title(title);
 
     let inner = block.inner(area);
     frame.render_widget(block, area);
@@ -101,18 +138,6 @@ fn render_pr_info(
         Style::default().fg(theme.fg).add_modifier(Modifier::BOLD),
     )));
     lines.push(Line::default());
-
-    // Status
-    let status_str = match info.state {
-        PrStatus::Open => "Open",
-        PrStatus::Closed => "Closed",
-        PrStatus::Merged => "Merged",
-        PrStatus::Draft => "Draft",
-    };
-    lines.push(Line::from(vec![
-        Span::styled("Status: ", Style::default().fg(theme.header_separator)),
-        Span::styled(status_str, Style::default().fg(border_color)),
-    ]));
 
     // Mergeable
     let (merge_text, merge_color) = match info.mergeable {

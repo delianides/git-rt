@@ -164,10 +164,15 @@ impl App {
                 while let Ok(event) = gh_rx.try_recv() {
                     match event {
                         crate::github::GitHubEvent::PrUpdate(info) => {
+                            tracing::debug!(pr = info.number, "PR data updated");
                             self.state.set_pr_info(info);
                         }
                         crate::github::GitHubEvent::NoPr => {
-                            self.state.clear_pr();
+                            tracing::debug!("No open PR found for current branch");
+                            // Only clear if we don't have a sticky error
+                            if self.state.pr_state().error.is_none() {
+                                self.state.clear_pr();
+                            }
                         }
                         crate::github::GitHubEvent::Error(err) => {
                             tracing::warn!(error = %err, "GitHub API error");

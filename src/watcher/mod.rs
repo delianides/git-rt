@@ -1,3 +1,4 @@
+pub mod activity;
 pub mod worktree;
 
 use std::path::Path;

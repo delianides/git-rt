@@ -39,13 +39,22 @@ struct Cli {
     #[arg(long)]
     log: Option<String>,
 
-    /// Pin to a specific worktree (by name or path). Disables auto-follow.
+    /// Pin to a specific worktree (by name or path) as the starting worktree.
+    /// Does not disable auto-follow — use --no-follow for that.
     #[arg(long, conflicts_with = "branch")]
     worktree: Option<String>,
 
-    /// Pin to the worktree with this branch checked out. Disables auto-follow.
+    /// Pin to the worktree with this branch checked out as the starting worktree.
+    /// Does not disable auto-follow — use --no-follow for that.
     #[arg(long, conflicts_with = "worktree")]
     branch: Option<String>,
+
+    /// Disable automatic worktree following. When set, git-rt will stay on the
+    /// worktree it was launched in (or pinned to) and will not switch to other
+    /// worktrees even if activity is detected elsewhere. Also disables cold-start
+    /// activity scan.
+    #[arg(long)]
+    no_follow: bool,
 
     /// Theme name or path to a theme file (TOML or JSON).
     /// Overrides the theme set in the config file.
@@ -96,12 +105,23 @@ fn main() -> Result<()> {
         None
     };
 
-    let (watch_path, auto_follow) = match pinned_worktree {
+    // auto_follow is now controlled only by --no-follow.
+    // --worktree and --branch no longer disable auto-follow.
+    let auto_follow = !cli.no_follow;
+
+    let watch_path = match pinned_worktree {
         Some(ref wt) => {
             tracing::info!(worktree = %wt.name, path = ?wt.path, "Pinned to worktree");
-            (wt.path.clone(), false)
+            wt.path.clone()
         }
-        None => (repo_path.clone(), true),
+        None => {
+            if auto_follow {
+                cold_start_pick(&repo_path)
+            } else {
+                // --no-follow without pinning: stay on launch directory
+                repo_path.clone()
+            }
+        }
     };
 
     let mut app = app::App::new(
@@ -113,4 +133,28 @@ fn main() -> Result<()> {
         cli.theme,
     )?;
     app.run()
+}
+
+/// Scan all worktrees (main + linked) and return the path of the one with
+/// the most recent activity. Falls back to `repo_path` if no worktrees are
+/// found or ranking fails.
+fn cold_start_pick(repo_path: &std::path::Path) -> PathBuf {
+    let worktrees = watcher::activity::list_all_worktrees(repo_path);
+    if worktrees.is_empty() {
+        return repo_path.to_path_buf();
+    }
+
+    let ranked = watcher::activity::rank_by_activity(&worktrees);
+    match ranked.first() {
+        Some(winner) => {
+            tracing::info!(
+                worktree = %winner.info.name,
+                path = ?winner.info.path,
+                last_activity = ?winner.last_activity,
+                "Cold-start auto-switched to most active worktree"
+            );
+            winner.info.path.clone()
+        }
+        None => repo_path.to_path_buf(),
+    }
 }

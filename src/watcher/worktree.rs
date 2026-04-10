@@ -166,6 +166,35 @@ impl WorktreeMonitor {
 
         monitor.scan_and_reconcile();
 
+        // Also register the main worktree so it's a peer of linked worktrees.
+        // This lets the monitor detect activity on main and fire switch events.
+        let main_info = {
+            let common_git_dir = crate::git::resolve_common_git_dir(repo_path)
+                .unwrap_or_else(|| repo_path.join(".git"));
+            let main_path = common_git_dir
+                .parent()
+                .map(|p| p.to_path_buf())
+                .unwrap_or_else(|| repo_path.to_path_buf());
+            let main_name = main_path
+                .file_name()
+                .map(|n| n.to_string_lossy().to_string())
+                .unwrap_or_else(|| "main".to_string());
+            WorktreeInfo {
+                name: main_name,
+                path: main_path,
+                branch: None,
+            }
+        };
+        if !monitor.known_worktrees.contains_key(&main_info.name) {
+            monitor.start_activity_watcher(&main_info);
+            monitor
+                .activity_times
+                .insert(main_info.name.clone(), Instant::now());
+            monitor
+                .known_worktrees
+                .insert(main_info.name.clone(), main_info);
+        }
+
         Ok((event_rx, monitor))
     }
 

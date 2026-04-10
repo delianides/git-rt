@@ -4,7 +4,9 @@ mod actions;
 mod app;
 mod config;
 mod git;
+mod github;
 mod state;
+mod theme;
 mod ui;
 mod watcher;
 
@@ -70,8 +72,11 @@ fn main() -> Result<()> {
 
     let config = config::AppConfig::load(cli.config.as_deref())?;
 
-    // Resolve worktree/branch pinning
-    let git_worktrees_dir = repo_path.join(".git").join("worktrees");
+    // Resolve worktree/branch pinning.
+    // Use resolve_common_git_dir to handle linked worktrees where .git is a file.
+    let common_git_dir =
+        git::resolve_common_git_dir(&repo_path).unwrap_or_else(|| repo_path.join(".git"));
+    let git_worktrees_dir = common_git_dir.join("worktrees");
     let pinned_worktree = if let Some(ref wt_arg) = cli.worktree {
         Some(
             watcher::worktree::resolve_worktree_arg(&git_worktrees_dir, wt_arg)

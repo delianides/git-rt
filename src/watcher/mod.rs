@@ -57,10 +57,14 @@ impl FsWatcher {
             .watch(repo_path, RecursiveMode::Recursive)
             .context("Failed to watch repository path")?;
 
-        // Also watch .git/index specifically for staging changes
-        let git_index = repo_path.join(".git/index");
-        if git_index.exists() {
-            let _ = debouncer.watch(&git_index, RecursiveMode::NonRecursive);
+        // Also watch the git index specifically for staging changes.
+        // In a linked worktree, .git is a file pointing to the real gitdir,
+        // so we resolve it first.
+        if let Some(git_dir) = crate::git::resolve_git_dir(repo_path) {
+            let git_index = git_dir.join("index");
+            if git_index.exists() {
+                let _ = debouncer.watch(&git_index, RecursiveMode::NonRecursive);
+            }
         }
 
         tracing::info!(?repo_path, "Filesystem watcher started");

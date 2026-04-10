@@ -41,6 +41,8 @@ pub struct App {
     wt_rx: Option<Receiver<crate::watcher::worktree::WorktreeEvent>>,
     /// Last time we switched worktrees (for cooldown)
     last_switch: Option<Instant>,
+    /// Receiver for GitHub PR events
+    gh_rx: Option<Receiver<crate::github::GitHubEvent>>,
 }
 
 impl App {
@@ -81,6 +83,18 @@ impl App {
             (None, None)
         };
 
+        let gh_rx = if config.pr.enabled {
+            if let Some(token) = crate::github::resolve_auth_token() {
+                let branch = state.branch().to_string();
+                Some(crate::github::start_polling(&watch_path, &branch, &token))
+            } else {
+                tracing::warn!("PR widget enabled but no GitHub auth token found");
+                None
+            }
+        } else {
+            None
+        };
+
         Ok(Self {
             state,
             git,
@@ -93,6 +107,7 @@ impl App {
             worktree_monitor,
             wt_rx,
             last_switch: None,
+            gh_rx,
         })
     }
 
@@ -108,10 +123,11 @@ impl App {
 
     fn event_loop(&mut self, terminal: &mut Terminal) -> Result<()> {
         let mut last_tick = Instant::now();
+        let theme = crate::theme::get_theme(&self.config.theme);
 
         loop {
             // Render current state
-            terminal.draw(&self.state, &self.config.display, &self.config.colors)?;
+            terminal.draw(&self.state, &self.config, theme)?;
 
             // Calculate timeout until next tick
             let timeout = self
@@ -143,6 +159,29 @@ impl App {
                 self.handle_worktree_event(wt_event)?;
             }
 
+            // Handle GitHub PR events
+            if let Some(ref gh_rx) = self.gh_rx {
+                while let Ok(event) = gh_rx.try_recv() {
+                    match event {
+                        crate::github::GitHubEvent::PrUpdate(info) => {
+                            tracing::debug!(pr = info.number, "PR data updated");
+                            self.state.set_pr_info(info);
+                        }
+                        crate::github::GitHubEvent::NoPr => {
+                            tracing::debug!("No open PR found for current branch");
+                            // Only clear if we don't have a sticky error
+                            if self.state.pr_state().error.is_none() {
+                                self.state.clear_pr();
+                            }
+                        }
+                        crate::github::GitHubEvent::Error(err) => {
+                            tracing::warn!(error = %err, "GitHub API error");
+                            self.state.set_pr_error(err);
+                        }
+                    }
+                }
+            }
+
             // Tick
             if last_tick.elapsed() >= self.tick_rate {
                 last_tick = Instant::now();
@@ -154,6 +193,27 @@ impl App {
     fn handle_terminal_event(&mut self, event: TermEvent) -> Result<bool> {
         match event {
             TermEvent::Key(key) => {
+                // Overlay mode: intercept keys before normal handling
+                if self.state.is_overlay_visible() {
+                    match (key.modifiers, key.code) {
+                        (KeyModifiers::CONTROL, KeyCode::Char('c')) => return Ok(true),
+                        (_, KeyCode::Esc)
+                        | (_, KeyCode::Char('q'))
+                        | (_, KeyCode::Char('h'))
+                        | (_, KeyCode::Left) => {
+                            self.state.hide_overlay();
+                        }
+                        (_, KeyCode::Char('j')) | (_, KeyCode::Down) => {
+                            self.state.scroll_diff_down();
+                        }
+                        (_, KeyCode::Char('k')) | (_, KeyCode::Up) => {
+                            self.state.scroll_diff_up();
+                        }
+                        _ => {}
+                    }
+                    return Ok(false);
+                }
+
                 match (key.modifiers, key.code) {
                     // Quit
                     (_, KeyCode::Char('q')) => return Ok(true),
@@ -169,7 +229,7 @@ impl App {
 
                     // Expand / collapse diff
                     (_, KeyCode::Enter) | (_, KeyCode::Char('l')) | (_, KeyCode::Right) => {
-                        self.toggle_expand()?;
+                        self.handle_expand()?;
                     }
                     (_, KeyCode::Char('h')) | (_, KeyCode::Left) => {
                         self.state.collapse_selected();
@@ -178,6 +238,11 @@ impl App {
                     // Refresh manually
                     (_, KeyCode::Char('r')) => {
                         self.handle_fs_change()?;
+                    }
+
+                    // Open external difftool (stub)
+                    (_, KeyCode::Char('d')) => {
+                        // TODO: open external difftool
                     }
 
                     _ => {}
@@ -224,15 +289,22 @@ impl App {
         Ok(())
     }
 
-    /// Toggle expanded diff for the currently selected file
-    fn toggle_expand(&mut self) -> Result<()> {
+    /// Expand or show overlay diff for the currently selected file, depending on config
+    fn handle_expand(&mut self) -> Result<()> {
         if let Some(path) = self.state.selected_path() {
-            if self.state.is_expanded(&path) {
-                self.state.collapse_selected();
+            if self.config.keys.enter == "inline" {
+                // Inline toggle behavior
+                if self.state.is_expanded(&path) {
+                    self.state.collapse_selected();
+                } else {
+                    let diff = self.git.diff_file(&path)?;
+                    self.state.expand_selected(diff);
+                }
             } else {
-                // Compute diff for this file
+                // Overlay behavior (default)
                 let diff = self.git.diff_file(&path)?;
                 self.state.expand_selected(diff);
+                self.state.show_overlay();
             }
         }
         Ok(())

@@ -66,6 +66,49 @@ pub enum DiffLineKind {
     HunkHeader,
 }
 
+/// Resolve the actual `.git` directory for a repository path.
+/// In a normal repo, this is `repo_path/.git/`.
+/// In a linked worktree, `.git` is a file containing `gitdir: <path>`,
+/// so we read and resolve it.
+pub fn resolve_git_dir(repo_path: &Path) -> Option<PathBuf> {
+    let git_dir = repo_path.join(".git");
+    if git_dir.is_dir() {
+        Some(git_dir)
+    } else if git_dir.is_file() {
+        let content = std::fs::read_to_string(&git_dir).ok()?;
+        let path = content.strip_prefix("gitdir: ")?.trim();
+        let p = PathBuf::from(path);
+        if p.is_relative() {
+            Some(repo_path.join(p))
+        } else {
+            Some(p)
+        }
+    } else {
+        None
+    }
+}
+
+/// For a linked worktree's gitdir (e.g. `/repo/.git/worktrees/foo`),
+/// resolve back to the main repo's `.git` directory.
+pub fn resolve_common_git_dir(repo_path: &Path) -> Option<PathBuf> {
+    let git_dir = resolve_git_dir(repo_path)?;
+    // Check for commondir file (present in linked worktrees)
+    let commondir = git_dir.join("commondir");
+    if commondir.is_file() {
+        let content = std::fs::read_to_string(&commondir).ok()?;
+        let path = content.trim();
+        let p = PathBuf::from(path);
+        if p.is_relative() {
+            Some(git_dir.join(p).canonicalize().ok()?)
+        } else {
+            Some(p)
+        }
+    } else {
+        // Already in the main repo
+        Some(git_dir)
+    }
+}
+
 /// Git repository handle
 pub struct GitRepo {
     repo_path: PathBuf,
@@ -222,8 +265,18 @@ impl GitRepo {
         Ok(parse_unified_diff(&diff_str))
     }
 
-    /// Get the repository name (basename of repo_path)
+    /// Get the repository name (basename of the main repo, even in a linked worktree).
+    /// Uses the common git dir to find the parent repo path.
     pub fn repo_name(&self) -> String {
+        if let Some(common_dir) = resolve_common_git_dir(&self.repo_path) {
+            // common_dir is e.g. /path/to/repo/.git — parent is the repo root
+            if let Some(repo_root) = common_dir.parent() {
+                if let Some(name) = repo_root.file_name() {
+                    return name.to_string_lossy().to_string();
+                }
+            }
+        }
+        // Fallback to basename of repo_path
         self.repo_path
             .file_name()
             .map(|n| n.to_string_lossy().to_string())
@@ -313,19 +366,7 @@ impl GitRepo {
     /// Check if the repo is in a special state (rebase, merge, cherry-pick, etc.)
     /// Handles `.git` being a file (linked worktree gitdir pointer).
     pub fn repo_state(&self) -> Option<String> {
-        let git_dir = self.repo_path.join(".git");
-        let git_dir = if git_dir.is_file() {
-            let content = std::fs::read_to_string(&git_dir).ok()?;
-            let path = content.strip_prefix("gitdir: ")?.trim();
-            let p = PathBuf::from(path);
-            if p.is_relative() {
-                self.repo_path.join(p)
-            } else {
-                p
-            }
-        } else {
-            git_dir
-        };
+        let git_dir = resolve_git_dir(&self.repo_path)?;
 
         if git_dir.join("rebase-merge").exists() || git_dir.join("rebase-apply").exists() {
             return Some("REBASING".to_string());
@@ -573,6 +614,28 @@ index abc1234..def5678 100644
         let repo = GitRepo::new(std::path::Path::new(".")).unwrap();
         let state = repo.repo_state();
         assert!(state.is_none() || !state.unwrap().is_empty());
+    }
+
+    #[test]
+    fn test_resolve_git_dir_normal_repo() {
+        // The current repo (or worktree) should resolve
+        let result = resolve_git_dir(std::path::Path::new("."));
+        assert!(result.is_some());
+    }
+
+    #[test]
+    fn test_resolve_git_dir_nonexistent() {
+        let result = resolve_git_dir(std::path::Path::new("/tmp/nonexistent-repo-xyz"));
+        assert!(result.is_none());
+    }
+
+    #[test]
+    fn test_resolve_common_git_dir() {
+        // Should resolve to a valid git dir
+        let result = resolve_common_git_dir(std::path::Path::new("."));
+        assert!(result.is_some());
+        // The common dir should contain a HEAD file
+        assert!(result.unwrap().join("HEAD").exists());
     }
 
     #[test]

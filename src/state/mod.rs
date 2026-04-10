@@ -3,6 +3,89 @@ use std::time::{Duration, Instant};
 
 use crate::git::{FileDiff, FileEntry};
 
+/// How the diff is displayed when Enter is pressed
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DiffViewMode {
+    Overlay,
+    Inline,
+}
+
+/// State of the PR widget
+#[derive(Debug, Clone, Default)]
+pub struct PrState {
+    pub info: Option<PrDisplayInfo>,
+    pub error: Option<String>,
+    pub loading: bool,
+}
+
+/// Displayable PR info
+#[derive(Debug, Clone)]
+pub struct PrDisplayInfo {
+    pub number: u64,
+    pub title: String,
+    pub state: PrStatus,
+    pub reviews: Vec<ReviewInfo>,
+    pub checks: ChecksInfo,
+    pub comment_count: u64,
+    pub mergeable: MergeableStatus,
+    pub labels: Vec<String>,
+    pub assignees: Vec<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum PrStatus {
+    Open,
+    Closed,
+    Merged,
+    Draft,
+}
+
+#[derive(Debug, Clone)]
+pub struct ReviewInfo {
+    pub reviewer: String,
+    pub state: ReviewState,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ReviewState {
+    Approved,
+    ChangesRequested,
+    Pending,
+    Commented,
+    Dismissed,
+}
+
+#[derive(Debug, Clone)]
+pub struct ChecksInfo {
+    pub total: usize,
+    pub passed: usize,
+    pub failed: usize,
+    pub pending: usize,
+    pub checks: Vec<CheckInfo>,
+}
+
+#[derive(Debug, Clone)]
+pub struct CheckInfo {
+    pub name: String,
+    pub status: CheckStatus,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum CheckStatus {
+    Passed,
+    Failed,
+    Pending,
+    Running,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum MergeableStatus {
+    Clean,
+    Conflicts,
+    Behind,
+    Unknown,
+}
+
 /// The application's view model — what the UI renders from
 pub struct AppState {
     /// All changed files in the repo
@@ -45,6 +128,10 @@ pub struct AppState {
     repo_state: Option<String>,
     /// Temporary message displayed on the bottom statusline
     flash_message: Option<(String, Instant)>,
+    /// Whether the diff overlay is currently shown
+    overlay_visible: bool,
+    /// PR widget state
+    pr_state: PrState,
 }
 
 impl AppState {
@@ -71,6 +158,8 @@ impl AppState {
             ahead_behind: None,
             repo_state: None,
             flash_message: None,
+            overlay_visible: false,
+            pr_state: PrState::default(),
         }
     }
 
@@ -211,6 +300,54 @@ impl AppState {
         self.flash_message = None;
     }
 
+    // -- Overlay --
+
+    /// Returns true if the diff overlay is currently visible
+    pub fn is_overlay_visible(&self) -> bool {
+        self.overlay_visible
+    }
+
+    /// Show the diff overlay
+    pub fn show_overlay(&mut self) {
+        self.overlay_visible = true;
+    }
+
+    /// Hide the diff overlay and reset diff scroll
+    pub fn hide_overlay(&mut self) {
+        self.overlay_visible = false;
+        self.diff_scroll = 0;
+    }
+
+    // -- PR state --
+
+    /// Get a reference to the current PR state
+    pub fn pr_state(&self) -> &PrState {
+        &self.pr_state
+    }
+
+    /// Set PR info and clear loading/error state
+    pub fn set_pr_info(&mut self, info: PrDisplayInfo) {
+        self.pr_state.info = Some(info);
+        self.pr_state.error = None;
+        self.pr_state.loading = false;
+    }
+
+    /// Set a PR error and clear loading state
+    pub fn set_pr_error(&mut self, error: String) {
+        self.pr_state.error = Some(error);
+        self.pr_state.loading = false;
+    }
+
+    /// Mark PR state as loading
+    pub fn set_pr_loading(&mut self) {
+        self.pr_state.loading = true;
+    }
+
+    /// Reset PR state to default
+    pub fn clear_pr(&mut self) {
+        self.pr_state = PrState::default();
+    }
+
     // -- Navigation --
 
     pub fn select_next(&mut self) {
@@ -278,6 +415,8 @@ impl AppState {
         self.stash_count = 0;
         self.ahead_behind = None;
         self.repo_state = None;
+        self.overlay_visible = false;
+        self.pr_state = PrState::default();
     }
 
     /// Update the file list from a fresh git status computation.
@@ -647,6 +786,77 @@ mod tests {
         state.set_flash_message("test".to_string());
         state.clear_flash_message();
         assert!(state.flash_message().is_none());
+    }
+
+    #[test]
+    fn test_overlay_visibility() {
+        let mut state = AppState::new(vec![], Duration::from_millis(600), "main".to_string());
+        assert!(!state.is_overlay_visible());
+        state.show_overlay();
+        assert!(state.is_overlay_visible());
+        state.hide_overlay();
+        assert!(!state.is_overlay_visible());
+    }
+
+    #[test]
+    fn test_pr_state_default() {
+        let state = AppState::new(vec![], Duration::from_millis(600), "main".to_string());
+        assert!(state.pr_state().info.is_none());
+        assert!(state.pr_state().error.is_none());
+        assert!(!state.pr_state().loading);
+    }
+
+    #[test]
+    fn test_set_pr_info() {
+        let mut state = AppState::new(vec![], Duration::from_millis(600), "main".to_string());
+        state.set_pr_loading();
+        assert!(state.pr_state().loading);
+        state.set_pr_info(PrDisplayInfo {
+            number: 42,
+            title: "feat: test".to_string(),
+            state: PrStatus::Open,
+            reviews: vec![],
+            checks: ChecksInfo {
+                total: 0,
+                passed: 0,
+                failed: 0,
+                pending: 0,
+                checks: vec![],
+            },
+            comment_count: 5,
+            mergeable: MergeableStatus::Clean,
+            labels: vec![],
+            assignees: vec![],
+        });
+        assert!(!state.pr_state().loading);
+        assert_eq!(state.pr_state().info.as_ref().unwrap().number, 42);
+    }
+
+    #[test]
+    fn test_reset_clears_overlay_and_pr() {
+        let files = vec![make_entry("a.rs", 1, 0)];
+        let mut state = AppState::new(files, Duration::from_millis(600), "main".to_string());
+        state.show_overlay();
+        state.set_pr_info(PrDisplayInfo {
+            number: 1,
+            title: "t".to_string(),
+            state: PrStatus::Open,
+            reviews: vec![],
+            checks: ChecksInfo {
+                total: 0,
+                passed: 0,
+                failed: 0,
+                pending: 0,
+                checks: vec![],
+            },
+            comment_count: 0,
+            mergeable: MergeableStatus::Clean,
+            labels: vec![],
+            assignees: vec![],
+        });
+        state.reset_for_switch(vec![], "main".to_string(), "r".to_string(), "w".to_string());
+        assert!(!state.is_overlay_visible());
+        assert!(state.pr_state().info.is_none());
     }
 
     #[test]

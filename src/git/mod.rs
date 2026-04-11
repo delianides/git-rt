@@ -312,6 +312,39 @@ impl GitRepo {
         }
     }
 
+    /// Produce a `FileDiff` representing the full patch for a single commit
+    /// (its tree vs its first parent's tree). Root commits are diffed against
+    /// the empty tree.
+    ///
+    /// Multiple files in the commit are concatenated into a single `FileDiff`
+    /// with synthetic `"File: <path>"` hunk headers between them so the
+    /// overlay renderer can visually separate files.
+    ///
+    /// Implementation note: shells out to `git show` to parse unified diff
+    /// output. This is pragmatic — gix 0.81 tree-vs-tree diffing would require
+    /// additional feature negotiation; `git show` gives us a stable, parseable
+    /// format for free.
+    pub fn commit_diff(&self, sha_hex: &str) -> Result<FileDiff, GitFailure> {
+        // Shell out: git show --no-color --format="" <sha>
+        // --format="" suppresses the commit header; the remaining output is a
+        // unified diff. For root commits (no parent) this still works fine.
+        let output = Command::new("git")
+            .args(["show", "--no-color", "--format=", sha_hex])
+            .current_dir(&self.repo_path)
+            .output()
+            .map_err(|e| GitFailure::Failed(format!("commit_diff git show: {e}")))?;
+
+        if !output.status.success() {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            return Err(GitFailure::Failed(format!(
+                "commit_diff git show failed: {stderr}"
+            )));
+        }
+
+        let text = String::from_utf8_lossy(&output.stdout);
+        Ok(parse_unified_diff(&text))
+    }
+
     /// Get the repository name (basename of the main repo, even in a linked worktree).
     /// Uses the common git dir to find the parent repo path.
     pub fn repo_name(&self) -> String {
@@ -608,6 +641,99 @@ fn synthesize_deletion_diff(old: &str) -> FileDiff {
     }
 }
 
+/// Parse unified diff output (as produced by `git show --format=`) into a
+/// [`FileDiff`]. Each `diff --git` file boundary is represented by a synthetic
+/// hunk whose `header` is `"File: <path>"`. Actual hunk headers (`@@ … @@`)
+/// and lines (`+`/`-`/` `) are parsed normally.
+///
+/// Lines before the first `diff --git` (e.g., the empty line left by
+/// `--format=""`) are silently skipped.
+fn parse_unified_diff(text: &str) -> FileDiff {
+    let mut hunks: Vec<DiffHunk> = Vec::new();
+    let mut current_hunk: Option<DiffHunk> = None;
+
+    for raw_line in text.lines() {
+        if raw_line.starts_with("diff --git ") {
+            // Flush current hunk before starting a new file section.
+            if let Some(h) = current_hunk.take() {
+                hunks.push(h);
+            }
+
+            // Extract the file path from "diff --git a/<path> b/<path>".
+            // Use the b/ side (new path) as the canonical name.
+            let path = raw_line
+                .splitn(3, ' ')
+                .nth(2) // "a/<path> b/<path>"
+                .and_then(|s| s.split_once(" b/"))
+                .map(|(_, rhs)| rhs.to_string())
+                .unwrap_or_else(|| raw_line.to_string());
+
+            // Insert a synthetic hunk that names the file. It carries no
+            // diff lines itself — real hunks follow below.
+            hunks.push(DiffHunk {
+                header: format!("File: {path}"),
+                lines: Vec::new(),
+            });
+            continue;
+        }
+
+        if raw_line.starts_with("@@ ") {
+            // Flush any previous hunk, start a new one.
+            if let Some(h) = current_hunk.take() {
+                hunks.push(h);
+            }
+            current_hunk = Some(DiffHunk {
+                header: raw_line.to_string(),
+                lines: Vec::new(),
+            });
+            continue;
+        }
+
+        // Skip binary/index/--- /+++ header lines that aren't content.
+        if raw_line.starts_with("index ")
+            || raw_line.starts_with("--- ")
+            || raw_line.starts_with("+++ ")
+            || raw_line.starts_with("Binary ")
+            || raw_line.starts_with("new file mode")
+            || raw_line.starts_with("deleted file mode")
+            || raw_line.starts_with("old mode")
+            || raw_line.starts_with("new mode")
+            || raw_line.starts_with("rename ")
+            || raw_line.starts_with("similarity index")
+        {
+            continue;
+        }
+
+        // Actual diff content lines — append to current hunk if open.
+        if let Some(ref mut hunk) = current_hunk {
+            let (kind, content) = if let Some(rest) = raw_line.strip_prefix('+') {
+                (DiffLineKind::Addition, rest.to_string())
+            } else if let Some(rest) = raw_line.strip_prefix('-') {
+                (DiffLineKind::Deletion, rest.to_string())
+            } else if let Some(rest) = raw_line.strip_prefix(' ') {
+                (DiffLineKind::Context, rest.to_string())
+            } else {
+                // Unrecognised line inside a hunk — treat as context.
+                (DiffLineKind::Context, raw_line.to_string())
+            };
+            hunk.lines.push(DiffLine { kind, content });
+        }
+        // Lines outside any hunk (e.g., empty lines between file sections)
+        // are silently dropped.
+    }
+
+    // Flush the last open hunk.
+    if let Some(h) = current_hunk {
+        hunks.push(h);
+    }
+
+    // Remove file-header hunks that have no following content hunks (e.g.,
+    // binary files or mode-only changes). Keep them only when at least one
+    // subsequent hunk with lines exists — but for simplicity we keep all
+    // non-empty file-header hunks and all hunks with lines.
+    FileDiff { hunks }
+}
+
 /// Classify a gix index-worktree status item into our (path, FileStatus).
 /// Returns `None` for items we don't want to show (e.g., NeedsUpdate
 /// bookkeeping items or tracked directory entries).
@@ -707,6 +833,101 @@ fn count_line_changes(old: &str, new: &str) -> (usize, usize) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn test_commit_diff_returns_hunks_for_commit() {
+        use std::path::Path;
+        use std::process::Command;
+        use tempfile::tempdir;
+
+        fn run_git(dir: &Path, args: &[&str]) {
+            let status = Command::new("git")
+                .current_dir(dir)
+                .args(args)
+                .status()
+                .unwrap();
+            assert!(status.success(), "git {args:?} failed");
+        }
+
+        let dir = tempdir().unwrap();
+        run_git(dir.path(), &["init", "-q", "-b", "main"]);
+        run_git(dir.path(), &["config", "user.email", "t@t"]);
+        run_git(dir.path(), &["config", "user.name", "t"]);
+        run_git(dir.path(), &["config", "commit.gpgsign", "false"]);
+        run_git(dir.path(), &["config", "tag.gpgsign", "false"]);
+
+        std::fs::write(dir.path().join("a.txt"), "one\n").unwrap();
+        run_git(dir.path(), &["add", "a.txt"]);
+        run_git(dir.path(), &["commit", "-q", "-m", "first"]);
+        std::fs::write(dir.path().join("a.txt"), "one\ntwo\n").unwrap();
+        run_git(dir.path(), &["add", "a.txt"]);
+        run_git(dir.path(), &["commit", "-q", "-m", "second"]);
+
+        let repo_handle = GitRepo::new(dir.path()).unwrap();
+
+        // Get HEAD sha via plain git
+        let out = Command::new("git")
+            .current_dir(dir.path())
+            .args(["rev-parse", "HEAD"])
+            .output()
+            .unwrap();
+        let full_sha = String::from_utf8(out.stdout).unwrap().trim().to_string();
+
+        let diff = repo_handle.commit_diff(&full_sha).unwrap();
+        assert!(
+            !diff.hunks.is_empty(),
+            "expected non-empty diff for a content-changing commit"
+        );
+        let any_addition = diff.hunks.iter().any(|h| {
+            h.lines
+                .iter()
+                .any(|l| matches!(l.kind, DiffLineKind::Addition) && l.content.contains("two"))
+        });
+        assert!(any_addition, "expected an addition line containing 'two'");
+    }
+
+    #[test]
+    fn test_commit_diff_handles_root_commit() {
+        use std::path::Path;
+        use std::process::Command;
+        use tempfile::tempdir;
+
+        fn run_git(dir: &Path, args: &[&str]) {
+            let status = Command::new("git")
+                .current_dir(dir)
+                .args(args)
+                .status()
+                .unwrap();
+            assert!(status.success(), "git {args:?} failed");
+        }
+
+        let dir = tempdir().unwrap();
+        run_git(dir.path(), &["init", "-q", "-b", "main"]);
+        run_git(dir.path(), &["config", "user.email", "t@t"]);
+        run_git(dir.path(), &["config", "user.name", "t"]);
+        run_git(dir.path(), &["config", "commit.gpgsign", "false"]);
+        run_git(dir.path(), &["config", "tag.gpgsign", "false"]);
+
+        std::fs::write(dir.path().join("a.txt"), "hello\n").unwrap();
+        run_git(dir.path(), &["add", "a.txt"]);
+        run_git(dir.path(), &["commit", "-q", "-m", "root"]);
+
+        let repo = GitRepo::new(dir.path()).unwrap();
+        let out = Command::new("git")
+            .current_dir(dir.path())
+            .args(["rev-parse", "HEAD"])
+            .output()
+            .unwrap();
+        let full_sha = String::from_utf8(out.stdout).unwrap().trim().to_string();
+
+        // Root commits have no parent — commit_diff should diff against the empty tree
+        // and not error.
+        let diff = repo.commit_diff(&full_sha).unwrap();
+        assert!(
+            !diff.hunks.is_empty(),
+            "expected diff content for a root commit"
+        );
+    }
 
     #[test]
     fn test_diff_file_handles_missing_path() {

@@ -1,4 +1,5 @@
 pub mod client;
+pub mod convert;
 pub mod poller;
 pub mod query;
 pub mod types;

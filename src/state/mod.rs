@@ -10,6 +10,35 @@ pub enum DiffViewMode {
     Inline,
 }
 
+/// Which tab is currently active in the main pane.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Tab {
+    Changes,
+    Commits,
+    Pr,
+}
+
+/// State owned by the Commits tab.
+#[derive(Debug, Clone, Default)]
+pub struct CommitsTabState {
+    /// Base ref used for the `base..HEAD` range, once resolved.
+    pub base_ref: Option<String>,
+    /// Commits in the range, newest-first. Capped at 100.
+    pub commits: Vec<crate::git::commits::CommitEntry>,
+    /// How many commits exist beyond the cap. 0 when fully loaded.
+    pub truncated_count: usize,
+    /// Current selection within the commits list.
+    pub selected_index: usize,
+    /// Whether the diff overlay is currently open for this tab.
+    pub overlay_visible: bool,
+    /// Scroll offset of the open overlay.
+    pub diff_scroll: usize,
+    /// Diff for the currently expanded commit, if any.
+    pub expanded_diff: Option<crate::git::FileDiff>,
+    /// Full hex sha of the expanded commit, if any.
+    pub expanded_sha: Option<String>,
+}
+
 /// State of the PR widget
 #[derive(Debug, Clone, Default)]
 pub struct PrState {
@@ -136,6 +165,10 @@ pub struct AppState {
     pr_state: PrState,
     /// When set, the pane border should flash until this instant.
     border_flash_until: Option<Instant>,
+    /// Which tab is currently active.
+    active_tab: Tab,
+    /// Owned state for the Commits tab.
+    commits_tab: CommitsTabState,
 }
 
 impl AppState {
@@ -165,6 +198,8 @@ impl AppState {
             overlay_visible: false,
             pr_state: PrState::default(),
             border_flash_until: None,
+            active_tab: Tab::Changes,
+            commits_tab: CommitsTabState::default(),
         }
     }
 
@@ -229,6 +264,18 @@ impl AppState {
 
     pub fn set_focused(&mut self, focused: bool) {
         self.focused = focused;
+    }
+
+    pub fn active_tab(&self) -> Tab {
+        self.active_tab
+    }
+
+    pub fn commits_tab(&self) -> &CommitsTabState {
+        &self.commits_tab
+    }
+
+    pub fn commits_tab_mut(&mut self) -> &mut CommitsTabState {
+        &mut self.commits_tab
     }
 
     pub fn branch(&self) -> &str {
@@ -933,5 +980,20 @@ mod tests {
         assert_eq!(state.repo_name(), "new-repo");
         assert_eq!(state.worktree_name(), "new-wt");
         assert_eq!(state.refresh_count(), 0);
+    }
+
+    #[test]
+    fn test_tab_default_is_changes() {
+        let state = AppState::new(vec![], Duration::from_millis(600), "main".to_string());
+        assert_eq!(state.active_tab(), Tab::Changes);
+    }
+
+    #[test]
+    fn test_commits_tab_state_default() {
+        let cts = CommitsTabState::default();
+        assert!(cts.base_ref.is_none());
+        assert!(cts.commits.is_empty());
+        assert_eq!(cts.truncated_count, 0);
+        assert_eq!(cts.selected_index, 0);
     }
 }

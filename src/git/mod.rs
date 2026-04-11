@@ -4,6 +4,8 @@ use std::process::Command;
 use anyhow::Result;
 use thiserror::Error;
 
+pub mod commits;
+
 #[derive(Error, Debug)]
 pub enum GitFailure {
     #[error("Not a git repository: {0}")]

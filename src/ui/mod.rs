@@ -6,6 +6,7 @@
 
 pub mod diff_overlay;
 pub mod pr_widget;
+pub mod tabs;
 
 use anyhow::Result;
 use crossterm::{

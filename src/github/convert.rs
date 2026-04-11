@@ -93,7 +93,7 @@ fn map_check_status(status: &str, conclusion: Option<&str>) -> CheckStatus {
             | Some("CANCELLED")
             | Some("STARTUP_FAILURE")
             | Some("ACTION_REQUIRED") => CheckStatus::Failed,
-            Some("SKIPPED") => CheckStatus::Skipped,
+            Some("SKIPPED") | Some("NEUTRAL") | Some("STALE") => CheckStatus::Skipped,
             _ => CheckStatus::Pending,
         },
         "IN_PROGRESS" => CheckStatus::Running,
@@ -483,6 +483,59 @@ mod tests {
         assert_eq!(info.checks.total, 1);
         assert_eq!(info.checks.failed, 1);
         assert_eq!(info.checks.passed, 0);
+        assert_eq!(info.checks.pending, 0);
+    }
+
+    #[test]
+    fn neutral_and_stale_checks_map_to_skipped() {
+        let resp = parse(
+            r#"{
+  "data": {
+    "repository": {
+      "pullRequests": {
+        "nodes": [
+          {
+            "number": 1,
+            "title": "t",
+            "isDraft": false,
+            "mergeable": "MERGEABLE",
+            "mergeStateStatus": "CLEAN",
+            "comments": { "totalCount": 0 },
+            "labels": { "nodes": [] },
+            "assignees": { "nodes": [] },
+            "reviews": { "nodes": [] },
+            "commits": {
+              "nodes": [
+                {
+                  "commit": {
+                    "checkSuites": {
+                      "nodes": [
+                        {
+                          "checkRuns": {
+                            "nodes": [
+                              { "name": "lint",  "status": "COMPLETED", "conclusion": "NEUTRAL" },
+                              { "name": "retry", "status": "COMPLETED", "conclusion": "STALE" }
+                            ]
+                          }
+                        }
+                      ]
+                    }
+                  }
+                }
+              ]
+            }
+          }
+        ]
+      }
+    }
+  }
+}"#,
+        );
+        let info = to_pr_display_info(resp.data).unwrap();
+        assert_eq!(info.checks.total, 2);
+        assert_eq!(info.checks.skipped, 2);
+        assert_eq!(info.checks.passed, 0);
+        assert_eq!(info.checks.failed, 0);
         assert_eq!(info.checks.pending, 0);
     }
 

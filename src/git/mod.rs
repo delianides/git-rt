@@ -4,6 +4,7 @@ use std::process::Command;
 use anyhow::Result;
 use thiserror::Error;
 
+pub mod base;
 pub mod commits;
 
 #[derive(Error, Debug)]

@@ -1181,4 +1181,54 @@ mod tests {
             assignees: vec![],
         }
     }
+
+    #[test]
+    fn test_tab_switch_resets_source_tab_transient_state() {
+        let files = vec![make_entry("a.rs", 1, 0), make_entry("b.rs", 2, 1)];
+        let mut state = AppState::new(files, Duration::from_millis(600), "main".to_string());
+
+        // Put Changes tab in a non-default state
+        state.select_next(); // select b.rs (index 1)
+        state.expand_selected(FileDiff::default());
+        state.show_overlay();
+        state.scroll_diff_down();
+        assert_eq!(state.selected_index(), 1);
+        assert!(state.is_overlay_visible());
+        assert_eq!(state.diff_scroll(), 1);
+
+        // Switch to Commits — source (Changes) transient state should reset at the moment of switching
+        state.set_tab(Tab::Commits);
+        assert_eq!(state.active_tab(), Tab::Commits);
+
+        // Switch back to Changes — should be at initial state
+        state.set_tab(Tab::Changes);
+        assert_eq!(state.selected_index(), 0);
+        assert!(!state.is_overlay_visible());
+        assert_eq!(state.diff_scroll(), 0);
+        assert!(state.expanded_path().is_none());
+    }
+
+    #[test]
+    fn test_tab_switch_resets_commits_tab_transient_state() {
+        let mut state = AppState::new(vec![], Duration::from_millis(600), "main".to_string());
+
+        // Manually populate Commits tab with non-default transient state
+        state.commits_tab_mut().selected_index = 3;
+        state.commits_tab_mut().overlay_visible = true;
+        state.commits_tab_mut().diff_scroll = 5;
+        state.commits_tab_mut().expanded_sha = Some("abc1234".to_string());
+
+        // Activate Commits (set_tab resets Changes, not Commits — Commits state untouched)
+        state.set_tab(Tab::Commits);
+        assert_eq!(state.commits_tab().selected_index, 3);
+        assert!(state.commits_tab().overlay_visible);
+        assert_eq!(state.commits_tab().diff_scroll, 5);
+
+        // Switch away from Commits — Commits transient state should now be reset
+        state.set_tab(Tab::Changes);
+        assert_eq!(state.commits_tab().selected_index, 0);
+        assert!(!state.commits_tab().overlay_visible);
+        assert_eq!(state.commits_tab().diff_scroll, 0);
+        assert!(state.commits_tab().expanded_sha.is_none());
+    }
 }

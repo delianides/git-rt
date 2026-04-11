@@ -995,5 +995,9 @@ mod tests {
         assert!(cts.commits.is_empty());
         assert_eq!(cts.truncated_count, 0);
         assert_eq!(cts.selected_index, 0);
+        assert!(!cts.overlay_visible);
+        assert_eq!(cts.diff_scroll, 0);
+        assert!(cts.expanded_diff.is_none());
+        assert!(cts.expanded_sha.is_none());
     }
 }

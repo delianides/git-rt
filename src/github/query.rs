@@ -1,5 +1,3 @@
-#![allow(dead_code)] // Removed in Task 5 once poller.rs uses these types.
-
 use serde::Deserialize;
 
 /// The single GraphQL query that fetches everything the PR widget needs.

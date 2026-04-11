@@ -1,5 +1,3 @@
-#![allow(dead_code)] // Removed in Task 5 once poller.rs uses this function.
-
 use std::collections::HashMap;
 
 use crate::github::query::{GqlCommitWrap, GqlData, GqlNodes, GqlPullRequest, GqlReview};

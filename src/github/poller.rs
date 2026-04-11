@@ -1,7 +1,111 @@
 use std::hash::{Hash, Hasher};
+use std::path::Path;
 use std::time::Duration;
 
+use anyhow::{Context, Result};
+use crossbeam_channel::{bounded, Receiver, Sender};
+
+use crate::github::client::{get_remote_url, parse_remote_url};
+use crate::github::convert;
+use crate::github::query::{self, GqlResponse};
 use crate::state::PrDisplayInfo;
+
+/// Events sent from the GitHub polling thread to the main event loop.
+#[derive(Debug)]
+pub enum GitHubEvent {
+    /// PR data was fetched and converted to display info.
+    PrUpdate(PrDisplayInfo),
+    /// No PR found for the current branch.
+    NoPr,
+    /// An error occurred during fetch.
+    Error(String),
+}
+
+/// Fetch PR data via a single GraphQL request.
+///
+/// Returns `Ok(None)` when the repository has no matching open PR.
+/// Returns `Err` for network failures, JSON parse failures, or any
+/// non-empty `errors` array in the GraphQL response.
+pub(super) fn fetch_pr_data(
+    agent: &ureq::Agent,
+    owner: &str,
+    repo: &str,
+    branch: &str,
+    token: &str,
+) -> Result<Option<PrDisplayInfo>> {
+    let body = serde_json::json!({
+        "query": query::PR_QUERY,
+        "variables": { "owner": owner, "repo": repo, "branch": branch },
+    });
+
+    let resp: GqlResponse = agent
+        .post("https://api.github.com/graphql")
+        .header("Authorization", &format!("Bearer {token}"))
+        .header("Accept", "application/vnd.github+json")
+        .header("User-Agent", "git-rt")
+        .send_json(body)
+        .context("GraphQL request failed")?
+        .body_mut()
+        .read_json()
+        .context("Failed to parse GraphQL response")?;
+
+    if let Some(errors) = resp.errors.as_ref() {
+        if !errors.is_empty() {
+            anyhow::bail!("GraphQL error: {}", errors[0].message);
+        }
+    }
+
+    Ok(convert::to_pr_display_info(resp.data))
+}
+
+/// Start a background thread that polls the GitHub API for PR data.
+/// Returns a receiver that yields `GitHubEvent` messages.
+pub fn start_polling(repo_path: &Path, branch: &str, token: &str) -> Receiver<GitHubEvent> {
+    let (tx, rx): (Sender<GitHubEvent>, Receiver<GitHubEvent>) = bounded(8);
+
+    let remote_url = get_remote_url(repo_path);
+    let branch = branch.to_string();
+    let token = token.to_string();
+
+    std::thread::Builder::new()
+        .name("github-poller".into())
+        .spawn(move || {
+            let (owner, repo) = match remote_url.as_deref().and_then(parse_remote_url) {
+                Some(pair) => pair,
+                None => {
+                    let _ = tx.send(GitHubEvent::Error(
+                        "Could not parse GitHub owner/repo from remote URL".into(),
+                    ));
+                    return;
+                }
+            };
+
+            // One agent, reused for every poll.
+            let agent = ureq::Agent::new_with_defaults();
+            let mut poll_manager = PollManager::new();
+
+            loop {
+                let event = match fetch_pr_data(&agent, &owner, &repo, &branch, &token) {
+                    Ok(Some(info)) => {
+                        poll_manager.report(&info);
+                        GitHubEvent::PrUpdate(info)
+                    }
+                    Ok(None) => GitHubEvent::NoPr,
+                    Err(e) => GitHubEvent::Error(format!("{e:#}")),
+                };
+
+                if tx.send(event).is_err() {
+                    // Receiver dropped, stop polling
+                    break;
+                }
+
+                std::thread::sleep(poll_manager.interval());
+            }
+        })
+        .expect("Failed to spawn GitHub poller thread");
+
+    rx
+}
 
 /// Manages adaptive polling intervals for GitHub API requests.
 /// Starts at an idle interval and switches to a faster active interval

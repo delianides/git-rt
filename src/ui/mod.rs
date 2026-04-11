@@ -4,6 +4,7 @@
 //! bordered panes, the file list, inline diffs, the diff overlay, and the
 //! optional PR widget.
 
+pub mod commits_tab;
 pub mod diff_overlay;
 pub mod pr_widget;
 pub mod status_line;

@@ -93,48 +93,19 @@ pub fn render_pr_widget(
     render_pr_info(frame, info, show_labels, theme, area);
 }
 
-/// Render actual PR data.
-fn render_pr_info(
-    frame: &mut Frame,
+/// Build body lines for PR info (title, conflicts, comments, checks, reviews,
+/// assignees, labels) and append them to `lines`.
+///
+/// Does NOT include the status badge line — that belongs to the caller.
+fn append_pr_body_lines(
+    lines: &mut Vec<Line<'static>>,
     info: &PrDisplayInfo,
     show_labels: bool,
     theme: &Theme,
-    area: Rect,
 ) {
-    let border_color = pr_border_color(&info.state);
-    let badge_fg = pr_badge_fg(&info.state);
-    let badge_label = pr_status_label(&info.state);
-
-    // Build title line: " OPEN  PR #142 · title "
-    let title = Line::from(vec![
-        Span::raw(" "),
-        Span::styled(
-            format!(" {} ", badge_label),
-            Style::default()
-                .fg(badge_fg)
-                .bg(border_color)
-                .add_modifier(Modifier::BOLD),
-        ),
-        Span::styled(
-            format!(" PR #{} ", info.number),
-            Style::default().fg(border_color),
-        ),
-    ]);
-
-    let block = Block::default()
-        .borders(Borders::ALL)
-        .border_type(BorderType::Rounded)
-        .border_style(Style::default().fg(border_color))
-        .title(title);
-
-    let inner = block.inner(area);
-    frame.render_widget(block, area);
-
-    let mut lines: Vec<Line> = Vec::new();
-
     // Title
     lines.push(Line::from(Span::styled(
-        &info.title,
+        info.title.clone(),
         Style::default().fg(theme.fg).add_modifier(Modifier::BOLD),
     )));
     lines.push(Line::default());
@@ -243,7 +214,106 @@ fn render_pr_info(
             Span::styled(info.labels.join(", "), Style::default().fg(theme.fg)),
         ]));
     }
+}
+
+/// Render actual PR data.
+fn render_pr_info(
+    frame: &mut Frame,
+    info: &PrDisplayInfo,
+    show_labels: bool,
+    theme: &Theme,
+    area: Rect,
+) {
+    let border_color = pr_border_color(&info.state);
+    let badge_fg = pr_badge_fg(&info.state);
+    let badge_label = pr_status_label(&info.state);
+
+    // Build title line: " OPEN  PR #142 · title "
+    let title = Line::from(vec![
+        Span::raw(" "),
+        Span::styled(
+            format!(" {} ", badge_label),
+            Style::default()
+                .fg(badge_fg)
+                .bg(border_color)
+                .add_modifier(Modifier::BOLD),
+        ),
+        Span::styled(
+            format!(" PR #{} ", info.number),
+            Style::default().fg(border_color),
+        ),
+    ]);
+
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .border_type(BorderType::Rounded)
+        .border_style(Style::default().fg(border_color))
+        .title(title);
+
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
+
+    let mut lines: Vec<Line<'static>> = Vec::new();
+    append_pr_body_lines(&mut lines, info, show_labels, theme);
 
     let paragraph = Paragraph::new(lines).wrap(Wrap { trim: false });
     frame.render_widget(paragraph, inner);
+}
+
+/// Render PR content into `area` without an outer bordered block.
+///
+/// The status badge that previously lived in the widget's title now becomes
+/// the first line of the body. Use this when the surrounding layout already
+/// provides a border (e.g. the main pane on the PR tab).
+pub fn render_pr_content(
+    frame: &mut Frame,
+    pr_state: &PrState,
+    show_labels: bool,
+    theme: &Theme,
+    area: Rect,
+) {
+    if pr_state.loading {
+        let msg =
+            Paragraph::new("  Loading PR info...").style(Style::default().fg(theme.empty_text));
+        frame.render_widget(msg, area);
+        return;
+    }
+    if let Some(ref error) = pr_state.error {
+        let msg =
+            Paragraph::new(format!("  Error: {error}")).style(Style::default().fg(Color::Red));
+        frame.render_widget(msg, area);
+        return;
+    }
+    let info = match &pr_state.info {
+        Some(info) => info,
+        None => return,
+    };
+
+    let badge_fg = pr_badge_fg(&info.state);
+    let badge_label = pr_status_label(&info.state);
+    let border_color = pr_border_color(&info.state);
+
+    let mut lines: Vec<Line<'static>> = Vec::new();
+
+    // Status badge line (previously the widget's title)
+    lines.push(Line::from(vec![
+        Span::raw(" "),
+        Span::styled(
+            format!(" {} ", badge_label),
+            Style::default()
+                .fg(badge_fg)
+                .bg(border_color)
+                .add_modifier(Modifier::BOLD),
+        ),
+        Span::styled(
+            format!(" PR #{} ", info.number),
+            Style::default().fg(border_color),
+        ),
+    ]));
+    lines.push(Line::default());
+
+    append_pr_body_lines(&mut lines, info, show_labels, theme);
+
+    let paragraph = Paragraph::new(lines).wrap(Wrap { trim: false });
+    frame.render_widget(paragraph, area);
 }

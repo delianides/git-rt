@@ -61,20 +61,22 @@ impl Default for DisplayConfig {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
 pub struct PrConfig {
-    /// Whether the PR widget is enabled
+    /// Whether the PR tab / polling is enabled
     pub enabled: bool,
-    /// Layout mode: "bottom", "right", or "tab"
-    pub layout: String,
     /// Whether to show PR labels
     pub show_labels: bool,
+    /// **Deprecated**: retained so old config files parse cleanly. No longer
+    /// affects rendering since the PR widget is now a tab.
+    #[serde(default)]
+    pub layout: Option<String>,
 }
 
 impl Default for PrConfig {
     fn default() -> Self {
         Self {
             enabled: true,
-            layout: "bottom".to_string(),
             show_labels: false,
+            layout: None,
         }
     }
 }
@@ -137,6 +139,13 @@ impl AppConfig {
                 let config: AppConfig = toml::from_str(&contents)
                     .with_context(|| format!("Failed to parse config file: {}", p.display()))?;
                 tracing::info!(?p, "Loaded config");
+
+                if config.pr.layout.is_some() {
+                    tracing::warn!(
+                        "`pr.layout` is deprecated and ignored — the PR widget is now a tab."
+                    );
+                }
+
                 Ok(config)
             }
             _ => {
@@ -182,7 +191,7 @@ mod tests {
     fn test_default_pr_config() {
         let pr = PrConfig::default();
         assert!(pr.enabled);
-        assert_eq!(pr.layout, "bottom");
+        assert!(pr.layout.is_none());
         assert!(!pr.show_labels);
     }
 
@@ -230,7 +239,7 @@ enter = "inline"
         let config = AppConfig::load(Some(&path)).unwrap();
         assert_eq!(config.theme, "dracula");
         assert!(!config.pr.enabled);
-        assert_eq!(config.pr.layout, "right");
+        assert_eq!(config.pr.layout.as_deref(), Some("right"));
         assert_eq!(config.keys.enter, "inline");
 
         std::fs::remove_dir_all(&dir).ok();
@@ -250,7 +259,7 @@ enter = "inline"
         assert_eq!(config.display.context_lines, 3);
         assert!(config.display.flash_on_change);
         assert!(config.pr.enabled);
-        assert_eq!(config.pr.layout, "bottom");
+        assert!(config.pr.layout.is_none());
         assert_eq!(config.keys.enter, "overlay");
 
         std::fs::remove_dir_all(&dir).ok();
@@ -297,5 +306,32 @@ enter = "inline"
             "/home/user/repo/src/main.rs",
         );
         assert_eq!(cmd.unwrap(), "open /home/user/repo/src/main.rs");
+    }
+
+    #[test]
+    fn test_legacy_pr_layout_parses_without_error() {
+        let dir = std::env::temp_dir().join("git-rt-test-config-legacy-layout");
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("config.toml");
+        std::fs::write(
+            &path,
+            r#"
+[pr]
+enabled = true
+layout = "right"
+show_labels = false
+"#,
+        )
+        .unwrap();
+
+        // Legacy `layout` key should parse cleanly — accepted but deprecated.
+        let config = AppConfig::load(Some(&path)).unwrap();
+        assert!(config.pr.enabled);
+        assert!(!config.pr.show_labels);
+        // The deprecated field is still present in the struct but its value is
+        // irrelevant to runtime behavior.
+        assert_eq!(config.pr.layout.as_deref(), Some("right"));
+
+        std::fs::remove_dir_all(&dir).ok();
     }
 }

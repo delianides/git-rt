@@ -26,13 +26,18 @@ pub enum GitHubEvent {
 /// Returns `Ok(None)` when the repository has no matching open PR.
 /// Returns `Err` for network failures, JSON parse failures, or any
 /// non-empty `errors` array in the GraphQL response.
+///
+/// A fresh `ureq::Agent` is created per call intentionally: reusing one
+/// across 10–30s idle polls leaves a stale keep-alive socket in the pool
+/// that GitHub's load balancer has already closed, producing
+/// "io: Peer disconnected" on the next request.
 pub(super) fn fetch_pr_data(
-    agent: &ureq::Agent,
     owner: &str,
     repo: &str,
     branch: &str,
     token: &str,
 ) -> Result<Option<PrDisplayInfo>> {
+    let agent = ureq::Agent::new_with_defaults();
     let body = serde_json::json!({
         "query": query::PR_QUERY,
         "variables": { "owner": owner, "repo": repo, "branch": branch },
@@ -80,12 +85,10 @@ pub fn start_polling(repo_path: &Path, branch: &str, token: &str) -> Receiver<Gi
                 }
             };
 
-            // One agent, reused for every poll.
-            let agent = ureq::Agent::new_with_defaults();
             let mut poll_manager = PollManager::new();
 
             loop {
-                let event = match fetch_pr_data(&agent, &owner, &repo, &branch, &token) {
+                let event = match fetch_pr_data(&owner, &repo, &branch, &token) {
                     Ok(Some(info)) => {
                         poll_manager.report(&info);
                         GitHubEvent::PrUpdate(info)

@@ -299,9 +299,9 @@ fn render_file_list(
         .unwrap_or(0);
 
     let highlight = if state.is_focused() {
-        Style::default()
-            .bg(theme.selection_bg)
-            .fg(theme.selection_fg)
+        // Only change bg so per-span fg colors (diff counts, status chars)
+        // remain visible on the selected row.
+        Style::default().bg(theme.selection_bg)
     } else {
         Style::default()
     };

@@ -61,7 +61,7 @@ pub fn render_tab_bar(frame: &mut Frame, state: &AppState, theme: &Theme, area: 
             ));
         }
         if i < tabs.len() - 1 {
-            spans.push(Span::raw("   "));
+            spans.push(Span::raw(" "));
         }
     }
 

@@ -408,6 +408,82 @@ impl AppState {
         self.pr_state = PrState::default();
     }
 
+    pub fn is_pr_tab_visible(&self) -> bool {
+        self.pr_state.info.is_some()
+    }
+
+    /// Return the ordered list of currently visible tabs.
+    /// `Changes` and `Commits` are always present; `Pr` is only present when
+    /// PR data has been loaded.
+    fn visible_tabs(&self) -> Vec<Tab> {
+        let mut v = vec![Tab::Changes, Tab::Commits];
+        if self.is_pr_tab_visible() {
+            v.push(Tab::Pr);
+        }
+        v
+    }
+
+    /// Activate a specific tab. Silently no-ops if the target is `Pr` and the
+    /// PR tab is not visible.
+    pub fn set_tab(&mut self, tab: Tab) {
+        if tab == Tab::Pr && !self.is_pr_tab_visible() {
+            return;
+        }
+        if self.active_tab != tab {
+            self.reset_active_tab_transient();
+            self.active_tab = tab;
+        }
+    }
+
+    /// Cycle to the next visible tab. Wraps at the end.
+    pub fn next_tab(&mut self) {
+        let visible = self.visible_tabs();
+        let current_idx = visible.iter().position(|t| *t == self.active_tab);
+        let Some(idx) = current_idx else {
+            // Active tab no longer visible — fall back to Changes
+            self.set_tab(Tab::Changes);
+            return;
+        };
+        let next_idx = (idx + 1) % visible.len();
+        let target = visible[next_idx];
+        self.set_tab(target);
+    }
+
+    /// Cycle to the previous visible tab. Wraps at the start.
+    pub fn prev_tab(&mut self) {
+        let visible = self.visible_tabs();
+        let current_idx = visible.iter().position(|t| *t == self.active_tab);
+        let Some(idx) = current_idx else {
+            self.set_tab(Tab::Changes);
+            return;
+        };
+        let prev_idx = if idx == 0 { visible.len() - 1 } else { idx - 1 };
+        let target = visible[prev_idx];
+        self.set_tab(target);
+    }
+
+    /// Clear transient state on the currently-active tab. Invoked by `set_tab`
+    /// just before changing `active_tab`, so callers don't need to invoke it
+    /// directly. The PR tab has no transient state.
+    fn reset_active_tab_transient(&mut self) {
+        match self.active_tab {
+            Tab::Changes => {
+                self.overlay_visible = false;
+                self.expanded = None;
+                self.diff_scroll = 0;
+                self.selected = 0;
+            }
+            Tab::Commits => {
+                self.commits_tab.overlay_visible = false;
+                self.commits_tab.expanded_diff = None;
+                self.commits_tab.expanded_sha = None;
+                self.commits_tab.diff_scroll = 0;
+                self.commits_tab.selected_index = 0;
+            }
+            Tab::Pr => {}
+        }
+    }
+
     // -- Navigation --
 
     pub fn select_next(&mut self) {
@@ -999,5 +1075,110 @@ mod tests {
         assert_eq!(cts.diff_scroll, 0);
         assert!(cts.expanded_diff.is_none());
         assert!(cts.expanded_sha.is_none());
+    }
+
+    #[test]
+    fn test_is_pr_tab_visible_reflects_info() {
+        let mut state = AppState::new(vec![], Duration::from_millis(600), "main".to_string());
+        assert!(!state.is_pr_tab_visible());
+
+        state.set_pr_info(PrDisplayInfo {
+            number: 1,
+            title: "t".to_string(),
+            state: PrStatus::Open,
+            reviews: vec![],
+            checks: ChecksInfo {
+                total: 0,
+                passed: 0,
+                failed: 0,
+                pending: 0,
+                skipped: 0,
+                checks: vec![],
+            },
+            comment_count: 0,
+            mergeable: MergeableStatus::Clean,
+            labels: vec![],
+            assignees: vec![],
+        });
+        assert!(state.is_pr_tab_visible());
+    }
+
+    #[test]
+    fn test_set_tab_direct() {
+        let mut state = AppState::new(vec![], Duration::from_millis(600), "main".to_string());
+        state.set_tab(Tab::Commits);
+        assert_eq!(state.active_tab(), Tab::Commits);
+    }
+
+    #[test]
+    fn test_set_tab_pr_silently_noops_when_hidden() {
+        let mut state = AppState::new(vec![], Duration::from_millis(600), "main".to_string());
+        state.set_tab(Tab::Pr);
+        assert_eq!(state.active_tab(), Tab::Changes);
+    }
+
+    #[test]
+    fn test_next_tab_cycles_with_pr_visible() {
+        let mut state = AppState::new(vec![], Duration::from_millis(600), "main".to_string());
+        state.set_pr_info(pr_info_fixture());
+        assert_eq!(state.active_tab(), Tab::Changes);
+        state.next_tab();
+        assert_eq!(state.active_tab(), Tab::Commits);
+        state.next_tab();
+        assert_eq!(state.active_tab(), Tab::Pr);
+        state.next_tab();
+        assert_eq!(state.active_tab(), Tab::Changes);
+    }
+
+    #[test]
+    fn test_next_tab_skips_pr_when_hidden() {
+        let mut state = AppState::new(vec![], Duration::from_millis(600), "main".to_string());
+        assert_eq!(state.active_tab(), Tab::Changes);
+        state.next_tab();
+        assert_eq!(state.active_tab(), Tab::Commits);
+        state.next_tab();
+        assert_eq!(state.active_tab(), Tab::Changes);
+    }
+
+    #[test]
+    fn test_prev_tab_cycles_with_pr_visible() {
+        let mut state = AppState::new(vec![], Duration::from_millis(600), "main".to_string());
+        state.set_pr_info(pr_info_fixture());
+        state.prev_tab();
+        assert_eq!(state.active_tab(), Tab::Pr);
+        state.prev_tab();
+        assert_eq!(state.active_tab(), Tab::Commits);
+        state.prev_tab();
+        assert_eq!(state.active_tab(), Tab::Changes);
+    }
+
+    #[test]
+    fn test_prev_tab_skips_pr_when_hidden() {
+        let mut state = AppState::new(vec![], Duration::from_millis(600), "main".to_string());
+        state.prev_tab();
+        assert_eq!(state.active_tab(), Tab::Commits);
+        state.prev_tab();
+        assert_eq!(state.active_tab(), Tab::Changes);
+    }
+
+    fn pr_info_fixture() -> PrDisplayInfo {
+        PrDisplayInfo {
+            number: 42,
+            title: "feat: test".to_string(),
+            state: PrStatus::Open,
+            reviews: vec![],
+            checks: ChecksInfo {
+                total: 0,
+                passed: 0,
+                failed: 0,
+                pending: 0,
+                skipped: 0,
+                checks: vec![],
+            },
+            comment_count: 0,
+            mergeable: MergeableStatus::Clean,
+            labels: vec![],
+            assignees: vec![],
+        }
     }
 }

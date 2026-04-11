@@ -226,6 +226,8 @@ impl App {
                             Tab::Commits => {
                                 let cts = self.state.commits_tab_mut();
                                 cts.overlay_visible = false;
+                                cts.expanded_diff = None;
+                                cts.expanded_sha = None;
                                 cts.diff_scroll = 0;
                             }
                             Tab::Pr => {}

@@ -152,6 +152,12 @@ impl GitRepo {
         Ok(Self { repo, repo_path })
     }
 
+    /// Public accessor for the underlying gix repository.
+    /// Used by higher-level helpers that need to call gix APIs directly.
+    pub fn raw(&self) -> &gix::Repository {
+        &self.repo
+    }
+
     /// Get the current branch name, or "HEAD" if detached
     pub fn branch_name(&self) -> Result<String, GitFailure> {
         match self.repo.head_name() {

@@ -6,6 +6,7 @@
 
 pub mod diff_overlay;
 pub mod pr_widget;
+pub mod status_line;
 pub mod tabs;
 
 use anyhow::Result;

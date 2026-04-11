@@ -1,8 +1,8 @@
 //! UI rendering module.
 //!
 //! Provides the [`Terminal`] wrapper and the main `render` function that draws
-//! bordered panes, the file list, inline diffs, the diff overlay, and the
-//! optional PR widget.
+//! the tab bar, a bordered main pane dispatched by active tab, the status line,
+//! and tab-aware diff overlays.
 
 pub mod commits_tab;
 pub mod diff_overlay;
@@ -73,99 +73,36 @@ impl Terminal {
 
 /// Top-level render function.
 ///
-/// 1. If the diff overlay is visible, render the main pane first, then the
-///    overlay on top.
-/// 2. If PR data is available and enabled, split the layout according to
-///    `config.pr.layout`.
-/// 3. Otherwise render the main pane full-size.
+/// Splits the frame into three regions:
+/// 1. Tab bar (1 row)
+/// 2. Main pane (bordered block, dispatched by active tab)
+/// 3. Status line (1 row)
+///
+/// Then draws a tab-aware diff overlay on top when appropriate.
 fn render(frame: &mut Frame, state: &AppState, config: &AppConfig, theme: &Theme) {
     let area = frame.area();
 
-    let pr_has_data = {
-        let pr = state.pr_state();
-        pr.info.is_some() || pr.loading || pr.error.is_some()
-    };
-    let pr_enabled = config.pr.enabled && pr_has_data;
+    let chunks = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([
+            Constraint::Length(1), // tab bar
+            Constraint::Min(3),    // main pane
+            Constraint::Length(1), // status line
+        ])
+        .split(area);
 
-    // Determine main pane area and optional PR area
-    let (main_area, pr_area) = if pr_enabled && config.pr.layout != "tab" {
-        split_for_pr(area, &config.pr.layout)
-    } else {
-        (area, None)
-    };
+    let tab_bar_area = chunks[0];
+    let main_area = chunks[1];
+    let status_area = chunks[2];
 
-    render_main_pane(frame, state, config, theme, main_area);
+    // 1. Tab bar
+    tabs::render_tab_bar(frame, state, theme, tab_bar_area);
 
-    if let Some(pr_rect) = pr_area {
-        pr_widget::render_pr_widget(
-            frame,
-            state.pr_state(),
-            config.pr.show_labels,
-            theme,
-            pr_rect,
-        );
-    }
-
-    // Overlay goes on top of everything
-    if state.is_overlay_visible() {
-        if let Some(diff) = state.expanded_diff() {
-            let path = state.expanded_path().unwrap_or("");
-            let (ins, del) = state
-                .files()
-                .iter()
-                .find(|f| f.path == path)
-                .map(|f| (f.insertions, f.deletions))
-                .unwrap_or((0, 0));
-
-            diff_overlay::render_diff_overlay(
-                frame,
-                diff,
-                path,
-                ins,
-                del,
-                state.diff_scroll(),
-                theme,
-            );
-        }
-    }
-}
-
-/// Split the area for a PR pane depending on layout mode.
-fn split_for_pr(area: Rect, layout: &str) -> (Rect, Option<Rect>) {
-    match layout {
-        "right" => {
-            let chunks = Layout::default()
-                .direction(Direction::Horizontal)
-                .constraints([Constraint::Percentage(65), Constraint::Percentage(35)])
-                .split(area);
-            (chunks[0], Some(chunks[1]))
-        }
-        _ => {
-            // "bottom" is the default
-            let chunks = Layout::default()
-                .direction(Direction::Vertical)
-                .constraints([Constraint::Percentage(65), Constraint::Percentage(35)])
-                .split(area);
-            (chunks[0], Some(chunks[1]))
-        }
-    }
-}
-
-// ── Main pane ────────────────────────────────────────────────────────────────
-
-/// Render the main pane: bordered box with header, containing the file list
-/// and optional inline diff.
-fn render_main_pane(
-    frame: &mut Frame,
-    state: &AppState,
-    config: &AppConfig,
-    theme: &Theme,
-    area: Rect,
-) {
-    let header = build_header(state, theme, area.width);
-
+    // 2. Main pane border color
     let border_color = if state.is_border_flashing() {
         theme.flash_bg
+    } else if state.active_tab() == crate::state::Tab::Pr {
+        pr_border_color_for_state(state, theme)
     } else if state.is_focused() {
         theme.border_focused
     } else {
@@ -175,100 +112,90 @@ fn render_main_pane(
     let block = Block::default()
         .borders(Borders::ALL)
         .border_type(BorderType::Rounded)
-        .border_style(Style::default().fg(border_color))
-        .title(header)
-        .title_style(Style::default().fg(theme.header_text));
+        .border_style(Style::default().fg(border_color));
 
-    let inner = block.inner(area);
-    frame.render_widget(block, area);
+    let inner = block.inner(main_area);
+    frame.render_widget(block, main_area);
 
-    render_file_list(frame, state, config, theme, inner);
+    // 3. Active tab body dispatch
+    match state.active_tab() {
+        crate::state::Tab::Changes => {
+            render_file_list(frame, state, config, theme, inner);
+        }
+        crate::state::Tab::Commits => {
+            commits_tab::render_commits_list(frame, state, theme, inner);
+        }
+        crate::state::Tab::Pr => {
+            pr_tab::render_pr_tab(frame, state, config.pr.show_labels, theme, inner);
+        }
+    }
+
+    // 4. Status line
+    status_line::render_status_line(frame, state, theme, status_area);
+
+    // 5. Tab-aware overlay (drawn on top of everything)
+    match state.active_tab() {
+        crate::state::Tab::Changes => {
+            if state.is_overlay_visible() {
+                if let Some(diff) = state.expanded_diff() {
+                    let path = state.expanded_path().unwrap_or("");
+                    let (ins, del) = state
+                        .files()
+                        .iter()
+                        .find(|f| f.path == path)
+                        .map(|f| (f.insertions, f.deletions))
+                        .unwrap_or((0, 0));
+                    diff_overlay::render_diff_overlay(
+                        frame,
+                        diff,
+                        path,
+                        ins,
+                        del,
+                        state.diff_scroll(),
+                        theme,
+                    );
+                }
+            }
+        }
+        crate::state::Tab::Commits => {
+            let cts = state.commits_tab();
+            if cts.overlay_visible {
+                if let Some(diff) = cts.expanded_diff.as_ref() {
+                    // Use 7-char short SHA as the label shown in the overlay title
+                    let label: String = cts
+                        .expanded_sha
+                        .as_deref()
+                        .map(|s| s.chars().take(7).collect())
+                        .unwrap_or_else(|| "commit".to_string());
+                    diff_overlay::render_diff_overlay(
+                        frame,
+                        diff,
+                        &label,
+                        0,
+                        0,
+                        cts.diff_scroll,
+                        theme,
+                    );
+                }
+            }
+        }
+        crate::state::Tab::Pr => {}
+    }
 }
 
-/// Build the header line, progressively dropping elements if the window is too narrow.
-/// Priority (kept longest): repo name, file count > diff stats > branch > worktree
-fn build_header(state: &AppState, theme: &Theme, width: u16) -> Line<'static> {
-    let files = state.files();
-    let file_count = files.len();
-    let total_ins: usize = files.iter().map(|f| f.insertions).sum();
-    let total_del: usize = files.iter().map(|f| f.deletions).sum();
+// ── Helpers ──────────────────────────────────────────────────────────────────
 
-    let repo = state.repo_name();
-    let branch = state.branch().to_string();
-    let worktree = state.worktree_name().to_string();
-    let show_worktree = !worktree.is_empty() && worktree != repo;
-
-    // Calculate widths of each segment (including separators)
-    let repo_w = if repo.is_empty() { 1 } else { repo.len() + 4 }; // " repo · "
-    let files_w = format!("{} files", file_count).len();
-    let stats_w = format!(" · +{} -{}", total_ins, total_del).len();
-    let branch_w = if branch.is_empty() {
-        0
-    } else {
-        branch.len() + 3 // " · branch"
-    };
-    let wt_w = if show_worktree {
-        worktree.len() + 3 // " · worktree"
-    } else {
-        0
-    };
-    let trailing = 2; // " " + border
-
-    let available = width as usize;
-
-    // Determine what fits, dropping from the end
-    let full = repo_w + files_w + stats_w + branch_w + wt_w + trailing;
-    let include_worktree = show_worktree && full <= available;
-    let without_wt = repo_w + files_w + stats_w + branch_w + trailing;
-    let include_branch = !branch.is_empty() && without_wt <= available;
-    let without_branch = repo_w + files_w + stats_w + trailing;
-    let include_stats = without_branch <= available;
-
-    let sep_style = Style::default().fg(theme.header_separator);
-    let text_style = Style::default().fg(theme.header_text);
-
-    let mut spans: Vec<Span<'static>> = Vec::new();
-
-    // Repo name (always shown)
-    if !repo.is_empty() {
-        spans.push(Span::styled(format!(" {}", repo), text_style));
-        spans.push(Span::styled(" · ", sep_style));
-    } else {
-        spans.push(Span::raw(" "));
+/// Return the border color for the PR tab based on the current PR state.
+fn pr_border_color_for_state(state: &AppState, theme: &Theme) -> ratatui::style::Color {
+    use crate::state::PrStatus;
+    use ratatui::style::Color;
+    match state.pr_state().info.as_ref().map(|i| &i.state) {
+        Some(PrStatus::Open) => Color::Green,
+        Some(PrStatus::Closed) => Color::Red,
+        Some(PrStatus::Merged) => Color::Magenta,
+        Some(PrStatus::Draft) => Color::Gray,
+        None => theme.border,
     }
-
-    // File count (always shown)
-    spans.push(Span::styled(format!("{} files", file_count), text_style));
-
-    // Diff stats
-    if include_stats {
-        spans.push(Span::styled(" · ", sep_style));
-        spans.push(Span::styled(
-            format!("+{}", total_ins),
-            Style::default().fg(theme.file_insertions),
-        ));
-        spans.push(Span::raw(" "));
-        spans.push(Span::styled(
-            format!("-{}", total_del),
-            Style::default().fg(theme.file_deletions),
-        ));
-    }
-
-    // Branch
-    if include_branch {
-        spans.push(Span::styled(" · ", sep_style));
-        spans.push(Span::styled(branch, text_style));
-    }
-
-    // Worktree
-    if include_worktree {
-        spans.push(Span::styled(" · ", sep_style));
-        spans.push(Span::styled(worktree, text_style));
-    }
-
-    spans.push(Span::raw(" "));
-
-    Line::from(spans)
 }
 
 // ── File list ────────────────────────────────────────────────────────────────

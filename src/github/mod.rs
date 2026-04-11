@@ -1,5 +1,6 @@
 pub mod client;
 pub mod poller;
+pub mod query;
 pub mod types;
 
 use std::collections::HashMap;

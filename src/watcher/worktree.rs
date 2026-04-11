@@ -25,6 +25,21 @@ pub enum WorktreeEvent {
     StructureChanged,
 }
 
+/// Returns true if the given path counts as "real" activity inside a worktree.
+///
+/// Filters out:
+/// - `/.git/` paths — internal git state managed by `FsWatcher`, not worktree activity.
+/// - `/.worktrees/` paths — a linked worktree subdirectory nested inside a parent
+///   worktree. The linked worktree has its own activity watcher; if the parent's
+///   recursive watch also counted these as activity, every commit in the linked
+///   worktree would fire Activity on BOTH the parent and the linked worktree,
+///   causing a spurious switch-to-parent flicker before the linked worktree's
+///   own event arrives.
+pub(crate) fn is_worktree_activity_path(path: &std::path::Path) -> bool {
+    let s = path.to_string_lossy();
+    !s.contains("/.git/") && !s.contains("/.worktrees/")
+}
+
 /// Read a worktree's info from `.git/worktrees/<name>/`.
 ///
 /// The `gitdir` file contains the path to `<worktree-path>/.git`.
@@ -259,12 +274,9 @@ impl WorktreeMonitor {
             move |result: std::result::Result<Vec<DebouncedEvent>, Vec<notify::Error>>| match result
             {
                 Ok(events) => {
-                    let relevant = events.iter().any(|e| {
-                        e.event
-                            .paths
-                            .iter()
-                            .any(|p| !p.to_string_lossy().contains("/.git/"))
-                    });
+                    let relevant = events
+                        .iter()
+                        .any(|e| e.event.paths.iter().any(|p| is_worktree_activity_path(p)));
                     tracing::debug!(
                         worktree = %log_name,
                         event_count = events.len(),
@@ -444,5 +456,54 @@ mod tests {
         let tmp = tempdir().unwrap();
         let result = resolve_branch_arg(tmp.path(), "nonexistent-branch");
         assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_activity_path_regular_working_tree_file_is_relevant() {
+        assert!(is_worktree_activity_path(Path::new("/repo/src/main.rs")));
+        assert!(is_worktree_activity_path(Path::new("/repo/Cargo.toml")));
+        assert!(is_worktree_activity_path(Path::new("/repo/README.md")));
+    }
+
+    #[test]
+    fn test_activity_path_git_internal_is_not_relevant() {
+        assert!(!is_worktree_activity_path(Path::new(
+            "/repo/.git/objects/ab/cd1234"
+        )));
+        assert!(!is_worktree_activity_path(Path::new("/repo/.git/index")));
+        assert!(!is_worktree_activity_path(Path::new("/repo/.git/HEAD")));
+    }
+
+    #[test]
+    fn test_activity_path_linked_worktree_is_not_relevant() {
+        // Regression: a commit in a linked worktree nested under the parent
+        // main worktree would previously fire Activity on BOTH the parent and
+        // the linked worktree, causing a spurious switch-to-parent flicker.
+        assert!(!is_worktree_activity_path(Path::new(
+            "/repo/.worktrees/feature/src/main.rs"
+        )));
+        assert!(!is_worktree_activity_path(Path::new(
+            "/repo/.worktrees/drew/tabbed-view/src/ui/mod.rs"
+        )));
+    }
+
+    #[test]
+    fn test_activity_path_linked_worktree_git_internal_is_not_relevant() {
+        // Double filter: both `.worktrees/` AND `.git/` should be excluded.
+        assert!(!is_worktree_activity_path(Path::new(
+            "/repo/.worktrees/feature/.git/index"
+        )));
+    }
+
+    #[test]
+    fn test_activity_path_file_named_worktrees_outside_dir_is_relevant() {
+        // A file that happens to contain "worktrees" in its name but isn't
+        // inside a `.worktrees/` directory should still count as activity.
+        assert!(is_worktree_activity_path(Path::new(
+            "/repo/src/worktrees.rs"
+        )));
+        assert!(is_worktree_activity_path(Path::new(
+            "/repo/docs/worktrees-guide.md"
+        )));
     }
 }

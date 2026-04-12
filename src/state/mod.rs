@@ -136,6 +136,10 @@ pub struct AppState {
     pr_state: PrState,
     /// When set, the pane border should flash until this instant.
     border_flash_until: Option<Instant>,
+    /// Cached merge base commit id (None when on the base branch or can't compute)
+    merge_base: Option<gix::ObjectId>,
+    /// Resolved base branch name
+    base_branch: String,
 }
 
 impl AppState {
@@ -165,6 +169,8 @@ impl AppState {
             overlay_visible: false,
             pr_state: PrState::default(),
             border_flash_until: None,
+            merge_base: None,
+            base_branch: String::new(),
         }
     }
 
@@ -290,6 +296,19 @@ impl AppState {
 
     pub fn set_repo_state(&mut self, state: Option<String>) {
         self.repo_state = state;
+    }
+
+    pub fn merge_base(&self) -> Option<gix::ObjectId> {
+        self.merge_base
+    }
+
+    pub fn base_branch(&self) -> &str {
+        &self.base_branch
+    }
+
+    pub fn set_merge_base(&mut self, mb: Option<gix::ObjectId>, base_branch: String) {
+        self.merge_base = mb;
+        self.base_branch = base_branch;
     }
 
     /// Get the current flash message if it hasn't expired
@@ -432,6 +451,8 @@ impl AppState {
         self.pr_state = PrState::default();
         // Activate border flash for visual feedback on switch
         self.border_flash_until = Some(Instant::now() + self.flash_duration);
+        self.merge_base = None;
+        self.base_branch.clear();
     }
 
     /// Update the file list from a fresh git status computation.
@@ -906,6 +927,38 @@ mod tests {
         assert!(state.is_border_flashing());
         std::thread::sleep(Duration::from_millis(5));
         assert!(!state.is_border_flashing());
+    }
+
+    #[test]
+    fn test_merge_base_default_none() {
+        let state = AppState::new(vec![], Duration::from_millis(600), "main".to_string());
+        assert!(state.merge_base().is_none());
+        assert_eq!(state.base_branch(), "");
+    }
+
+    #[test]
+    fn test_set_merge_base() {
+        let mut state = AppState::new(vec![], Duration::from_millis(600), "feature".to_string());
+        let fake_id = gix::ObjectId::null(gix::hash::Kind::Sha1);
+        state.set_merge_base(Some(fake_id), "main".to_string());
+        assert_eq!(state.merge_base(), Some(fake_id));
+        assert_eq!(state.base_branch(), "main");
+    }
+
+    #[test]
+    fn test_reset_for_switch_clears_merge_base() {
+        let mut state = AppState::new(vec![], Duration::from_millis(600), "feature".to_string());
+        let fake_id = gix::ObjectId::null(gix::hash::Kind::Sha1);
+        state.set_merge_base(Some(fake_id), "main".to_string());
+
+        state.reset_for_switch(
+            vec![],
+            "other".to_string(),
+            "r".to_string(),
+            "w".to_string(),
+        );
+        assert!(state.merge_base().is_none());
+        assert_eq!(state.base_branch(), "");
     }
 
     #[test]

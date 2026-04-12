@@ -4,7 +4,6 @@
 //! the tab bar, a bordered main pane dispatched by active tab, the status line,
 //! and tab-aware diff overlays.
 
-pub mod commits_tab;
 pub mod diff_overlay;
 pub mod pr_tab;
 pub mod pr_widget;
@@ -119,9 +118,6 @@ fn render(frame: &mut Frame, state: &AppState, config: &AppConfig, theme: &Theme
         crate::state::Tab::Changes => {
             render_file_list(frame, state, config, theme, inner);
         }
-        crate::state::Tab::Commits => {
-            commits_tab::render_commits_list(frame, state, theme, inner);
-        }
         crate::state::Tab::Pr => {
             pr_tab::render_pr_tab(frame, state, config.pr.show_labels, theme, inner);
         }
@@ -130,53 +126,27 @@ fn render(frame: &mut Frame, state: &AppState, config: &AppConfig, theme: &Theme
     // 4. Status line
     status_line::render_status_line(frame, state, theme, status_area);
 
-    // 5. Tab-aware overlay (drawn on top of everything)
-    match state.active_tab() {
-        crate::state::Tab::Changes => {
-            if state.is_overlay_visible() {
-                if let Some(diff) = state.expanded_diff() {
-                    let path = state.expanded_path().unwrap_or("");
-                    let (ins, del) = state
-                        .files()
-                        .iter()
-                        .find(|f| f.path == path)
-                        .map(|f| (f.insertions, f.deletions))
-                        .unwrap_or((0, 0));
-                    diff_overlay::render_diff_overlay(
-                        frame,
-                        diff,
-                        path,
-                        ins,
-                        del,
-                        state.diff_scroll(),
-                        theme,
-                    );
-                }
-            }
+    // 5. Overlay (drawn on top of everything). Only the Changes tab has
+    // an overlay; the PR tab is read-only.
+    if state.active_tab() == crate::state::Tab::Changes && state.is_overlay_visible() {
+        if let Some(diff) = state.expanded_diff() {
+            let path = state.expanded_path().unwrap_or("");
+            let (ins, del) = state
+                .files()
+                .iter()
+                .find(|f| f.path == path)
+                .map(|f| (f.insertions, f.deletions))
+                .unwrap_or((0, 0));
+            diff_overlay::render_diff_overlay(
+                frame,
+                diff,
+                path,
+                ins,
+                del,
+                state.diff_scroll(),
+                theme,
+            );
         }
-        crate::state::Tab::Commits => {
-            let cts = state.commits_tab();
-            if cts.overlay_visible {
-                if let Some(diff) = cts.expanded_diff.as_ref() {
-                    // Use 7-char short SHA as the label shown in the overlay title
-                    let label: String = cts
-                        .expanded_sha
-                        .as_deref()
-                        .map(|s| s.chars().take(7).collect())
-                        .unwrap_or_else(|| "commit".to_string());
-                    diff_overlay::render_diff_overlay(
-                        frame,
-                        diff,
-                        &label,
-                        0,
-                        0,
-                        cts.diff_scroll,
-                        theme,
-                    );
-                }
-            }
-        }
-        crate::state::Tab::Pr => {}
     }
 }
 

@@ -14,29 +14,7 @@ pub enum DiffViewMode {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Tab {
     Changes,
-    Commits,
     Pr,
-}
-
-/// State owned by the Commits tab.
-#[derive(Debug, Clone, Default)]
-pub struct CommitsTabState {
-    /// Base ref used for the `base..HEAD` range, once resolved.
-    pub base_ref: Option<String>,
-    /// Commits in the range, newest-first. Capped at 100.
-    pub commits: Vec<crate::git::commits::CommitEntry>,
-    /// How many commits exist beyond the cap. 0 when fully loaded.
-    pub truncated_count: usize,
-    /// Current selection within the commits list.
-    pub selected_index: usize,
-    /// Whether the diff overlay is currently open for this tab.
-    pub overlay_visible: bool,
-    /// Scroll offset of the open overlay.
-    pub diff_scroll: usize,
-    /// Diff for the currently expanded commit, if any.
-    pub expanded_diff: Option<crate::git::FileDiff>,
-    /// Full hex sha of the expanded commit, if any.
-    pub expanded_sha: Option<String>,
 }
 
 /// State of the PR widget
@@ -167,8 +145,6 @@ pub struct AppState {
     border_flash_until: Option<Instant>,
     /// Which tab is currently active.
     active_tab: Tab,
-    /// Owned state for the Commits tab.
-    commits_tab: CommitsTabState,
 }
 
 impl AppState {
@@ -199,7 +175,6 @@ impl AppState {
             pr_state: PrState::default(),
             border_flash_until: None,
             active_tab: Tab::Changes,
-            commits_tab: CommitsTabState::default(),
         }
     }
 
@@ -268,14 +243,6 @@ impl AppState {
 
     pub fn active_tab(&self) -> Tab {
         self.active_tab
-    }
-
-    pub fn commits_tab(&self) -> &CommitsTabState {
-        &self.commits_tab
-    }
-
-    pub fn commits_tab_mut(&mut self) -> &mut CommitsTabState {
-        &mut self.commits_tab
     }
 
     pub fn branch(&self) -> &str {
@@ -413,10 +380,10 @@ impl AppState {
     }
 
     /// Return the ordered list of currently visible tabs.
-    /// `Changes` and `Commits` are always present; `Pr` is only present when
-    /// PR data has been loaded.
+    /// `Changes` is always present; `Pr` is only present when PR data has
+    /// been loaded.
     fn visible_tabs(&self) -> Vec<Tab> {
-        let mut v = vec![Tab::Changes, Tab::Commits];
+        let mut v = vec![Tab::Changes];
         if self.is_pr_tab_visible() {
             v.push(Tab::Pr);
         }
@@ -472,13 +439,6 @@ impl AppState {
                 self.expanded = None;
                 self.diff_scroll = 0;
                 self.selected = 0;
-            }
-            Tab::Commits => {
-                self.commits_tab.overlay_visible = false;
-                self.commits_tab.expanded_diff = None;
-                self.commits_tab.expanded_sha = None;
-                self.commits_tab.diff_scroll = 0;
-                self.commits_tab.selected_index = 0;
             }
             Tab::Pr => {}
         }
@@ -1065,49 +1025,20 @@ mod tests {
     }
 
     #[test]
-    fn test_commits_tab_state_default() {
-        let cts = CommitsTabState::default();
-        assert!(cts.base_ref.is_none());
-        assert!(cts.commits.is_empty());
-        assert_eq!(cts.truncated_count, 0);
-        assert_eq!(cts.selected_index, 0);
-        assert!(!cts.overlay_visible);
-        assert_eq!(cts.diff_scroll, 0);
-        assert!(cts.expanded_diff.is_none());
-        assert!(cts.expanded_sha.is_none());
-    }
-
-    #[test]
     fn test_is_pr_tab_visible_reflects_info() {
         let mut state = AppState::new(vec![], Duration::from_millis(600), "main".to_string());
         assert!(!state.is_pr_tab_visible());
 
-        state.set_pr_info(PrDisplayInfo {
-            number: 1,
-            title: "t".to_string(),
-            state: PrStatus::Open,
-            reviews: vec![],
-            checks: ChecksInfo {
-                total: 0,
-                passed: 0,
-                failed: 0,
-                pending: 0,
-                skipped: 0,
-                checks: vec![],
-            },
-            comment_count: 0,
-            mergeable: MergeableStatus::Clean,
-            labels: vec![],
-            assignees: vec![],
-        });
+        state.set_pr_info(pr_info_fixture());
         assert!(state.is_pr_tab_visible());
     }
 
     #[test]
-    fn test_set_tab_direct() {
+    fn test_set_tab_pr_direct_when_visible() {
         let mut state = AppState::new(vec![], Duration::from_millis(600), "main".to_string());
-        state.set_tab(Tab::Commits);
-        assert_eq!(state.active_tab(), Tab::Commits);
+        state.set_pr_info(pr_info_fixture());
+        state.set_tab(Tab::Pr);
+        assert_eq!(state.active_tab(), Tab::Pr);
     }
 
     #[test]
@@ -1123,19 +1054,15 @@ mod tests {
         state.set_pr_info(pr_info_fixture());
         assert_eq!(state.active_tab(), Tab::Changes);
         state.next_tab();
-        assert_eq!(state.active_tab(), Tab::Commits);
-        state.next_tab();
         assert_eq!(state.active_tab(), Tab::Pr);
         state.next_tab();
         assert_eq!(state.active_tab(), Tab::Changes);
     }
 
     #[test]
-    fn test_next_tab_skips_pr_when_hidden() {
+    fn test_next_tab_is_noop_with_only_changes_visible() {
         let mut state = AppState::new(vec![], Duration::from_millis(600), "main".to_string());
         assert_eq!(state.active_tab(), Tab::Changes);
-        state.next_tab();
-        assert_eq!(state.active_tab(), Tab::Commits);
         state.next_tab();
         assert_eq!(state.active_tab(), Tab::Changes);
     }
@@ -1147,16 +1074,12 @@ mod tests {
         state.prev_tab();
         assert_eq!(state.active_tab(), Tab::Pr);
         state.prev_tab();
-        assert_eq!(state.active_tab(), Tab::Commits);
-        state.prev_tab();
         assert_eq!(state.active_tab(), Tab::Changes);
     }
 
     #[test]
-    fn test_prev_tab_skips_pr_when_hidden() {
+    fn test_prev_tab_is_noop_with_only_changes_visible() {
         let mut state = AppState::new(vec![], Duration::from_millis(600), "main".to_string());
-        state.prev_tab();
-        assert_eq!(state.active_tab(), Tab::Commits);
         state.prev_tab();
         assert_eq!(state.active_tab(), Tab::Changes);
     }
@@ -1186,8 +1109,9 @@ mod tests {
     fn test_tab_switch_resets_source_tab_transient_state() {
         let files = vec![make_entry("a.rs", 1, 0), make_entry("b.rs", 2, 1)];
         let mut state = AppState::new(files, Duration::from_millis(600), "main".to_string());
+        state.set_pr_info(pr_info_fixture());
 
-        // Put Changes tab in a non-default state
+        // Put Changes tab in a non-default state.
         state.select_next(); // select b.rs (index 1)
         state.expand_selected(FileDiff::default());
         state.show_overlay();
@@ -1196,39 +1120,16 @@ mod tests {
         assert!(state.is_overlay_visible());
         assert_eq!(state.diff_scroll(), 1);
 
-        // Switch to Commits — source (Changes) transient state should reset at the moment of switching
-        state.set_tab(Tab::Commits);
-        assert_eq!(state.active_tab(), Tab::Commits);
+        // Switch to PR — source (Changes) transient state should reset at
+        // the moment of switching.
+        state.set_tab(Tab::Pr);
+        assert_eq!(state.active_tab(), Tab::Pr);
 
-        // Switch back to Changes — should be at initial state
+        // Switch back to Changes — should be at initial state.
         state.set_tab(Tab::Changes);
         assert_eq!(state.selected_index(), 0);
         assert!(!state.is_overlay_visible());
         assert_eq!(state.diff_scroll(), 0);
         assert!(state.expanded_path().is_none());
-    }
-
-    #[test]
-    fn test_tab_switch_resets_commits_tab_transient_state() {
-        let mut state = AppState::new(vec![], Duration::from_millis(600), "main".to_string());
-
-        // Manually populate Commits tab with non-default transient state
-        state.commits_tab_mut().selected_index = 3;
-        state.commits_tab_mut().overlay_visible = true;
-        state.commits_tab_mut().diff_scroll = 5;
-        state.commits_tab_mut().expanded_sha = Some("abc1234".to_string());
-
-        // Activate Commits (set_tab resets Changes, not Commits — Commits state untouched)
-        state.set_tab(Tab::Commits);
-        assert_eq!(state.commits_tab().selected_index, 3);
-        assert!(state.commits_tab().overlay_visible);
-        assert_eq!(state.commits_tab().diff_scroll, 5);
-
-        // Switch away from Commits — Commits transient state should now be reset
-        state.set_tab(Tab::Changes);
-        assert_eq!(state.commits_tab().selected_index, 0);
-        assert!(!state.commits_tab().overlay_visible);
-        assert_eq!(state.commits_tab().diff_scroll, 0);
-        assert!(state.commits_tab().expanded_sha.is_none());
     }
 }

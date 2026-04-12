@@ -150,15 +150,15 @@ impl App {
                 }
             }
 
-            // Check for filesystem events (non-blocking)
+            // Check for filesystem events (non-blocking).
+            //
+            // Both `FsChange` and `HeadChange` currently trigger a git
+            // status recompute. Keeping the variants distinct at the
+            // watcher level lets future work (e.g. commit list refresh)
+            // differentiate without re-architecting the watcher.
             while let Ok(event) = self.fs_rx.try_recv() {
                 match event {
-                    FsWatcherEvent::FsChange => {
-                        self.handle_fs_change()?;
-                    }
-                    FsWatcherEvent::HeadChange => {
-                        self.handle_head_change()?;
-                        // HEAD changes almost always imply status changes too
+                    FsWatcherEvent::FsChange | FsWatcherEvent::HeadChange => {
                         self.handle_fs_change()?;
                     }
                 }
@@ -208,69 +208,32 @@ impl App {
     fn handle_terminal_event(&mut self, event: TermEvent) -> Result<bool> {
         match event {
             TermEvent::Key(key) => {
-                // Overlay mode: intercept keys before normal handling
-                let overlay_active = match self.state.active_tab() {
-                    Tab::Changes => self.state.is_overlay_visible(),
-                    Tab::Commits => self.state.commits_tab().overlay_visible,
-                    Tab::Pr => false,
-                };
-
-                if overlay_active {
+                // Overlay mode: intercept keys before normal handling.
+                // Only the Changes tab has an overlay; PR is read-only.
+                if self.state.active_tab() == Tab::Changes && self.state.is_overlay_visible() {
                     match (key.modifiers, key.code) {
                         (KeyModifiers::CONTROL, KeyCode::Char('c')) => return Ok(true),
                         (_, KeyCode::Esc)
                         | (_, KeyCode::Char('q'))
                         | (_, KeyCode::Char('h'))
-                        | (_, KeyCode::Left) => match self.state.active_tab() {
-                            Tab::Changes => self.state.hide_overlay(),
-                            Tab::Commits => {
-                                let cts = self.state.commits_tab_mut();
-                                cts.overlay_visible = false;
-                                cts.expanded_diff = None;
-                                cts.expanded_sha = None;
-                                cts.diff_scroll = 0;
-                            }
-                            Tab::Pr => {}
-                        },
+                        | (_, KeyCode::Left) => self.state.hide_overlay(),
                         (_, KeyCode::Char('j')) | (_, KeyCode::Down) => {
-                            match self.state.active_tab() {
-                                Tab::Changes => self.state.scroll_diff_down(),
-                                Tab::Commits => {
-                                    let cts = self.state.commits_tab_mut();
-                                    cts.diff_scroll = cts.diff_scroll.saturating_add(1);
-                                }
-                                Tab::Pr => {}
-                            }
+                            self.state.scroll_diff_down()
                         }
-                        (_, KeyCode::Char('k')) | (_, KeyCode::Up) => {
-                            match self.state.active_tab() {
-                                Tab::Changes => self.state.scroll_diff_up(),
-                                Tab::Commits => {
-                                    let cts = self.state.commits_tab_mut();
-                                    cts.diff_scroll = cts.diff_scroll.saturating_sub(1);
-                                }
-                                Tab::Pr => {}
-                            }
-                        }
+                        (_, KeyCode::Char('k')) | (_, KeyCode::Up) => self.state.scroll_diff_up(),
                         _ => {}
                     }
                     return Ok(false);
                 }
 
                 match (key.modifiers, key.code) {
-                    // Tab switching — intercept first, before any per-tab routing
+                    // Tab switching — intercept first, before any per-tab routing.
                     (_, KeyCode::Tab) => {
                         self.state.next_tab();
-                        if self.state.active_tab() == Tab::Commits {
-                            self.recompute_commits_list();
-                        }
                         return Ok(false);
                     }
                     (_, KeyCode::BackTab) => {
                         self.state.prev_tab();
-                        if self.state.active_tab() == Tab::Commits {
-                            self.recompute_commits_list();
-                        }
                         return Ok(false);
                     }
                     (_, KeyCode::Char('1')) => {
@@ -278,11 +241,6 @@ impl App {
                         return Ok(false);
                     }
                     (_, KeyCode::Char('2')) => {
-                        self.state.set_tab(Tab::Commits);
-                        self.recompute_commits_list();
-                        return Ok(false);
-                    }
-                    (_, KeyCode::Char('3')) => {
                         self.state.set_tab(Tab::Pr);
                         return Ok(false);
                     }
@@ -291,53 +249,33 @@ impl App {
                     (_, KeyCode::Char('q')) => return Ok(true),
                     (KeyModifiers::CONTROL, KeyCode::Char('c')) => return Ok(true),
 
-                    // Navigation — per-tab routing
-                    (_, KeyCode::Char('j')) | (_, KeyCode::Down) => match self.state.active_tab() {
-                        Tab::Changes => self.state.select_next(),
-                        Tab::Commits => {
-                            let len = self.state.commits_tab().commits.len();
-                            if len > 0 {
-                                let cts = self.state.commits_tab_mut();
-                                cts.selected_index = (cts.selected_index + 1).min(len - 1);
-                            }
+                    // Navigation — per-tab routing (PR tab is read-only).
+                    (_, KeyCode::Char('j')) | (_, KeyCode::Down) => {
+                        if self.state.active_tab() == Tab::Changes {
+                            self.state.select_next();
                         }
-                        Tab::Pr => {}
-                    },
-                    (_, KeyCode::Char('k')) | (_, KeyCode::Up) => match self.state.active_tab() {
-                        Tab::Changes => self.state.select_previous(),
-                        Tab::Commits => {
-                            let cts = self.state.commits_tab_mut();
-                            cts.selected_index = cts.selected_index.saturating_sub(1);
+                    }
+                    (_, KeyCode::Char('k')) | (_, KeyCode::Up) => {
+                        if self.state.active_tab() == Tab::Changes {
+                            self.state.select_previous();
                         }
-                        Tab::Pr => {}
-                    },
+                    }
 
                     // Expand / open diff
                     (_, KeyCode::Enter) | (_, KeyCode::Char('l')) | (_, KeyCode::Right) => {
-                        match self.state.active_tab() {
-                            Tab::Changes => self.handle_expand()?,
-                            Tab::Commits => self.handle_commit_expand()?,
-                            Tab::Pr => {}
+                        if self.state.active_tab() == Tab::Changes {
+                            self.handle_expand()?;
                         }
                     }
-                    (_, KeyCode::Char('h')) | (_, KeyCode::Left) => match self.state.active_tab() {
-                        Tab::Changes => self.state.collapse_selected(),
-                        Tab::Commits => {
-                            let cts = self.state.commits_tab_mut();
-                            cts.overlay_visible = false;
-                            cts.expanded_diff = None;
-                            cts.expanded_sha = None;
-                            cts.diff_scroll = 0;
+                    (_, KeyCode::Char('h')) | (_, KeyCode::Left) => {
+                        if self.state.active_tab() == Tab::Changes {
+                            self.state.collapse_selected();
                         }
-                        Tab::Pr => {}
-                    },
+                    }
 
                     // Refresh manually
                     (_, KeyCode::Char('r')) => {
                         self.handle_fs_change()?;
-                        if self.state.active_tab() == Tab::Commits {
-                            self.recompute_commits_list();
-                        }
                     }
 
                     // Open external difftool (stub)
@@ -392,88 +330,6 @@ impl App {
         }
         self.state.set_repo_state(self.git.repo_state());
 
-        Ok(())
-    }
-
-    fn handle_head_change(&mut self) -> Result<()> {
-        tracing::debug!("HEAD change detected, recomputing commits list");
-
-        // Re-read branch name (may have moved to a different branch)
-        if let Ok(branch) = self.git.branch_name() {
-            self.state.set_branch(branch);
-        }
-
-        self.recompute_commits_list();
-        Ok(())
-    }
-
-    /// Recompute the commits list for the current branch using the base-branch
-    /// fallback chain. Silent on failure — any error is logged but doesn't
-    /// interrupt the event loop.
-    fn recompute_commits_list(&mut self) {
-        let branch = self.state.branch().to_string();
-        let repo = self.git.raw();
-        let base = crate::git::base::resolve_base_branch(repo, &branch);
-        let base_clone = base.clone();
-
-        let result = match &base {
-            Some(base_ref) => match crate::git::commits::commit_range(repo, base_ref, 100) {
-                Ok(r) => Some(r),
-                Err(e) => {
-                    tracing::warn!(error = %e, "commit_range failed");
-                    None
-                }
-            },
-            None => None,
-        };
-
-        let cts = self.state.commits_tab_mut();
-        cts.base_ref = base_clone;
-        match result {
-            Some(r) => {
-                cts.commits = r.commits;
-                cts.truncated_count = r.truncated_count;
-            }
-            None => {
-                cts.commits.clear();
-                cts.truncated_count = 0;
-            }
-        }
-        // Clamp selection so it stays valid when the list shrinks.
-        let len = cts.commits.len();
-        if len == 0 {
-            cts.selected_index = 0;
-        } else if cts.selected_index >= len {
-            cts.selected_index = len - 1;
-        }
-    }
-
-    /// Expand the currently-selected commit in the Commits tab. Fetches its
-    /// diff via `GitRepo::commit_diff` and opens the overlay.
-    fn handle_commit_expand(&mut self) -> Result<()> {
-        let selected_sha = {
-            let cts = self.state.commits_tab();
-            cts.commits
-                .get(cts.selected_index)
-                .map(|c| c.sha_full.clone())
-        };
-        if let Some(sha) = selected_sha {
-            match self.git.commit_diff(&sha) {
-                Ok(diff) => {
-                    let cts = self.state.commits_tab_mut();
-                    cts.expanded_diff = Some(diff);
-                    cts.expanded_sha = Some(sha);
-                    cts.overlay_visible = true;
-                    cts.diff_scroll = 0;
-                }
-                Err(e) if e.is_env_change() => {
-                    tracing::debug!(error = %e, "env change during commit diff");
-                }
-                Err(e) => {
-                    self.state.set_flash_message(format!("diff error: {e}"));
-                }
-            }
-        }
         Ok(())
     }
 

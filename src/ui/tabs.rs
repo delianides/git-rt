@@ -16,13 +16,10 @@ use crate::theme::Theme;
 
 /// Return the ordered list of visible tabs with their display labels.
 ///
-/// The order is always `[Changes, Commits]`, optionally followed by `Pr`
-/// when PR data has been loaded.
+/// `Changes` is always present; `Pr` is only present when PR data has been
+/// loaded.
 pub fn visible_tabs(state: &AppState) -> Vec<(Tab, String)> {
-    let mut out: Vec<(Tab, String)> = vec![
-        (Tab::Changes, "Changes".to_string()),
-        (Tab::Commits, "Commits".to_string()),
-    ];
+    let mut out: Vec<(Tab, String)> = vec![(Tab::Changes, "Changes".to_string())];
     if state.is_pr_tab_visible() {
         let label = match state.pr_state().info.as_ref() {
             Some(info) => format!("PR #{}", info.number),
@@ -113,11 +110,9 @@ mod tests {
     fn test_visible_tabs_without_pr() {
         let state = AppState::new(vec![], Duration::from_millis(600), "main".to_string());
         let tabs = visible_tabs(&state);
-        assert_eq!(tabs.len(), 2);
+        assert_eq!(tabs.len(), 1);
         assert_eq!(tabs[0].0, Tab::Changes);
         assert_eq!(tabs[0].1, "Changes");
-        assert_eq!(tabs[1].0, Tab::Commits);
-        assert_eq!(tabs[1].1, "Commits");
     }
 
     #[test]
@@ -125,9 +120,9 @@ mod tests {
         let mut state = AppState::new(vec![], Duration::from_millis(600), "main".to_string());
         state.set_pr_info(pr_info(142));
         let tabs = visible_tabs(&state);
-        assert_eq!(tabs.len(), 3);
-        assert_eq!(tabs[2].0, Tab::Pr);
-        assert_eq!(tabs[2].1, "PR #142");
+        assert_eq!(tabs.len(), 2);
+        assert_eq!(tabs[1].0, Tab::Pr);
+        assert_eq!(tabs[1].1, "PR #142");
     }
 
     /// Collect the plain-text content of a `Line` by concatenating all of
@@ -150,10 +145,10 @@ mod tests {
     fn test_tab_bar_title_without_pr() {
         let state = AppState::new(vec![], Duration::from_millis(600), "main".to_string());
         let line = tab_bar_title(&state, &test_theme());
-        // Active tab (Changes) gets the bullet; inactive (Commits) gets the
-        // two-space indent. Wrapped in single leading/trailing spaces so the
-        // border corners don't crowd the labels.
-        assert_eq!(line_text(&line), " ● Changes   Commits ");
+        // Only the Changes tab is visible; it gets the bullet and is
+        // wrapped in single leading/trailing spaces so the border corners
+        // don't crowd the label.
+        assert_eq!(line_text(&line), " ● Changes ");
     }
 
     #[test]
@@ -161,16 +156,17 @@ mod tests {
         let mut state = AppState::new(vec![], Duration::from_millis(600), "main".to_string());
         state.set_pr_info(pr_info(142));
         let line = tab_bar_title(&state, &test_theme());
-        assert_eq!(line_text(&line), " ● Changes   Commits   PR #142 ");
+        assert_eq!(line_text(&line), " ● Changes   PR #142 ");
     }
 
     #[test]
     fn test_tab_bar_title_active_follows_active_tab() {
-        // Switch to Commits — the bullet must move with it, and Changes
-        // should fall back to the inactive two-space indent.
+        // Switch to PR — the bullet must move with it, and Changes should
+        // fall back to the inactive two-space indent.
         let mut state = AppState::new(vec![], Duration::from_millis(600), "main".to_string());
-        state.set_tab(Tab::Commits);
+        state.set_pr_info(pr_info(142));
+        state.set_tab(Tab::Pr);
         let line = tab_bar_title(&state, &test_theme());
-        assert_eq!(line_text(&line), "   Changes ● Commits ");
+        assert_eq!(line_text(&line), "   Changes ● PR #142 ");
     }
 }

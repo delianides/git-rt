@@ -51,11 +51,6 @@ pub fn build_right_segment(state: &AppState) -> String {
             let del: usize = files.iter().map(|f| f.deletions).sum();
             format!("{} files +{ins} -{del}", files.len())
         }
-        Tab::Commits => {
-            let cts = state.commits_tab();
-            let base = cts.base_ref.as_deref().unwrap_or("—");
-            format!("{} commits · base: {base}", cts.commits.len())
-        }
         Tab::Pr => String::new(),
     }
 }
@@ -143,23 +138,6 @@ mod tests {
         let s = fresh_state();
         let text = build_right_segment(&s);
         assert_eq!(text, "0 files +0 -0");
-    }
-
-    #[test]
-    fn test_right_segment_commits_tab_no_base() {
-        let mut s = fresh_state();
-        s.set_tab(Tab::Commits);
-        let text = build_right_segment(&s);
-        assert_eq!(text, "0 commits · base: —");
-    }
-
-    #[test]
-    fn test_right_segment_commits_tab_with_base() {
-        let mut s = fresh_state();
-        s.commits_tab_mut().base_ref = Some("origin/main".to_string());
-        s.set_tab(Tab::Commits);
-        let text = build_right_segment(&s);
-        assert_eq!(text, "0 commits · base: origin/main");
     }
 
     #[test]

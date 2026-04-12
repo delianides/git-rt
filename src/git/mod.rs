@@ -533,6 +533,46 @@ impl GitRepo {
         }
     }
 
+    /// Resolve the base branch name using priority:
+    /// 1. CLI override (`cli_base`)
+    /// 2. Config value (`config_base`)
+    /// 3. Auto-detect from origin/HEAD
+    /// 4. Fallback to origin/main, then origin/master
+    pub fn resolve_base_branch(
+        &self,
+        cli_base: Option<&str>,
+        config_base: Option<&str>,
+    ) -> Option<String> {
+        // Priority 1 & 2: explicit overrides
+        if let Some(base) = cli_base.or(config_base) {
+            return Some(base.to_string());
+        }
+
+        // Priority 3: resolve origin/HEAD — try to read the symbolic ref target
+        if let Ok(reference) = self.repo.find_reference("refs/remotes/origin/HEAD") {
+            let target_name = reference.name().shorten().to_string();
+            if target_name != "origin/HEAD" {
+                return Some(target_name);
+            }
+        }
+
+        // Priority 4: fallback
+        if self
+            .resolve_ref_to_commit("refs/remotes/origin/main")
+            .is_some()
+        {
+            return Some("main".to_string());
+        }
+        if self
+            .resolve_ref_to_commit("refs/remotes/origin/master")
+            .is_some()
+        {
+            return Some("master".to_string());
+        }
+
+        None
+    }
+
     /// Create a synthetic diff for untracked files (all lines as additions)
     fn diff_untracked(&self, path: &str) -> Result<FileDiff> {
         let file_path = self.repo_path.join(path);
@@ -1001,5 +1041,19 @@ mod tests {
         let result = GitRepo::new(&temp);
         assert!(result.is_err());
         std::fs::remove_dir_all(&temp).ok();
+    }
+
+    #[test]
+    fn test_resolve_base_branch_with_explicit() {
+        let repo = GitRepo::new(std::path::Path::new(".")).unwrap();
+        let result = repo.resolve_base_branch(Some("main"), None);
+        assert_eq!(result, Some("main".to_string()));
+    }
+
+    #[test]
+    fn test_resolve_base_branch_cli_overrides_config() {
+        let repo = GitRepo::new(std::path::Path::new(".")).unwrap();
+        let result = repo.resolve_base_branch(Some("develop"), Some("main"));
+        assert_eq!(result, Some("develop".to_string()));
     }
 }

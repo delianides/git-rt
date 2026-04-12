@@ -60,7 +60,7 @@ pub(super) fn fetch_pr_data(
         }
     }
 
-    Ok(convert::to_pr_display_info(resp.data))
+    Ok(convert::to_pr_display_info(resp.data, owner, repo))
 }
 
 /// Start a background thread that polls the GitHub API for PR data.
@@ -216,6 +216,7 @@ mod tests {
             mergeable: MergeableStatus::Clean,
             labels: vec![],
             assignees: vec![],
+            url: String::new(),
         };
         let interval = pm.report(&info);
         assert_eq!(interval, Duration::from_secs(10));
@@ -241,6 +242,7 @@ mod tests {
             mergeable: MergeableStatus::Clean,
             labels: vec![],
             assignees: vec![],
+            url: String::new(),
         };
         pm.report(&info); // first time — active
         pm.report(&info); // unchanged 1

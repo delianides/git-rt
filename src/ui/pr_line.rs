@@ -168,6 +168,7 @@ mod tests {
             mergeable,
             labels: vec![],
             assignees: vec![],
+            url: String::new(),
         }
     }
 

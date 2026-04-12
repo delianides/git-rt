@@ -30,6 +30,7 @@ pub struct PrDisplayInfo {
     pub mergeable: MergeableStatus,
     pub labels: Vec<String>,
     pub assignees: Vec<String>,
+    pub url: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -864,6 +865,7 @@ mod tests {
             mergeable: MergeableStatus::Clean,
             labels: vec![],
             assignees: vec![],
+            url: String::new(),
         });
         assert!(!state.pr_state().loading);
         assert_eq!(state.pr_state().info.as_ref().unwrap().number, 42);
@@ -891,6 +893,7 @@ mod tests {
             mergeable: MergeableStatus::Clean,
             labels: vec![],
             assignees: vec![],
+            url: String::new(),
         });
         state.reset_for_switch(vec![], "main".to_string(), "r".to_string(), "w".to_string());
         assert!(!state.is_overlay_visible());

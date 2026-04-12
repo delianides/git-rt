@@ -8,12 +8,12 @@ use crate::state::{
 
 /// Convert a GraphQL response's `data` field into a `PrDisplayInfo`.
 /// Returns `None` when the repository has no matching open PR.
-pub fn to_pr_display_info(data: Option<GqlData>) -> Option<PrDisplayInfo> {
+pub fn to_pr_display_info(data: Option<GqlData>, owner: &str, repo: &str) -> Option<PrDisplayInfo> {
     let pr = data?.repository?.pull_requests.nodes.into_iter().next()?;
-    Some(pr_to_display_info(pr))
+    Some(pr_to_display_info(pr, owner, repo))
 }
 
-fn pr_to_display_info(pr: GqlPullRequest) -> PrDisplayInfo {
+fn pr_to_display_info(pr: GqlPullRequest, owner: &str, repo: &str) -> PrDisplayInfo {
     let state = map_pr_state(&pr.state, pr.is_draft, &pr.merge_state_status);
     let mergeable = map_mergeable(&pr.mergeable, &pr.merge_state_status);
     let reviews = dedup_reviews(pr.reviews.nodes);
@@ -38,6 +38,7 @@ fn pr_to_display_info(pr: GqlPullRequest) -> PrDisplayInfo {
         mergeable,
         labels,
         assignees,
+        url: format!("https://github.com/{owner}/{repo}/pull/{}", pr.number),
     }
 }
 
@@ -208,7 +209,8 @@ mod tests {
 }"#,
         );
 
-        let info = to_pr_display_info(resp.data).expect("expected Some PrDisplayInfo");
+        let info = to_pr_display_info(resp.data, "test-owner", "test-repo")
+            .expect("expected Some PrDisplayInfo");
         assert_eq!(info.number, 42);
         assert_eq!(info.title, "Add feature X");
         assert_eq!(info.state, PrStatus::Open);
@@ -225,6 +227,7 @@ mod tests {
         assert_eq!(info.checks.total, 2);
         assert_eq!(info.checks.passed, 2);
         assert_eq!(info.checks.failed, 0);
+        assert_eq!(info.url, "https://github.com/test-owner/test-repo/pull/42");
     }
 
     #[test]
@@ -238,7 +241,7 @@ mod tests {
   }
 }"#,
         );
-        assert!(to_pr_display_info(resp.data).is_none());
+        assert!(to_pr_display_info(resp.data, "test-owner", "test-repo").is_none());
     }
 
     #[test]
@@ -268,7 +271,7 @@ mod tests {
   }
 }"#,
         );
-        let info = to_pr_display_info(resp.data).unwrap();
+        let info = to_pr_display_info(resp.data, "test-owner", "test-repo").unwrap();
         assert_eq!(info.state, PrStatus::Draft);
     }
 
@@ -299,7 +302,7 @@ mod tests {
   }
 }"#,
         );
-        let info = to_pr_display_info(resp.data).unwrap();
+        let info = to_pr_display_info(resp.data, "test-owner", "test-repo").unwrap();
         assert_eq!(info.mergeable, MergeableStatus::Conflicts);
     }
 
@@ -330,7 +333,7 @@ mod tests {
   }
 }"#,
         );
-        let info = to_pr_display_info(resp.data).unwrap();
+        let info = to_pr_display_info(resp.data, "test-owner", "test-repo").unwrap();
         assert_eq!(info.mergeable, MergeableStatus::Behind);
     }
 
@@ -382,7 +385,7 @@ mod tests {
   }
 }"#,
         );
-        let info = to_pr_display_info(resp.data).unwrap();
+        let info = to_pr_display_info(resp.data, "test-owner", "test-repo").unwrap();
         assert_eq!(info.checks.total, 4);
         assert_eq!(info.checks.passed, 1);
         assert_eq!(info.checks.failed, 1);
@@ -436,7 +439,7 @@ mod tests {
   }
 }"#,
         );
-        let info = to_pr_display_info(resp.data).unwrap();
+        let info = to_pr_display_info(resp.data, "test-owner", "test-repo").unwrap();
         assert_eq!(info.checks.pending, 1);
         assert_eq!(info.checks.passed, 0);
     }
@@ -486,7 +489,7 @@ mod tests {
   }
 }"#,
         );
-        let info = to_pr_display_info(resp.data).unwrap();
+        let info = to_pr_display_info(resp.data, "test-owner", "test-repo").unwrap();
         assert_eq!(info.checks.total, 1);
         assert_eq!(info.checks.failed, 1);
         assert_eq!(info.checks.passed, 0);
@@ -540,7 +543,7 @@ mod tests {
   }
 }"#,
         );
-        let info = to_pr_display_info(resp.data).unwrap();
+        let info = to_pr_display_info(resp.data, "test-owner", "test-repo").unwrap();
         assert_eq!(info.checks.total, 2);
         assert_eq!(info.checks.skipped, 2);
         assert_eq!(info.checks.passed, 0);
@@ -575,7 +578,7 @@ mod tests {
   }
 }"#,
         );
-        let info = to_pr_display_info(resp.data).unwrap();
+        let info = to_pr_display_info(resp.data, "test-owner", "test-repo").unwrap();
         assert!(info.reviews.is_empty());
         assert!(info.labels.is_empty());
         assert!(info.assignees.is_empty());
@@ -614,7 +617,7 @@ mod tests {
   }
 }"#,
         );
-        let info = to_pr_display_info(resp.data).unwrap();
+        let info = to_pr_display_info(resp.data, "test-owner", "test-repo").unwrap();
         assert_eq!(info.reviews.len(), 1);
         assert_eq!(info.reviews[0].reviewer, "alice");
     }
@@ -651,7 +654,7 @@ mod tests {
   }
 }"#,
         );
-        let info = to_pr_display_info(resp.data).unwrap();
+        let info = to_pr_display_info(resp.data, "test-owner", "test-repo").unwrap();
         assert_eq!(info.reviews.len(), 1);
         assert_eq!(info.reviews[0].reviewer, "bob");
         assert_eq!(info.reviews[0].state, ReviewState::Approved);
@@ -688,7 +691,8 @@ mod tests {
   }
 }"#,
         );
-        let info = to_pr_display_info(resp.data).expect("expected Some PrDisplayInfo");
+        let info = to_pr_display_info(resp.data, "test-owner", "test-repo")
+            .expect("expected Some PrDisplayInfo");
         assert_eq!(info.number, 99);
         assert_eq!(info.title, "Ship it");
         assert_eq!(info.state, PrStatus::Merged);

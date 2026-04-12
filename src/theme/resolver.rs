@@ -96,6 +96,13 @@ fn overlay(parent: ThemeColors, child: &ThemeColors) -> ThemeColors {
         diff_hunk_header: child.diff_hunk_header.clone().or(parent.diff_hunk_header),
         diff_line_number: child.diff_line_number.clone().or(parent.diff_line_number),
         diff_border: child.diff_border.clone().or(parent.diff_border),
+        status_modified: child.status_modified.clone().or(parent.status_modified),
+        status_added: child.status_added.clone().or(parent.status_added),
+        status_deleted: child.status_deleted.clone().or(parent.status_deleted),
+        status_renamed: child.status_renamed.clone().or(parent.status_renamed),
+        status_untracked: child.status_untracked.clone().or(parent.status_untracked),
+        status_staged: child.status_staged.clone().or(parent.status_staged),
+        status_conflicted: child.status_conflicted.clone().or(parent.status_conflicted),
     }
 }
 
@@ -110,6 +117,17 @@ fn build_theme(name: &str, colors: &ThemeColors) -> Result<Theme> {
                 anyhow!("theme '{}' missing field '{}'", name, stringify!($field))
             })?)
             .with_context(|| format!("theme '{}' field '{}'", name, stringify!($field)))?
+        };
+    }
+
+    macro_rules! parse_field_or_default {
+        ($field:ident, $default:expr) => {
+            if let Some(ref val) = colors.$field {
+                parse_color(val)
+                    .with_context(|| format!("theme '{}' field '{}'", name, stringify!($field)))?
+            } else {
+                parse_color($default).expect("hardcoded default must be valid")
+            }
         };
     }
 
@@ -136,6 +154,13 @@ fn build_theme(name: &str, colors: &ThemeColors) -> Result<Theme> {
         diff_hunk_header: parse_field!(diff_hunk_header),
         diff_line_number: parse_field!(diff_line_number),
         diff_border: parse_field!(diff_border),
+        status_modified: parse_field_or_default!(status_modified, "#e5c07b"),
+        status_added: parse_field_or_default!(status_added, "#98c379"),
+        status_deleted: parse_field_or_default!(status_deleted, "#e06c75"),
+        status_renamed: parse_field_or_default!(status_renamed, "#56b6c2"),
+        status_untracked: parse_field_or_default!(status_untracked, "#7f848e"),
+        status_staged: parse_field_or_default!(status_staged, "#98c379"),
+        status_conflicted: parse_field_or_default!(status_conflicted, "#be5046"),
     })
 }
 
@@ -170,6 +195,13 @@ mod tests {
                 diff_hunk_header: Some("#123456".into()),
                 diff_line_number: Some("#234567".into()),
                 diff_border: Some("#345678".into()),
+                status_modified: None,
+                status_added: None,
+                status_deleted: None,
+                status_renamed: None,
+                status_untracked: None,
+                status_staged: None,
+                status_conflicted: None,
             },
         }
     }
@@ -265,6 +297,41 @@ mod tests {
         registry.insert(ROOT_THEME_NAME.to_string(), broken_root);
         let err = resolve(registry.get(ROOT_THEME_NAME).unwrap(), &registry).unwrap_err();
         assert!(err.to_string().contains("missing field"));
+    }
+
+    #[test]
+    fn test_status_fields_use_hardcoded_fallback() {
+        let registry = registry_with_mocha();
+        let mocha = registry.get(ROOT_THEME_NAME).unwrap();
+        let theme = resolve(mocha, &registry).unwrap();
+        assert_eq!(theme.status_modified, Color::Rgb(0xe5, 0xc0, 0x7b));
+        assert_eq!(theme.status_added, Color::Rgb(0x98, 0xc3, 0x79));
+        assert_eq!(theme.status_deleted, Color::Rgb(0xe0, 0x6c, 0x75));
+        assert_eq!(theme.status_renamed, Color::Rgb(0x56, 0xb6, 0xc2));
+        assert_eq!(theme.status_untracked, Color::Rgb(0x7f, 0x84, 0x8e));
+        assert_eq!(theme.status_staged, Color::Rgb(0x98, 0xc3, 0x79));
+        assert_eq!(theme.status_conflicted, Color::Rgb(0xbe, 0x50, 0x46));
+    }
+
+    #[test]
+    fn test_status_fields_override_fallback() {
+        let mut registry = registry_with_mocha();
+        registry.insert(
+            "custom".to_string(),
+            ThemeFile {
+                name: "custom".to_string(),
+                extends: Some(ROOT_THEME_NAME.to_string()),
+                colors: ThemeColors {
+                    status_modified: Some("#aabbcc".into()),
+                    ..Default::default()
+                },
+            },
+        );
+        let theme = resolve(registry.get("custom").unwrap(), &registry).unwrap();
+        // Provided value wins
+        assert_eq!(theme.status_modified, Color::Rgb(0xaa, 0xbb, 0xcc));
+        // Others still fall back
+        assert_eq!(theme.status_added, Color::Rgb(0x98, 0xc3, 0x79));
     }
 
     #[test]

@@ -73,10 +73,10 @@ impl Terminal {
 
 /// Top-level render function.
 ///
-/// Splits the frame into three regions:
-/// 1. Tab bar (1 row)
-/// 2. Main pane (bordered block, dispatched by active tab)
-/// 3. Status line (1 row)
+/// Splits the frame into two regions:
+/// 1. Main pane (bordered block whose top-border title is the tab bar;
+///    body is dispatched by active tab)
+/// 2. Status line (1 row)
 ///
 /// Then draws a tab-aware diff overlay on top when appropriate.
 fn render(frame: &mut Frame, state: &AppState, config: &AppConfig, theme: &Theme) {
@@ -85,20 +85,15 @@ fn render(frame: &mut Frame, state: &AppState, config: &AppConfig, theme: &Theme
     let chunks = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
-            Constraint::Length(1), // tab bar
             Constraint::Min(3),    // main pane
             Constraint::Length(1), // status line
         ])
         .split(area);
 
-    let tab_bar_area = chunks[0];
-    let main_area = chunks[1];
-    let status_area = chunks[2];
+    let main_area = chunks[0];
+    let status_area = chunks[1];
 
-    // 1. Tab bar
-    tabs::render_tab_bar(frame, state, theme, tab_bar_area);
-
-    // 2. Main pane border color
+    // 1. Main pane border color
     let border_color = if state.is_border_flashing() {
         theme.flash_bg
     } else if state.active_tab() == crate::state::Tab::Pr {
@@ -109,10 +104,12 @@ fn render(frame: &mut Frame, state: &AppState, config: &AppConfig, theme: &Theme
         theme.border
     };
 
+    // Tabs render inside the block's top border via `.title(...)`.
     let block = Block::default()
         .borders(Borders::ALL)
         .border_type(BorderType::Rounded)
-        .border_style(Style::default().fg(border_color));
+        .border_style(Style::default().fg(border_color))
+        .title(tabs::tab_bar_title(state, theme));
 
     let inner = block.inner(main_area);
     frame.render_widget(block, main_area);

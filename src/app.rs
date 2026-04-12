@@ -614,6 +614,28 @@ impl App {
         self.fs_rx = fs_rx;
         self.watch_path = path;
 
+        // Restart the GitHub PR poller for the new branch. Without this,
+        // the old poller thread keeps running against the old branch and
+        // re-populates `pr_state` after `reset_for_switch` clears it,
+        // making the PR tab reappear for the wrong branch.
+        //
+        // Dropping the current `gh_rx` causes the old poller thread to
+        // exit on its next send attempt (poller.rs:100 breaks the loop
+        // when `send()` returns `Err` because the receiver is dropped).
+        self.gh_rx = if self.config.pr.enabled {
+            if let Some(token) = crate::github::resolve_auth_token() {
+                Some(crate::github::start_polling(
+                    &self.watch_path,
+                    self.state.branch(),
+                    &token,
+                ))
+            } else {
+                None
+            }
+        } else {
+            None
+        };
+
         Ok(())
     }
 }

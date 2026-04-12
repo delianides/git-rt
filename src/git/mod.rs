@@ -702,6 +702,97 @@ impl GitRepo {
         Ok(result)
     }
 
+    /// Compute the unified diff for a single file between the merge base
+    /// and the current working tree.
+    pub fn branch_diff_file(
+        &self,
+        path: &str,
+        merge_base: gix::ObjectId,
+    ) -> Result<FileDiff, GitFailure> {
+        let work_dir = match self.repo.workdir() {
+            Some(d) => d.to_path_buf(),
+            None => return Ok(FileDiff::default()),
+        };
+        let worktree_path = work_dir.join(path);
+
+        // Load the merge base tree and find the blob for this path
+        let mb_commit = self
+            .repo
+            .find_object(merge_base)
+            .map_err(|e| GitFailure::EnvChange(format!("branch_diff_file find mb: {e}")))?
+            .try_into_commit()
+            .map_err(|e| GitFailure::EnvChange(format!("branch_diff_file into commit: {e}")))?;
+        let mb_tree = mb_commit
+            .tree()
+            .map_err(|e| GitFailure::EnvChange(format!("branch_diff_file tree: {e}")))?;
+
+        let old_text = self.find_blob_in_tree(&mb_tree, path);
+
+        match (old_text, worktree_path.exists()) {
+            (Some(old), true) => {
+                // File exists in both merge base and worktree — diff them
+                let new_text = match std::fs::read_to_string(&worktree_path) {
+                    Ok(t) => t,
+                    Err(_) => return Ok(FileDiff::default()),
+                };
+                Ok(synthesize_text_diff(&old, &new_text))
+            }
+            (Some(old), false) => {
+                // File was in merge base but deleted
+                Ok(synthesize_deletion_diff(&old))
+            }
+            (None, true) => {
+                // New file on this branch — all additions
+                self.diff_untracked(path)
+                    .map_err(|e| GitFailure::Failed(format!("branch_diff_file untracked: {e}")))
+            }
+            (None, false) => {
+                // File doesn't exist anywhere
+                Ok(FileDiff::default())
+            }
+        }
+    }
+
+    /// Look up a file path in a tree and return its blob content as a String.
+    fn find_blob_in_tree(&self, tree: &gix::Tree<'_>, path: &str) -> Option<String> {
+        let parts: Vec<&str> = path.split('/').collect();
+        self.walk_tree_for_blob(tree, &parts)
+    }
+
+    /// Recursively walk a tree to find a blob at the given path parts.
+    fn walk_tree_for_blob(&self, tree: &gix::Tree<'_>, parts: &[&str]) -> Option<String> {
+        use gix::bstr::ByteSlice;
+
+        if parts.is_empty() {
+            return None;
+        }
+
+        for entry_ref in tree.iter() {
+            let entry = entry_ref.ok()?;
+            let name = entry.filename().to_str().ok()?;
+            if name != parts[0] {
+                continue;
+            }
+
+            if parts.len() == 1 {
+                // Leaf — should be a blob
+                let obj = self.repo.find_object(entry.id()).ok()?;
+                return std::str::from_utf8(&obj.data).ok().map(|s| s.to_string());
+            } else {
+                // Subtree — recurse
+                let subtree = self
+                    .repo
+                    .find_object(entry.id())
+                    .ok()?
+                    .try_into_tree()
+                    .ok()?;
+                return self.walk_tree_for_blob(&subtree, &parts[1..]);
+            }
+        }
+
+        None
+    }
+
     /// Create a synthetic diff for untracked files (all lines as additions)
     fn diff_untracked(&self, path: &str) -> Result<FileDiff> {
         let file_path = self.repo_path.join(path);
@@ -1232,6 +1323,17 @@ mod tests {
                     assert!(!entry.path.is_empty());
                     assert!(!entry.path.starts_with('/'));
                 }
+            }
+        }
+    }
+
+    #[test]
+    fn test_branch_diff_file_missing_path() {
+        let repo = GitRepo::new(std::path::Path::new(".")).unwrap();
+        if let Some(base) = repo.resolve_base_branch(None, None) {
+            if let Ok(Some(mb)) = repo.merge_base(&base) {
+                let result = repo.branch_diff_file("nonexistent-file-xyz.rs", mb);
+                assert!(result.is_ok());
             }
         }
     }

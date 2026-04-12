@@ -82,25 +82,54 @@ fn build_line_from_info(info: &PrDisplayInfo, theme: &Theme) -> Line<'static> {
         spans.push(Span::styled(label.to_string(), Style::default().fg(color)));
     }
 
-    // Check counts.
+    // Check counts — hybrid display:
+    // - failures present → per-category breakdown (passed/failed/pending)
+    // - pending, no failures → yellow fraction (completed/total)
+    // - all passed → green fraction (passed/total)
     let checks = &info.checks;
-    let show_passed = checks.passed > 0;
-    let show_failed = checks.failed > 0;
-    if show_passed {
-        spans.push(Span::styled("  ", sep_style));
-        spans.push(Span::styled("✓ ", Style::default().fg(Color::Green)));
-        spans.push(Span::styled(
-            checks.passed.to_string(),
-            Style::default().fg(Color::Green),
-        ));
-    }
-    if show_failed {
-        spans.push(Span::styled("  ", sep_style));
-        spans.push(Span::styled("✗ ", Style::default().fg(Color::Red)));
-        spans.push(Span::styled(
-            checks.failed.to_string(),
-            Style::default().fg(Color::Red),
-        ));
+    if checks.total > 0 {
+        if checks.failed > 0 {
+            // Failure mode: per-category breakdown
+            if checks.passed > 0 {
+                spans.push(Span::styled("  ", sep_style));
+                spans.push(Span::styled("✓ ", Style::default().fg(Color::Green)));
+                spans.push(Span::styled(
+                    checks.passed.to_string(),
+                    Style::default().fg(Color::Green),
+                ));
+            }
+            spans.push(Span::styled("  ", sep_style));
+            spans.push(Span::styled("✗ ", Style::default().fg(Color::Red)));
+            spans.push(Span::styled(
+                checks.failed.to_string(),
+                Style::default().fg(Color::Red),
+            ));
+            if checks.pending > 0 {
+                spans.push(Span::styled("  ", sep_style));
+                spans.push(Span::styled("◐ ", Style::default().fg(Color::Yellow)));
+                spans.push(Span::styled(
+                    checks.pending.to_string(),
+                    Style::default().fg(Color::Yellow),
+                ));
+            }
+        } else if checks.pending > 0 {
+            // In progress: yellow fraction
+            let completed = checks.passed + checks.skipped;
+            spans.push(Span::styled("  ", sep_style));
+            spans.push(Span::styled("◐ ", Style::default().fg(Color::Yellow)));
+            spans.push(Span::styled(
+                format!("{}/{}", completed, checks.total),
+                Style::default().fg(Color::Yellow),
+            ));
+        } else {
+            // All passed: green fraction
+            spans.push(Span::styled("  ", sep_style));
+            spans.push(Span::styled("✓ ", Style::default().fg(Color::Green)));
+            spans.push(Span::styled(
+                format!("{}/{}", checks.passed, checks.total),
+                Style::default().fg(Color::Green),
+            ));
+        }
     }
 
     Line::from(spans)
@@ -202,7 +231,7 @@ mod tests {
     fn test_build_pr_line_clean_with_passing_checks() {
         let info = make_info(MergeableStatus::Clean, 12, 0, 0);
         let line = build_pr_line(&pr_state_with(info), &test_theme()).unwrap();
-        assert_eq!(line_text(&line), " PR #142  ✓ clean  ✓ 12");
+        assert_eq!(line_text(&line), " PR #142  ✓ clean  ✓ 12/12");
     }
 
     #[test]
@@ -230,14 +259,14 @@ mod tests {
     fn test_build_pr_line_unknown_mergeable_omits_segment() {
         let info = make_info(MergeableStatus::Unknown, 12, 0, 0);
         let line = build_pr_line(&pr_state_with(info), &test_theme()).unwrap();
-        assert_eq!(line_text(&line), " PR #142  ✓ 12");
+        assert_eq!(line_text(&line), " PR #142  ✓ 12/12");
     }
 
     #[test]
     fn test_build_pr_line_behind_base() {
         let info = make_info(MergeableStatus::Behind, 12, 0, 0);
         let line = build_pr_line(&pr_state_with(info), &test_theme()).unwrap();
-        assert_eq!(line_text(&line), " PR #142  ⚠ behind  ✓ 12");
+        assert_eq!(line_text(&line), " PR #142  ⚠ behind  ✓ 12/12");
     }
 
     #[test]
@@ -259,6 +288,34 @@ mod tests {
             "missing URL"
         );
         assert!(content.contains("PR #142"), "missing visible text");
+    }
+
+    #[test]
+    fn test_checks_all_pending_shows_fraction() {
+        let info = make_info(MergeableStatus::Clean, 0, 0, 12);
+        let line = build_pr_line(&pr_state_with(info), &test_theme()).unwrap();
+        assert_eq!(line_text(&line), " PR #142  ✓ clean  ◐ 0/12");
+    }
+
+    #[test]
+    fn test_checks_mixed_pending_no_failures_shows_fraction() {
+        let info = make_info(MergeableStatus::Clean, 8, 0, 4);
+        let line = build_pr_line(&pr_state_with(info), &test_theme()).unwrap();
+        assert_eq!(line_text(&line), " PR #142  ✓ clean  ◐ 8/12");
+    }
+
+    #[test]
+    fn test_checks_with_failures_shows_per_category() {
+        let info = make_info(MergeableStatus::Clean, 9, 2, 1);
+        let line = build_pr_line(&pr_state_with(info), &test_theme()).unwrap();
+        assert_eq!(line_text(&line), " PR #142  ✓ clean  ✓ 9  ✗ 2  ◐ 1");
+    }
+
+    #[test]
+    fn test_checks_all_passed_shows_green_fraction() {
+        let info = make_info(MergeableStatus::Clean, 12, 0, 0);
+        let line = build_pr_line(&pr_state_with(info), &test_theme()).unwrap();
+        assert_eq!(line_text(&line), " PR #142  ✓ clean  ✓ 12/12");
     }
 
     /// Helper: make a `PrState` containing the given display info.

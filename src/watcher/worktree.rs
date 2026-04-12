@@ -1,6 +1,6 @@
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use anyhow::{Context, Result};
 use crossbeam_channel::{bounded, Receiver, Sender};
@@ -20,24 +20,24 @@ pub struct WorktreeInfo {
 pub enum WorktreeEvent {
     Added(WorktreeInfo),
     Removed(String),
-    Activity(String),
+    /// A worktree's HEAD changed to a different branch.
+    BranchChanged {
+        worktree: String,
+        branch: String,
+    },
     /// The .git/worktrees/ directory structure changed (worktree added or removed on disk)
     StructureChanged,
 }
 
-/// Returns true if the given path counts as "real" activity inside a worktree.
+/// Parse a branch name from a HEAD file's content.
 ///
-/// Filters out:
-/// - `/.git/` paths — internal git state managed by `FsWatcher`, not worktree activity.
-/// - `/.worktrees/` paths — a linked worktree subdirectory nested inside a parent
-///   worktree. The linked worktree has its own activity watcher; if the parent's
-///   recursive watch also counted these as activity, every commit in the linked
-///   worktree would fire Activity on BOTH the parent and the linked worktree,
-///   causing a spurious switch-to-parent flicker before the linked worktree's
-///   own event arrives.
-pub(crate) fn is_worktree_activity_path(path: &std::path::Path) -> bool {
-    let s = path.to_string_lossy();
-    !s.contains("/.git/") && !s.contains("/.worktrees/")
+/// Returns `Some("branch-name")` for symbolic refs (`ref: refs/heads/branch-name`),
+/// or `None` for detached HEAD (raw commit hash) or empty content.
+pub fn read_branch_from_head(content: &str) -> Option<String> {
+    content
+        .trim()
+        .strip_prefix("ref: refs/heads/")
+        .map(|b| b.to_string())
 }
 
 /// Read a worktree's info from `.git/worktrees/<name>/`.
@@ -122,14 +122,15 @@ pub fn resolve_branch_arg(git_worktrees_dir: &Path, branch: &str) -> Result<Work
         .with_context(|| format!("No worktree found for branch: {branch}"))
 }
 
-/// Monitors .git/worktrees/ for structural changes and tracks
-/// file activity across known worktrees to determine which is active.
+/// Monitors .git/worktrees/ for structural changes and detects
+/// branch switches by watching HEAD files.
 pub struct WorktreeMonitor {
     _structure_debouncer: Debouncer<RecommendedWatcher, RecommendedCache>,
-    activity_watchers: HashMap<String, Debouncer<RecommendedWatcher, RecommendedCache>>,
-    activity_times: HashMap<String, Instant>,
+    head_watchers: HashMap<String, Debouncer<RecommendedWatcher, RecommendedCache>>,
+    known_branches: HashMap<String, String>,
     known_worktrees: HashMap<String, WorktreeInfo>,
     current_target: Option<String>,
+    common_git_dir: PathBuf,
     git_worktrees_dir: PathBuf,
     event_tx: Sender<WorktreeEvent>,
     debounce: Duration,
@@ -170,10 +171,11 @@ impl WorktreeMonitor {
 
         let mut monitor = Self {
             _structure_debouncer: structure_debouncer,
-            activity_watchers: HashMap::new(),
-            activity_times: HashMap::new(),
+            head_watchers: HashMap::new(),
+            known_branches: HashMap::new(),
             known_worktrees: HashMap::new(),
             current_target: None,
+            common_git_dir: common_git_dir.clone(),
             git_worktrees_dir,
             event_tx,
             debounce,
@@ -182,10 +184,8 @@ impl WorktreeMonitor {
         monitor.scan_and_reconcile();
 
         // Also register the main worktree so it's a peer of linked worktrees.
-        // This lets the monitor detect activity on main and fire switch events.
+        // This lets the monitor detect branch changes on main and fire switch events.
         let main_info = {
-            let common_git_dir = crate::git::resolve_common_git_dir(repo_path)
-                .unwrap_or_else(|| repo_path.join(".git"));
             let main_path = common_git_dir
                 .parent()
                 .map(|p| p.to_path_buf())
@@ -194,17 +194,23 @@ impl WorktreeMonitor {
                 .file_name()
                 .map(|n| n.to_string_lossy().to_string())
                 .unwrap_or_else(|| "main".to_string());
+            // Read the main worktree's branch from <common-git-dir>/HEAD
+            let branch = std::fs::read_to_string(common_git_dir.join("HEAD"))
+                .ok()
+                .and_then(|content| read_branch_from_head(&content));
             WorktreeInfo {
                 name: main_name,
                 path: main_path,
-                branch: None,
+                branch,
             }
         };
         if !monitor.known_worktrees.contains_key(&main_info.name) {
-            monitor.start_activity_watcher(&main_info);
-            monitor
-                .activity_times
-                .insert(main_info.name.clone(), Instant::now());
+            if let Some(ref branch) = main_info.branch {
+                monitor
+                    .known_branches
+                    .insert(main_info.name.clone(), branch.clone());
+            }
+            monitor.start_head_watcher(&main_info);
             monitor
                 .known_worktrees
                 .insert(main_info.name.clone(), main_info);
@@ -218,24 +224,32 @@ impl WorktreeMonitor {
         let current = list_worktrees(&self.git_worktrees_dir);
         let current_names: std::collections::HashSet<String> =
             current.iter().map(|w| w.name.clone()).collect();
-        let known_names: std::collections::HashSet<String> =
-            self.known_worktrees.keys().cloned().collect();
+        // Filter known_worktrees to only linked worktrees (those that exist in git_worktrees_dir).
+        // The main worktree is registered separately and should not be removed during reconciliation.
+        let known_names: std::collections::HashSet<String> = self
+            .known_worktrees
+            .keys()
+            .filter(|name| self.git_worktrees_dir.join(name).is_dir())
+            .cloned()
+            .collect();
 
         // Detect removed
         for name in known_names.difference(&current_names) {
             self.known_worktrees.remove(name);
-            self.activity_times.remove(name);
-            self.activity_watchers.remove(name);
+            self.known_branches.remove(name);
+            self.head_watchers.remove(name);
             let _ = self.event_tx.try_send(WorktreeEvent::Removed(name.clone()));
             tracing::info!(worktree = %name, "Worktree removed");
         }
 
         // Detect added
         for wt in &current {
-            if !known_names.contains(&wt.name) {
-                self.start_activity_watcher(wt);
+            if !self.known_worktrees.contains_key(&wt.name) {
+                if let Some(ref branch) = wt.branch {
+                    self.known_branches.insert(wt.name.clone(), branch.clone());
+                }
+                self.start_head_watcher(wt);
                 self.known_worktrees.insert(wt.name.clone(), wt.clone());
-                self.activity_times.insert(wt.name.clone(), Instant::now());
                 let _ = self.event_tx.try_send(WorktreeEvent::Added(wt.clone()));
                 tracing::info!(worktree = %wt.name, path = ?wt.path, "Worktree added");
             }
@@ -247,73 +261,107 @@ impl WorktreeMonitor {
         self.current_target.as_deref()
     }
 
-    /// Set the name of the currently targeted worktree (excluded from `most_recent_other`).
+    /// Set the name of the currently targeted worktree.
     pub fn set_current_target(&mut self, name: Option<String>) {
         self.current_target = name;
     }
 
-    /// Get the most recently active worktree that is NOT the current target.
-    pub fn most_recent_other(&self) -> Option<&WorktreeInfo> {
-        self.activity_times
-            .iter()
-            .filter(|(name, _)| self.current_target.as_ref() != Some(name))
-            .max_by_key(|(_, time)| *time)
-            .and_then(|(name, _)| self.known_worktrees.get(name))
+    /// Returns true if the given branch differs from the last-known branch for this worktree.
+    pub fn is_branch_change(&self, worktree: &str, branch: &str) -> bool {
+        match self.known_branches.get(worktree) {
+            Some(known) => known != branch,
+            None => true,
+        }
     }
 
-    /// Start a file activity watcher for a worktree.
-    fn start_activity_watcher(&mut self, wt: &WorktreeInfo) {
-        let name = wt.name.clone();
-        let tx = self.event_tx.clone();
+    /// Update the last-known branch for a worktree.
+    pub fn record_branch(&mut self, worktree: &str, branch: &str) {
+        self.known_branches
+            .insert(worktree.to_string(), branch.to_string());
+    }
 
+    /// Look up a known worktree by name.
+    pub fn worktree_info(&self, name: &str) -> Option<&WorktreeInfo> {
+        self.known_worktrees.get(name)
+    }
+
+    /// Start a HEAD file watcher for a worktree.
+    ///
+    /// For linked worktrees the HEAD file is at `<common-git-dir>/worktrees/<name>/HEAD`.
+    /// For the main worktree it is at `<common-git-dir>/HEAD`.
+    fn start_head_watcher(&mut self, wt: &WorktreeInfo) {
+        let name = wt.name.clone();
+
+        // Determine the HEAD file path.
+        // Linked worktrees have an entry in git_worktrees_dir; the main worktree does not.
+        let head_file = {
+            let linked_head = self.git_worktrees_dir.join(&name).join("HEAD");
+            if linked_head.exists() {
+                linked_head
+            } else {
+                // Main worktree — HEAD is directly in the common git dir
+                self.common_git_dir.join("HEAD")
+            }
+        };
+
+        let watch_dir = head_file
+            .parent()
+            .expect("HEAD file must have a parent directory")
+            .to_path_buf();
+
+        let tx = self.event_tx.clone();
         let watcher_name = name.clone();
         let log_name = name.clone();
+        let head_file_clone = head_file.clone();
+
         let debouncer = new_debouncer(
             self.debounce,
             None,
             move |result: std::result::Result<Vec<DebouncedEvent>, Vec<notify::Error>>| match result
             {
                 Ok(events) => {
-                    let relevant = events
-                        .iter()
-                        .any(|e| e.event.paths.iter().any(|p| is_worktree_activity_path(p)));
-                    tracing::debug!(
-                        worktree = %log_name,
-                        event_count = events.len(),
-                        relevant,
-                        "Activity watcher callback fired"
-                    );
-                    if relevant {
-                        let _ = tx.try_send(WorktreeEvent::Activity(watcher_name.clone()));
+                    // Only react to changes to the HEAD file itself
+                    let head_changed = events.iter().any(|e| {
+                        e.event
+                            .paths
+                            .iter()
+                            .any(|p| p.ends_with("HEAD") || p == &head_file_clone)
+                    });
+                    if !head_changed {
+                        return;
+                    }
+                    tracing::debug!(worktree = %log_name, "HEAD file changed");
+                    if let Ok(content) = std::fs::read_to_string(&head_file_clone) {
+                        if let Some(branch) = read_branch_from_head(&content) {
+                            let _ = tx.try_send(WorktreeEvent::BranchChanged {
+                                worktree: watcher_name.clone(),
+                                branch,
+                            });
+                        }
                     }
                 }
                 Err(errors) => {
                     for e in &errors {
-                        tracing::warn!(worktree = %log_name, error = %e, "Activity watcher error");
+                        tracing::warn!(worktree = %log_name, error = %e, "HEAD watcher error");
                     }
                 }
             },
         );
 
         match debouncer {
-            Ok(mut d) => match d.watch(&wt.path, RecursiveMode::Recursive) {
+            Ok(mut d) => match d.watch(&watch_dir, RecursiveMode::NonRecursive) {
                 Ok(()) => {
-                    self.activity_watchers.insert(name, d);
-                    tracing::debug!(worktree = %wt.name, path = ?wt.path, "Activity watcher started");
+                    self.head_watchers.insert(name, d);
+                    tracing::debug!(worktree = %wt.name, head = ?head_file, "HEAD watcher started");
                 }
                 Err(e) => {
-                    tracing::warn!(worktree = %wt.name, path = ?wt.path, error = %e, "Failed to watch worktree path");
+                    tracing::warn!(worktree = %wt.name, head = ?head_file, error = %e, "Failed to watch HEAD file");
                 }
             },
             Err(e) => {
-                tracing::warn!(worktree = %wt.name, error = %e, "Failed to start activity watcher");
+                tracing::warn!(worktree = %wt.name, error = %e, "Failed to start HEAD watcher");
             }
         }
-    }
-
-    /// Record activity for a worktree by name.
-    pub fn record_activity(&mut self, name: &str) {
-        self.activity_times.insert(name.to_string(), Instant::now());
     }
 }
 
@@ -459,51 +507,46 @@ mod tests {
     }
 
     #[test]
-    fn test_activity_path_regular_working_tree_file_is_relevant() {
-        assert!(is_worktree_activity_path(Path::new("/repo/src/main.rs")));
-        assert!(is_worktree_activity_path(Path::new("/repo/Cargo.toml")));
-        assert!(is_worktree_activity_path(Path::new("/repo/README.md")));
+    fn test_read_branch_from_head_symbolic_ref() {
+        assert_eq!(
+            read_branch_from_head("ref: refs/heads/main\n"),
+            Some("main".to_string())
+        );
+        assert_eq!(
+            read_branch_from_head("ref: refs/heads/drew/feature-branch\n"),
+            Some("drew/feature-branch".to_string())
+        );
     }
 
     #[test]
-    fn test_activity_path_git_internal_is_not_relevant() {
-        assert!(!is_worktree_activity_path(Path::new(
-            "/repo/.git/objects/ab/cd1234"
-        )));
-        assert!(!is_worktree_activity_path(Path::new("/repo/.git/index")));
-        assert!(!is_worktree_activity_path(Path::new("/repo/.git/HEAD")));
+    fn test_read_branch_from_head_detached() {
+        assert_eq!(
+            read_branch_from_head("abc1234def5678901234567890abcdef12345678\n"),
+            None
+        );
     }
 
     #[test]
-    fn test_activity_path_linked_worktree_is_not_relevant() {
-        // Regression: a commit in a linked worktree nested under the parent
-        // main worktree would previously fire Activity on BOTH the parent and
-        // the linked worktree, causing a spurious switch-to-parent flicker.
-        assert!(!is_worktree_activity_path(Path::new(
-            "/repo/.worktrees/feature/src/main.rs"
-        )));
-        assert!(!is_worktree_activity_path(Path::new(
-            "/repo/.worktrees/drew/tabbed-view/src/ui/mod.rs"
-        )));
+    fn test_read_branch_from_head_empty() {
+        assert_eq!(read_branch_from_head(""), None);
     }
 
     #[test]
-    fn test_activity_path_linked_worktree_git_internal_is_not_relevant() {
-        // Double filter: both `.worktrees/` AND `.git/` should be excluded.
-        assert!(!is_worktree_activity_path(Path::new(
-            "/repo/.worktrees/feature/.git/index"
-        )));
-    }
+    fn test_head_file_branch_change_detection() {
+        let tmp = tempdir().unwrap();
+        let worktree_path = tmp.path().join("my-wt");
+        fs::create_dir_all(&worktree_path).unwrap();
+        setup_fake_worktree(tmp.path(), "my-wt", &worktree_path, Some("main"));
 
-    #[test]
-    fn test_activity_path_file_named_worktrees_outside_dir_is_relevant() {
-        // A file that happens to contain "worktrees" in its name but isn't
-        // inside a `.worktrees/` directory should still count as activity.
-        assert!(is_worktree_activity_path(Path::new(
-            "/repo/src/worktrees.rs"
-        )));
-        assert!(is_worktree_activity_path(Path::new(
-            "/repo/docs/worktrees-guide.md"
-        )));
+        let head_path = tmp.path().join("my-wt").join("HEAD");
+        let content = fs::read_to_string(&head_path).unwrap();
+        assert_eq!(read_branch_from_head(&content), Some("main".to_string()));
+
+        fs::write(&head_path, "ref: refs/heads/drew/new-feature\n").unwrap();
+        let content = fs::read_to_string(&head_path).unwrap();
+        assert_eq!(
+            read_branch_from_head(&content),
+            Some("drew/new-feature".to_string())
+        );
     }
 }

@@ -124,8 +124,12 @@ fn render(frame: &mut Frame, state: &AppState, config: &AppConfig, theme: &Theme
     //    repo name right-aligned on the right — always shown).
     pr_line::render_pr_line(frame, state, theme, bottom_bar_area);
 
-    // 3. Diff overlay on top of everything when it's visible.
-    if state.is_overlay_visible() {
+    // 3. Help overlay takes priority over diff overlay — they are mutually
+    //    exclusive per show_help / show_overlay, but rendering both would
+    //    cause the help popup to layer under the diff.
+    if state.is_help_visible() {
+        help_overlay::render_help_overlay(frame, theme);
+    } else if state.is_overlay_visible() {
         if let Some(diff) = state.expanded_diff() {
             let path = state.expanded_path().unwrap_or("");
             let (ins, del) = state

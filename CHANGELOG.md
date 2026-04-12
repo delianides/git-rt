@@ -1,5 +1,16 @@
 # Changelog
 
+## [0.6.0](https://github.com/delianides/git-rt/compare/v0.5.0...v0.6.0) (2026-04-12)
+
+
+### Features
+
+* **github:** show merged PR state instead of clearing it ([#36](https://github.com/delianides/git-rt/issues/36)) ([4dbd678](https://github.com/delianides/git-rt/commit/4dbd67818e67d54fb68c6c4d91df8a257735bc27))
+* help popup (?) and spacebar diff toggle ([#38](https://github.com/delianides/git-rt/issues/38)) ([8304591](https://github.com/delianides/git-rt/commit/8304591f7a941b3a7d0620e6eba4f79d3fef7fea))
+* replace activity-based worktree switching with branch-change detection ([#35](https://github.com/delianides/git-rt/issues/35)) ([fd0d548](https://github.com/delianides/git-rt/commit/fd0d548a5e7e1eb23eb7bdacf5159005735e81a0))
+* **theme:** dedicated status marker colors ([#33](https://github.com/delianides/git-rt/issues/33)) ([dc04fdd](https://github.com/delianides/git-rt/commit/dc04fddf0c53752989c96b77db1d88b447fefd48))
+* **ui:** hybrid checks display ([#37](https://github.com/delianides/git-rt/issues/37)) ([af0d2e7](https://github.com/delianides/git-rt/commit/af0d2e771dea46b2cac838605fa7f63d7feb92c0))
+
 ## [0.5.0](https://github.com/delianides/git-rt/compare/v0.4.0...v0.5.0) (2026-04-12)
 
 

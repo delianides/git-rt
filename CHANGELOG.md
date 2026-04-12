@@ -1,5 +1,20 @@
 # Changelog
 
+## [0.4.0](https://github.com/delianides/git-rt/compare/v0.3.0...v0.4.0) (2026-04-12)
+
+
+### Features
+
+* tab-based view with Changes, Commits, and PR tabs ([#25](https://github.com/delianides/git-rt/issues/25)) ([b7b1187](https://github.com/delianides/git-rt/commit/b7b1187f3c6f8737d8de1bfa54c47b8c306059f9))
+* **ui:** remove the Commits tab ([#29](https://github.com/delianides/git-rt/issues/29)) ([e116db5](https://github.com/delianides/git-rt/commit/e116db54743b961817a9f821fd79949342fd873a))
+* **ui:** remove the PR tab, add a compact PR status strip ([#30](https://github.com/delianides/git-rt/issues/30)) ([cd8f6fb](https://github.com/delianides/git-rt/commit/cd8f6fbfa0da468c6a52438137ced24cc612f878))
+* **ui:** render tabs inside the main pane's top border ([#28](https://github.com/delianides/git-rt/issues/28)) ([0519843](https://github.com/delianides/git-rt/commit/0519843a4c847d2a2a62fb8c1455648531dde371))
+
+
+### Bug Fixes
+
+* **worktree:** activity filter, linked-gitdir paths, and PR poller restart ([#27](https://github.com/delianides/git-rt/issues/27)) ([65b668c](https://github.com/delianides/git-rt/commit/65b668c89a810fe2123f4e54d3f8e8e5025ec1fa))
+
 ## [0.3.0](https://github.com/delianides/git-rt/compare/v0.2.3...v0.3.0) (2026-04-10)
 
 

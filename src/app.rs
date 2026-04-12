@@ -21,9 +21,6 @@ pub enum AppEvent {
     Tick,
 }
 
-/// Minimum time between automatic worktree switches.
-const SWITCH_COOLDOWN: Duration = Duration::from_secs(3);
-
 pub struct App {
     state: AppState,
     git: GitRepo,
@@ -40,8 +37,6 @@ pub struct App {
     worktree_monitor: Option<crate::watcher::worktree::WorktreeMonitor>,
     /// Receiver for worktree events
     wt_rx: Option<Receiver<crate::watcher::worktree::WorktreeEvent>>,
-    /// Last time we switched worktrees (for cooldown)
-    last_switch: Option<Instant>,
     /// Receiver for GitHub PR events
     gh_rx: Option<Receiver<crate::github::GitHubEvent>>,
     /// CLI override for base branch
@@ -122,7 +117,6 @@ impl App {
             watch_path,
             worktree_monitor,
             wt_rx,
-            last_switch: None,
             gh_rx,
             base_override,
         })
@@ -414,8 +408,8 @@ impl App {
 
         match event {
             WorktreeEvent::Added(info) => {
-                tracing::info!(worktree = %info.name, "New worktree detected");
-                // Don't auto-switch — wait for activity to indicate user is working there
+                tracing::info!(worktree = %info.name, "New worktree detected, switching");
+                self.switch_to_worktree(info)?;
             }
             WorktreeEvent::Removed(name) => {
                 tracing::info!(worktree = %name, "Worktree removed");
@@ -426,34 +420,32 @@ impl App {
                     .map(|t| t == name)
                     .unwrap_or(false);
                 if is_current {
-                    if let Some(ref monitor) = self.worktree_monitor {
-                        if let Some(fallback) = monitor.most_recent_other() {
-                            let info = fallback.clone();
-                            self.switch_to_worktree(info)?;
-                        } else {
-                            self.switch_to_path(self.repo_path.clone())?;
-                        }
-                    }
+                    self.switch_to_path(self.repo_path.clone())?;
                 }
             }
-            WorktreeEvent::Activity(name) => {
-                tracing::debug!(worktree = %name, "Activity in worktree");
-                if let Some(ref mut monitor) = self.worktree_monitor {
-                    monitor.record_activity(&name);
+            WorktreeEvent::BranchChanged { worktree, branch } => {
+                tracing::debug!(worktree = %worktree, branch = %branch, "Branch change event");
+                let is_current = self
+                    .worktree_monitor
+                    .as_ref()
+                    .and_then(|m| m.current_target())
+                    .map(|t| t == worktree)
+                    .unwrap_or(false);
 
-                    // Check cooldown before switching
-                    let cooldown_elapsed = self
-                        .last_switch
-                        .map(|t| t.elapsed() >= SWITCH_COOLDOWN)
-                        .unwrap_or(true);
-
-                    if cooldown_elapsed {
-                        if let Some(most_recent) = monitor.most_recent_other() {
-                            if most_recent.name == name {
-                                let info = most_recent.clone();
-                                self.switch_to_worktree(info)?;
-                            }
+                if is_current {
+                    // Current target — FsWatcher handles refresh; just record the branch
+                    if let Some(ref mut monitor) = self.worktree_monitor {
+                        monitor.record_branch(&worktree, &branch);
+                    }
+                } else if let Some(ref mut monitor) = self.worktree_monitor {
+                    if monitor.is_branch_change(&worktree, &branch) {
+                        monitor.record_branch(&worktree, &branch);
+                        if let Some(info) = monitor.worktree_info(&worktree).cloned() {
+                            self.switch_to_worktree(info)?;
                         }
+                    } else {
+                        // Same branch (e.g. ref update from commit) — record but don't switch
+                        monitor.record_branch(&worktree, &branch);
                     }
                 }
             }
@@ -476,7 +468,6 @@ impl App {
         if let Some(ref mut monitor) = self.worktree_monitor {
             monitor.set_current_target(Some(name));
         }
-        self.last_switch = Some(Instant::now());
         Ok(())
     }
 

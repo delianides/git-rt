@@ -5,10 +5,11 @@ use serde::Deserialize;
 pub const PR_QUERY: &str = r#"
 query($owner: String!, $repo: String!, $branch: String!) {
   repository(owner: $owner, name: $repo) {
-    pullRequests(headRefName: $branch, states: OPEN, first: 1) {
+    pullRequests(headRefName: $branch, states: [OPEN, MERGED], first: 1, orderBy: {field: UPDATED_AT, direction: DESC}) {
       nodes {
         number
         title
+        state
         isDraft
         mergeable
         mergeStateStatus
@@ -75,6 +76,8 @@ pub struct GqlNodes<T> {
 pub struct GqlPullRequest {
     pub number: u64,
     pub title: String,
+    /// `OPEN` | `CLOSED` | `MERGED`
+    pub state: String,
     pub is_draft: bool,
     /// `MERGEABLE` | `CONFLICTING` | `UNKNOWN`
     pub mergeable: String,

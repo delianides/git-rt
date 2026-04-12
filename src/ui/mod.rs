@@ -210,13 +210,13 @@ fn render_file_list(
         };
 
         let status_color = match file.status {
-            FileStatus::Modified => theme.file_path,
-            FileStatus::Added => theme.file_insertions,
-            FileStatus::Deleted => theme.file_deletions,
-            FileStatus::Untracked => theme.empty_text,
-            FileStatus::Staged => theme.file_insertions,
-            FileStatus::Renamed => theme.header_text,
-            FileStatus::Conflicted => theme.flash_bg,
+            FileStatus::Modified => theme.status_modified,
+            FileStatus::Added => theme.status_added,
+            FileStatus::Deleted => theme.status_deleted,
+            FileStatus::Renamed => theme.status_renamed,
+            FileStatus::Untracked => theme.status_untracked,
+            FileStatus::Staged => theme.status_staged,
+            FileStatus::Conflicted => theme.status_conflicted,
         };
 
         let line = Line::from(vec![

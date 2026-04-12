@@ -1,0 +1,158 @@
+//! Full-screen help overlay listing built-in keybindings.
+//!
+//! Shown when the user presses `?`. Displays a centred panel at ~85% of
+//! the terminal area with a two-column list: key on the left, description
+//! on the right. Dismissible with `?`, `Esc`, `q`, or `Space`.
+
+use ratatui::{
+    layout::Rect,
+    style::{Modifier, Style},
+    text::{Line, Span},
+    widgets::{Block, BorderType, Borders, Clear, Paragraph, Wrap},
+    Frame,
+};
+
+use crate::theme::Theme;
+
+/// Return a centred `Rect` that occupies `percent_x`% width and `percent_y`%
+/// height of `area`.
+fn centered_rect(percent_x: u16, percent_y: u16, area: Rect) -> Rect {
+    let w = area.width * percent_x / 100;
+    let h = area.height * percent_y / 100;
+    let x = area.x + (area.width.saturating_sub(w)) / 2;
+    let y = area.y + (area.height.saturating_sub(h)) / 2;
+    Rect::new(x, y, w, h)
+}
+
+/// Build the list of help lines (section headers + key/description rows).
+pub fn build_help_lines(theme: &Theme) -> Vec<Line<'static>> {
+    let key_style = Style::default()
+        .fg(theme.file_insertions)
+        .add_modifier(Modifier::BOLD);
+    let desc_style = Style::default().fg(theme.header_text);
+    let header_style = Style::default()
+        .fg(theme.header_text)
+        .add_modifier(Modifier::BOLD);
+
+    let entries: &[(&str, &[(&str, &str)])] = &[
+        (
+            "Navigation",
+            &[
+                ("j / ↓", "Select next file"),
+                ("k / ↑", "Select previous file"),
+            ],
+        ),
+        (
+            "Actions",
+            &[
+                ("Enter", "Expand diff / open overlay"),
+                ("Space", "Toggle diff (expand/collapse)"),
+                ("l / →", "Expand diff"),
+                ("h / ←", "Collapse diff"),
+                ("r", "Refresh"),
+            ],
+        ),
+        (
+            "Other",
+            &[
+                ("?", "Show this help"),
+                ("q / Esc", "Close overlay / quit"),
+                ("Ctrl+C", "Quit"),
+            ],
+        ),
+    ];
+
+    let mut lines: Vec<Line<'static>> = Vec::new();
+    lines.push(Line::from(""));
+
+    for (section, rows) in entries {
+        lines.push(Line::from(vec![
+            Span::raw("  "),
+            Span::styled(section.to_string(), header_style),
+        ]));
+        for (key, desc) in *rows {
+            let key_padded = format!("{:<14}", key);
+            lines.push(Line::from(vec![
+                Span::raw("    "),
+                Span::styled(key_padded, key_style),
+                Span::styled(desc.to_string(), desc_style),
+            ]));
+        }
+        lines.push(Line::from(""));
+    }
+
+    lines
+}
+
+/// Render the help overlay onto `frame`.
+pub fn render_help_overlay(frame: &mut Frame, theme: &Theme) {
+    let area = frame.area();
+    let overlay_rect = centered_rect(85, 85, area);
+
+    frame.render_widget(Clear, overlay_rect);
+
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .border_type(BorderType::Rounded)
+        .border_style(Style::default().fg(theme.border_focused))
+        .title(" Keybindings ")
+        .title_style(Style::default().fg(theme.header_text));
+
+    let inner = block.inner(overlay_rect);
+    frame.render_widget(block, overlay_rect);
+
+    let lines = build_help_lines(theme);
+    let paragraph = Paragraph::new(lines).wrap(Wrap { trim: false });
+    frame.render_widget(paragraph, inner);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn test_theme() -> Theme {
+        crate::theme::load_theme(crate::theme::DEFAULT_THEME_NAME, None)
+    }
+
+    fn lines_text(lines: &[Line<'_>]) -> String {
+        lines
+            .iter()
+            .map(|l| {
+                l.spans
+                    .iter()
+                    .map(|s| s.content.as_ref())
+                    .collect::<String>()
+            })
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
+
+    #[test]
+    fn test_help_lines_contain_all_sections() {
+        let lines = build_help_lines(&test_theme());
+        let text = lines_text(&lines);
+        assert!(text.contains("Navigation"), "missing Navigation section");
+        assert!(text.contains("Actions"), "missing Actions section");
+        assert!(text.contains("Other"), "missing Other section");
+    }
+
+    #[test]
+    fn test_help_lines_contain_key_entries() {
+        let lines = build_help_lines(&test_theme());
+        let text = lines_text(&lines);
+        assert!(text.contains("j / ↓"), "missing j/down key");
+        assert!(text.contains("Enter"), "missing Enter key");
+        assert!(text.contains("Space"), "missing Space key");
+        assert!(text.contains("?"), "missing ? key");
+        assert!(text.contains("Ctrl+C"), "missing Ctrl+C");
+    }
+
+    #[test]
+    fn test_help_lines_contain_descriptions() {
+        let lines = build_help_lines(&test_theme());
+        let text = lines_text(&lines);
+        assert!(text.contains("Select next file"));
+        assert!(text.contains("Toggle diff"));
+        assert!(text.contains("Show this help"));
+    }
+}

@@ -8,6 +8,7 @@
 
 pub mod diff_overlay;
 pub mod header;
+pub mod help_overlay;
 pub mod pr_line;
 
 use anyhow::Result;

@@ -38,6 +38,14 @@ pub struct Theme {
     pub flash_bg: Color,
     pub empty_text: Color,
 
+    pub status_modified: Color,
+    pub status_added: Color,
+    pub status_deleted: Color,
+    pub status_renamed: Color,
+    pub status_untracked: Color,
+    pub status_staged: Color,
+    pub status_conflicted: Color,
+
     pub diff_add_fg: Color,
     pub diff_add_bg: Color,
     pub diff_del_fg: Color,

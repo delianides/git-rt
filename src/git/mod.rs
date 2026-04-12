@@ -573,6 +573,135 @@ impl GitRepo {
         None
     }
 
+    /// Compute file status for all changes between a merge base commit and the
+    /// current working tree (committed + uncommitted on this branch).
+    ///
+    /// 1. Loads the merge base commit tree and collects all blobs into a map.
+    /// 2. Compares each blob against the current worktree file.
+    /// 3. Adds files that are new on this branch (not in the merge base).
+    pub fn branch_status(&self, merge_base: gix::ObjectId) -> Result<Vec<FileEntry>, GitFailure> {
+        use std::collections::HashMap;
+
+        let work_dir = match self.repo.workdir() {
+            Some(d) => d.to_path_buf(),
+            None => return Ok(vec![]),
+        };
+
+        // Load the merge base tree
+        let mb_commit = self
+            .repo
+            .find_object(merge_base)
+            .map_err(|e| GitFailure::EnvChange(format!("branch_status find merge base: {e}")))?
+            .try_into_commit()
+            .map_err(|e| GitFailure::EnvChange(format!("branch_status into commit: {e}")))?;
+        let mb_tree = mb_commit
+            .tree()
+            .map_err(|e| GitFailure::EnvChange(format!("branch_status tree: {e}")))?;
+
+        // Collect all blobs from the merge base tree
+        let mut mb_blobs: HashMap<String, gix::ObjectId> = HashMap::new();
+        collect_tree_blobs(&self.repo, &mb_tree, "", &mut mb_blobs)
+            .map_err(|e| GitFailure::EnvChange(format!("branch_status walk tree: {e}")))?;
+
+        // Current index-worktree status for untracked file detection
+        let wt_status = self.status().unwrap_or_default();
+
+        let mut entries: HashMap<String, FileEntry> = HashMap::new();
+
+        // Compare merge base blobs against worktree files
+        for (path, blob_id) in &mb_blobs {
+            let worktree_path = work_dir.join(path);
+            if worktree_path.exists() {
+                let blob = match self.repo.find_object(*blob_id) {
+                    Ok(b) => b,
+                    Err(_) => continue,
+                };
+                let old_text = String::from_utf8_lossy(&blob.data);
+                let new_text = match std::fs::read_to_string(&worktree_path) {
+                    Ok(t) => t,
+                    Err(_) => continue,
+                };
+
+                if old_text.as_ref() != new_text.as_str() {
+                    let (ins, del) = count_line_changes(&old_text, &new_text);
+                    entries.insert(
+                        path.clone(),
+                        FileEntry {
+                            path: path.clone(),
+                            status: FileStatus::Modified,
+                            insertions: ins,
+                            deletions: del,
+                        },
+                    );
+                }
+            } else {
+                // File existed at merge base but is gone now
+                let blob = match self.repo.find_object(*blob_id) {
+                    Ok(b) => b,
+                    Err(_) => continue,
+                };
+                let old_text = String::from_utf8_lossy(&blob.data);
+                let del = old_text.lines().count();
+                entries.insert(
+                    path.clone(),
+                    FileEntry {
+                        path: path.clone(),
+                        status: FileStatus::Deleted,
+                        insertions: 0,
+                        deletions: del,
+                    },
+                );
+            }
+        }
+
+        // Add files that are in the worktree but not in the merge base (new on this branch)
+        for wt_entry in &wt_status {
+            if !mb_blobs.contains_key(&wt_entry.path) && !entries.contains_key(&wt_entry.path) {
+                let mut entry = wt_entry.clone();
+                if entry.status != FileStatus::Untracked {
+                    entry.status = FileStatus::Added;
+                }
+                let worktree_path = work_dir.join(&entry.path);
+                if let Ok(content) = std::fs::read_to_string(&worktree_path) {
+                    entry.insertions = content.lines().count();
+                    entry.deletions = 0;
+                }
+                entries.insert(entry.path.clone(), entry);
+            }
+        }
+
+        // Also check HEAD tree for files added in commits but not in worktree status
+        if let Ok(head_commit) = self.repo.head_commit() {
+            if let Ok(head_tree) = head_commit.tree() {
+                let mut head_blobs: HashMap<String, gix::ObjectId> = HashMap::new();
+                let _ = collect_tree_blobs(&self.repo, &head_tree, "", &mut head_blobs);
+
+                for path in head_blobs.keys() {
+                    if !mb_blobs.contains_key(path) && !entries.contains_key(path) {
+                        let worktree_path = work_dir.join(path);
+                        if worktree_path.exists() {
+                            let new_text =
+                                std::fs::read_to_string(&worktree_path).unwrap_or_default();
+                            entries.insert(
+                                path.clone(),
+                                FileEntry {
+                                    path: path.clone(),
+                                    status: FileStatus::Added,
+                                    insertions: new_text.lines().count(),
+                                    deletions: 0,
+                                },
+                            );
+                        }
+                    }
+                }
+            }
+        }
+
+        let mut result: Vec<FileEntry> = entries.into_values().collect();
+        result.sort_by(|a, b| a.path.cmp(&b.path));
+        Ok(result)
+    }
+
     /// Create a synthetic diff for untracked files (all lines as additions)
     fn diff_untracked(&self, path: &str) -> Result<FileDiff> {
         let file_path = self.repo_path.join(path);
@@ -625,6 +754,39 @@ fn count_reachable_exclusive(
     }
 
     Ok(count)
+}
+
+/// Recursively collect all blob entries from a gix tree into a path -> id map.
+fn collect_tree_blobs(
+    repo: &gix::Repository,
+    tree: &gix::Tree<'_>,
+    prefix: &str,
+    out: &mut std::collections::HashMap<String, gix::ObjectId>,
+) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    use gix::bstr::ByteSlice;
+    use gix::object::tree::EntryKind;
+
+    for entry_ref in tree.iter() {
+        let entry = entry_ref?;
+        let name = entry.filename().to_str().unwrap_or("").to_string();
+        let path = if prefix.is_empty() {
+            name.clone()
+        } else {
+            format!("{prefix}/{name}")
+        };
+
+        match entry.mode().kind() {
+            EntryKind::Blob | EntryKind::BlobExecutable => {
+                out.insert(path, entry.id().detach());
+            }
+            EntryKind::Tree => {
+                let subtree = repo.find_object(entry.id())?.try_into_tree()?;
+                collect_tree_blobs(repo, &subtree, &path, out)?;
+            }
+            _ => {}
+        }
+    }
+    Ok(())
 }
 
 /// Synthesize a FileDiff between two texts using a simple prefix/suffix trim.
@@ -1055,5 +1217,22 @@ mod tests {
         let repo = GitRepo::new(std::path::Path::new(".")).unwrap();
         let result = repo.resolve_base_branch(Some("develop"), Some("main"));
         assert_eq!(result, Some("develop".to_string()));
+    }
+
+    #[test]
+    fn test_branch_status_returns_entries() {
+        let repo = GitRepo::new(std::path::Path::new(".")).unwrap();
+
+        if let Some(base) = repo.resolve_base_branch(None, None) {
+            if let Ok(Some(mb)) = repo.merge_base(&base) {
+                let result = repo.branch_status(mb);
+                assert!(result.is_ok());
+                let entries = result.unwrap();
+                for entry in &entries {
+                    assert!(!entry.path.is_empty());
+                    assert!(!entry.path.starts_with('/'));
+                }
+            }
+        }
     }
 }

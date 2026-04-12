@@ -60,6 +60,11 @@ struct Cli {
     /// Overrides the theme set in the config file.
     #[arg(long)]
     theme: Option<String>,
+
+    /// Base branch for branch-scoped diff (overrides config).
+    /// Auto-detected from remote if omitted.
+    #[arg(long)]
+    base: Option<String>,
 }
 
 fn main() -> Result<()> {
@@ -131,6 +136,7 @@ fn main() -> Result<()> {
         cli.debounce,
         auto_follow,
         cli.theme,
+        cli.base,
     )?;
     app.run()
 }

@@ -44,6 +44,8 @@ pub struct App {
     last_switch: Option<Instant>,
     /// Receiver for GitHub PR events
     gh_rx: Option<Receiver<crate::github::GitHubEvent>>,
+    /// CLI override for base branch
+    base_override: Option<String>,
 }
 
 impl App {
@@ -54,6 +56,7 @@ impl App {
         debounce_ms: u64,
         auto_follow: bool,
         theme_override: Option<String>,
+        base_override: Option<String>,
     ) -> Result<Self> {
         let git = GitRepo::new(&watch_path).context("Failed to open git repository")?;
 
@@ -115,6 +118,7 @@ impl App {
             wt_rx,
             last_switch: None,
             gh_rx,
+            base_override,
         })
     }
 

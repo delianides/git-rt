@@ -1,14 +1,13 @@
 //! UI rendering module.
 //!
 //! Provides the [`Terminal`] wrapper and the main `render` function that draws
-//! the tab bar, a bordered main pane dispatched by active tab, the status line,
-//! and tab-aware diff overlays.
+//! the bordered file list, an optional one-row PR status strip below the
+//! border when a PR is open against the branch, the status line, and the
+//! diff overlay.
 
 pub mod diff_overlay;
-pub mod pr_tab;
-pub mod pr_widget;
+pub mod pr_line;
 pub mod status_line;
-pub mod tabs;
 
 use anyhow::Result;
 use crossterm::{
@@ -72,63 +71,63 @@ impl Terminal {
 
 /// Top-level render function.
 ///
-/// Splits the frame into two regions:
-/// 1. Main pane (bordered block whose top-border title is the tab bar;
-///    body is dispatched by active tab)
-/// 2. Status line (1 row)
+/// Splits the frame into up to three regions:
+/// 1. Main pane (bordered block containing the file list)
+/// 2. Optional PR status line (1 row) — only when PR data is available
+/// 3. Status line (1 row)
 ///
-/// Then draws a tab-aware diff overlay on top when appropriate.
+/// Then draws the diff overlay on top when it's visible.
 fn render(frame: &mut Frame, state: &AppState, config: &AppConfig, theme: &Theme) {
     let area = frame.area();
+
+    let has_pr = pr_line::has_pr_line(state);
+    let pr_line_height: u16 = if has_pr { 1 } else { 0 };
 
     let chunks = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
-            Constraint::Min(3),    // main pane
-            Constraint::Length(1), // status line
+            Constraint::Min(3),                 // main pane
+            Constraint::Length(pr_line_height), // optional PR status line
+            Constraint::Length(1),              // status line
         ])
         .split(area);
 
     let main_area = chunks[0];
-    let status_area = chunks[1];
+    let pr_line_area = chunks[1];
+    let status_area = chunks[2];
 
-    // 1. Main pane border color
+    // 1. Main pane. Border color reflects PR state when a PR is open,
+    // otherwise the usual flash / focused / default progression.
     let border_color = if state.is_border_flashing() {
         theme.flash_bg
-    } else if state.active_tab() == crate::state::Tab::Pr {
-        pr_border_color_for_state(state, theme)
+    } else if has_pr {
+        pr_border_color_from_state(state, theme)
     } else if state.is_focused() {
         theme.border_focused
     } else {
         theme.border
     };
 
-    // Tabs render inside the block's top border via `.title(...)`.
     let block = Block::default()
         .borders(Borders::ALL)
         .border_type(BorderType::Rounded)
-        .border_style(Style::default().fg(border_color))
-        .title(tabs::tab_bar_title(state, theme));
+        .border_style(Style::default().fg(border_color));
 
     let inner = block.inner(main_area);
     frame.render_widget(block, main_area);
 
-    // 3. Active tab body dispatch
-    match state.active_tab() {
-        crate::state::Tab::Changes => {
-            render_file_list(frame, state, config, theme, inner);
-        }
-        crate::state::Tab::Pr => {
-            pr_tab::render_pr_tab(frame, state, config.pr.show_labels, theme, inner);
-        }
+    render_file_list(frame, state, config, theme, inner);
+
+    // 2. Optional PR status line (height = 0 when no PR data).
+    if has_pr {
+        pr_line::render_pr_line(frame, state, theme, pr_line_area);
     }
 
-    // 4. Status line
+    // 3. Status line (always rendered).
     status_line::render_status_line(frame, state, theme, status_area);
 
-    // 5. Overlay (drawn on top of everything). Only the Changes tab has
-    // an overlay; the PR tab is read-only.
-    if state.active_tab() == crate::state::Tab::Changes && state.is_overlay_visible() {
+    // 4. Diff overlay on top of everything when it's visible.
+    if state.is_overlay_visible() {
         if let Some(diff) = state.expanded_diff() {
             let path = state.expanded_path().unwrap_or("");
             let (ins, del) = state
@@ -152,17 +151,16 @@ fn render(frame: &mut Frame, state: &AppState, config: &AppConfig, theme: &Theme
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
 
-/// Return the border color for the PR tab based on the current PR state.
-fn pr_border_color_for_state(state: &AppState, theme: &Theme) -> ratatui::style::Color {
-    use crate::state::PrStatus;
-    use ratatui::style::Color;
-    match state.pr_state().info.as_ref().map(|i| &i.state) {
-        Some(PrStatus::Open) => Color::Green,
-        Some(PrStatus::Closed) => Color::Red,
-        Some(PrStatus::Merged) => Color::Magenta,
-        Some(PrStatus::Draft) => Color::Gray,
-        None => theme.border,
-    }
+/// Return the main pane border color derived from the current PR state.
+/// Falls back to the theme's default border color when no PR data exists
+/// (though the caller normally guards on `has_pr_line` first).
+fn pr_border_color_from_state(state: &AppState, theme: &Theme) -> ratatui::style::Color {
+    state
+        .pr_state()
+        .info
+        .as_ref()
+        .map(|info| pr_line::pr_state_color(&info.state))
+        .unwrap_or(theme.border)
 }
 
 // ── File list ────────────────────────────────────────────────────────────────

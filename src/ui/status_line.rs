@@ -12,7 +12,7 @@ use ratatui::{
     Frame,
 };
 
-use crate::state::{AppState, Tab};
+use crate::state::AppState;
 use crate::theme::Theme;
 
 /// Build the text for the left (global) segment of the status line.
@@ -42,17 +42,12 @@ pub fn build_left_segment(state: &AppState) -> String {
     parts.join(" · ")
 }
 
-/// Build the text for the right (per-tab) segment of the status line.
+/// Build the text for the right segment of the status line.
 pub fn build_right_segment(state: &AppState) -> String {
-    match state.active_tab() {
-        Tab::Changes => {
-            let files = state.files();
-            let ins: usize = files.iter().map(|f| f.insertions).sum();
-            let del: usize = files.iter().map(|f| f.deletions).sum();
-            format!("{} files +{ins} -{del}", files.len())
-        }
-        Tab::Pr => String::new(),
-    }
+    let files = state.files();
+    let ins: usize = files.iter().map(|f| f.insertions).sum();
+    let del: usize = files.iter().map(|f| f.deletions).sum();
+    format!("{} files +{ins} -{del}", files.len())
 }
 
 /// Render the status line row. Expects a 1-row `area`.
@@ -134,37 +129,9 @@ mod tests {
     }
 
     #[test]
-    fn test_right_segment_changes_tab() {
+    fn test_right_segment_shows_file_counts() {
         let s = fresh_state();
         let text = build_right_segment(&s);
         assert_eq!(text, "0 files +0 -0");
-    }
-
-    #[test]
-    fn test_right_segment_pr_tab_empty() {
-        use crate::state::{ChecksInfo, MergeableStatus, PrDisplayInfo, PrStatus};
-
-        let mut s = fresh_state();
-        s.set_pr_info(PrDisplayInfo {
-            number: 1,
-            title: "t".to_string(),
-            state: PrStatus::Open,
-            reviews: vec![],
-            checks: ChecksInfo {
-                total: 0,
-                passed: 0,
-                failed: 0,
-                pending: 0,
-                skipped: 0,
-                checks: vec![],
-            },
-            comment_count: 0,
-            mergeable: MergeableStatus::Clean,
-            labels: vec![],
-            assignees: vec![],
-        });
-        s.set_tab(Tab::Pr);
-        let text = build_right_segment(&s);
-        assert_eq!(text, "");
     }
 }

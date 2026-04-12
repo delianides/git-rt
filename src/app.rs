@@ -212,13 +212,27 @@ impl App {
     fn handle_terminal_event(&mut self, event: TermEvent) -> Result<bool> {
         match event {
             TermEvent::Key(key) => {
-                // Overlay mode: intercept keys before normal handling.
+                // Help overlay mode: intercept keys before anything else.
+                if self.state.is_help_visible() {
+                    match (key.modifiers, key.code) {
+                        (KeyModifiers::CONTROL, KeyCode::Char('c')) => return Ok(true),
+                        (_, KeyCode::Esc)
+                        | (_, KeyCode::Char('q'))
+                        | (_, KeyCode::Char('?'))
+                        | (_, KeyCode::Char(' ')) => self.state.hide_help(),
+                        _ => {}
+                    }
+                    return Ok(false);
+                }
+
+                // Diff overlay mode: intercept keys before normal handling.
                 if self.state.is_overlay_visible() {
                     match (key.modifiers, key.code) {
                         (KeyModifiers::CONTROL, KeyCode::Char('c')) => return Ok(true),
                         (_, KeyCode::Esc)
                         | (_, KeyCode::Char('q'))
                         | (_, KeyCode::Char('h'))
+                        | (_, KeyCode::Char(' '))
                         | (_, KeyCode::Left) => self.state.hide_overlay(),
                         (_, KeyCode::Char('j')) | (_, KeyCode::Down) => {
                             self.state.scroll_diff_down()
@@ -242,8 +256,11 @@ impl App {
                         self.state.select_previous();
                     }
 
-                    // Expand / open diff
-                    (_, KeyCode::Enter) | (_, KeyCode::Char('l')) | (_, KeyCode::Right) => {
+                    // Expand / open diff (Enter, l, Right, Space)
+                    (_, KeyCode::Enter)
+                    | (_, KeyCode::Char('l'))
+                    | (_, KeyCode::Right)
+                    | (_, KeyCode::Char(' ')) => {
                         self.handle_expand()?;
                     }
                     (_, KeyCode::Char('h')) | (_, KeyCode::Left) => {
@@ -253,6 +270,11 @@ impl App {
                     // Refresh manually
                     (_, KeyCode::Char('r')) => {
                         self.handle_fs_change()?;
+                    }
+
+                    // Help popup
+                    (_, KeyCode::Char('?')) => {
+                        self.state.show_help();
                     }
 
                     // Open external difftool (stub)

@@ -1,13 +1,13 @@
 //! UI rendering module.
 //!
 //! Provides the [`Terminal`] wrapper and the main `render` function that draws
-//! the bordered file list, an optional one-row PR status strip below the
-//! border when a PR is open against the branch, the status line, and the
-//! diff overlay.
+//! the bordered file list (with repo stats in the top border title) and an
+//! optional one-row PR status strip below the border when a PR is open
+//! against the branch, plus the diff overlay.
 
 pub mod diff_overlay;
+pub mod header;
 pub mod pr_line;
-pub mod status_line;
 
 use anyhow::Result;
 use crossterm::{
@@ -71,12 +71,13 @@ impl Terminal {
 
 /// Top-level render function.
 ///
-/// Splits the frame into up to three regions:
-/// 1. Main pane (bordered block containing the file list)
-/// 2. Optional PR status line (1 row) — only when PR data is available
-/// 3. Status line (1 row)
+/// Splits the frame into up to two regions:
+/// 1. Main pane (bordered block; title carries repo/file/branch/worktree
+///    stats, body is the file list)
+/// 2. Optional PR status strip (1 row) — only when PR data is available
 ///
-/// Then draws the diff overlay on top when it's visible.
+/// The diff overlay is drawn on top when visible. The old bottom status
+/// line is gone — all of its content lives in the main pane's title now.
 fn render(frame: &mut Frame, state: &AppState, config: &AppConfig, theme: &Theme) {
     let area = frame.area();
 
@@ -87,14 +88,12 @@ fn render(frame: &mut Frame, state: &AppState, config: &AppConfig, theme: &Theme
         .direction(Direction::Vertical)
         .constraints([
             Constraint::Min(3),                 // main pane
-            Constraint::Length(pr_line_height), // optional PR status line
-            Constraint::Length(1),              // status line
+            Constraint::Length(pr_line_height), // optional PR status strip
         ])
         .split(area);
 
     let main_area = chunks[0];
     let pr_line_area = chunks[1];
-    let status_area = chunks[2];
 
     // 1. Main pane. Border color reflects PR state when a PR is open,
     // otherwise the usual flash / focused / default progression.
@@ -111,22 +110,20 @@ fn render(frame: &mut Frame, state: &AppState, config: &AppConfig, theme: &Theme
     let block = Block::default()
         .borders(Borders::ALL)
         .border_type(BorderType::Rounded)
-        .border_style(Style::default().fg(border_color));
+        .border_style(Style::default().fg(border_color))
+        .title(header::build_header_title(state, theme));
 
     let inner = block.inner(main_area);
     frame.render_widget(block, main_area);
 
     render_file_list(frame, state, config, theme, inner);
 
-    // 2. Optional PR status line (height = 0 when no PR data).
+    // 2. Optional PR status strip (height = 0 when no PR data).
     if has_pr {
         pr_line::render_pr_line(frame, state, theme, pr_line_area);
     }
 
-    // 3. Status line (always rendered).
-    status_line::render_status_line(frame, state, theme, status_area);
-
-    // 4. Diff overlay on top of everything when it's visible.
+    // 3. Diff overlay on top of everything when it's visible.
     if state.is_overlay_visible() {
         if let Some(diff) = state.expanded_diff() {
             let path = state.expanded_path().unwrap_or("");

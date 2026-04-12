@@ -45,6 +45,13 @@ pub struct ThemeColors {
     pub diff_hunk_header: Option<String>,
     pub diff_line_number: Option<String>,
     pub diff_border: Option<String>,
+    pub status_modified: Option<String>,
+    pub status_added: Option<String>,
+    pub status_deleted: Option<String>,
+    pub status_renamed: Option<String>,
+    pub status_untracked: Option<String>,
+    pub status_staged: Option<String>,
+    pub status_conflicted: Option<String>,
 }
 
 /// Parse a TOML theme string.
@@ -259,6 +266,34 @@ bg = "#000000"
             assert!(
                 parsed.colors.diff_border.is_some(),
                 "{name}: missing diff_border"
+            );
+            assert!(
+                parsed.colors.status_modified.is_some(),
+                "{name}: missing status_modified"
+            );
+            assert!(
+                parsed.colors.status_added.is_some(),
+                "{name}: missing status_added"
+            );
+            assert!(
+                parsed.colors.status_deleted.is_some(),
+                "{name}: missing status_deleted"
+            );
+            assert!(
+                parsed.colors.status_renamed.is_some(),
+                "{name}: missing status_renamed"
+            );
+            assert!(
+                parsed.colors.status_untracked.is_some(),
+                "{name}: missing status_untracked"
+            );
+            assert!(
+                parsed.colors.status_staged.is_some(),
+                "{name}: missing status_staged"
+            );
+            assert!(
+                parsed.colors.status_conflicted.is_some(),
+                "{name}: missing status_conflicted"
             );
         }
     }

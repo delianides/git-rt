@@ -96,6 +96,13 @@ fn overlay(parent: ThemeColors, child: &ThemeColors) -> ThemeColors {
         diff_hunk_header: child.diff_hunk_header.clone().or(parent.diff_hunk_header),
         diff_line_number: child.diff_line_number.clone().or(parent.diff_line_number),
         diff_border: child.diff_border.clone().or(parent.diff_border),
+        status_modified: child.status_modified.clone().or(parent.status_modified),
+        status_added: child.status_added.clone().or(parent.status_added),
+        status_deleted: child.status_deleted.clone().or(parent.status_deleted),
+        status_renamed: child.status_renamed.clone().or(parent.status_renamed),
+        status_untracked: child.status_untracked.clone().or(parent.status_untracked),
+        status_staged: child.status_staged.clone().or(parent.status_staged),
+        status_conflicted: child.status_conflicted.clone().or(parent.status_conflicted),
     }
 }
 
@@ -170,6 +177,13 @@ mod tests {
                 diff_hunk_header: Some("#123456".into()),
                 diff_line_number: Some("#234567".into()),
                 diff_border: Some("#345678".into()),
+                status_modified: Some("#456789".into()),
+                status_added: Some("#567890".into()),
+                status_deleted: Some("#678901".into()),
+                status_renamed: Some("#789012".into()),
+                status_untracked: Some("#890123".into()),
+                status_staged: Some("#901234".into()),
+                status_conflicted: Some("#012345".into()),
             },
         }
     }

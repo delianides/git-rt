@@ -428,6 +428,94 @@ impl GitRepo {
         Some(id.detach())
     }
 
+    /// Compute the merge base between HEAD and the given base ref.
+    ///
+    /// Returns `None` if the ref can't be resolved, if HEAD equals the merge base
+    /// (i.e., the current branch is fully behind the base), or if HEAD is detached
+    /// and equals the base commit.
+    pub fn merge_base(&self, base_ref: &str) -> Result<Option<gix::ObjectId>, GitFailure> {
+        let base_id = self.resolve_ref_to_commit(base_ref);
+        let base_id = match base_id {
+            Some(id) => id,
+            None => return Ok(None),
+        };
+
+        let head_commit = match self.repo.head_commit() {
+            Ok(c) => c,
+            Err(e) => return Err(GitFailure::EnvChange(format!("merge_base head: {e}"))),
+        };
+        let head_id = head_commit.id().detach();
+
+        if head_id == base_id {
+            return Ok(None);
+        }
+
+        let base = self
+            .find_merge_base(head_id, base_id)
+            .map_err(|e| GitFailure::EnvChange(format!("merge_base walk: {e}")))?;
+
+        match base {
+            Some(mb) if mb == head_id => Ok(None),
+            other => Ok(other),
+        }
+    }
+
+    /// Try to resolve a ref name to a commit ObjectId.
+    ///
+    /// Tries multiple candidate forms: as-is, "origin/<name>",
+    /// "refs/remotes/origin/<name>", and "refs/heads/<name>".
+    fn resolve_ref_to_commit(&self, name: &str) -> Option<gix::ObjectId> {
+        let candidates = [
+            name.to_string(),
+            format!("origin/{name}"),
+            format!("refs/remotes/origin/{name}"),
+            format!("refs/heads/{name}"),
+        ];
+
+        for candidate in &candidates {
+            if let Ok(reference) = self.repo.find_reference(candidate.as_str()) {
+                let id = reference.id().detach();
+                if let Ok(obj) = self.repo.find_object(id) {
+                    if obj.kind == gix::object::Kind::Commit {
+                        return Some(id);
+                    }
+                }
+            }
+        }
+
+        None
+    }
+
+    /// Walk ancestors of both `a` and `b` to find their nearest common ancestor.
+    ///
+    /// Collects all ancestors of `b` into a hash set, then walks ancestors of `a`
+    /// until a common commit is found.
+    fn find_merge_base(
+        &self,
+        a: gix::ObjectId,
+        b: gix::ObjectId,
+    ) -> Result<Option<gix::ObjectId>, Box<dyn std::error::Error + Send + Sync>> {
+        let b_ancestors: std::collections::HashSet<gix::ObjectId> = {
+            let mut set = std::collections::HashSet::new();
+            let walk = self.repo.rev_walk([b]).all()?;
+            for info in walk {
+                let info = info?;
+                set.insert(info.id);
+            }
+            set
+        };
+
+        let walk = self.repo.rev_walk([a]).all()?;
+        for info in walk {
+            let info = info?;
+            if b_ancestors.contains(&info.id) {
+                return Ok(Some(info.id));
+            }
+        }
+
+        Ok(None)
+    }
+
     /// Check if the repo is in a special state (rebase, merge, cherry-pick, etc.)
     pub fn repo_state(&self) -> Option<String> {
         match self.repo.state() {
@@ -887,6 +975,23 @@ mod tests {
         let (ins, del) = count_line_changes(text, text);
         assert_eq!(ins, 0);
         assert_eq!(del, 0);
+    }
+
+    #[test]
+    fn test_merge_base_returns_none_on_same_branch() {
+        let repo = GitRepo::new(std::path::Path::new(".")).unwrap();
+        let branch = repo.branch_name().unwrap();
+        let result = repo.merge_base(&branch);
+        assert!(result.is_ok());
+        assert!(result.unwrap().is_none());
+    }
+
+    #[test]
+    fn test_merge_base_returns_none_for_nonexistent_ref() {
+        let repo = GitRepo::new(std::path::Path::new(".")).unwrap();
+        let result = repo.merge_base("nonexistent-branch-xyz-99999");
+        assert!(result.is_ok());
+        assert!(result.unwrap().is_none());
     }
 
     #[test]

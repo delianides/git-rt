@@ -7,7 +7,7 @@ use crossterm::event::{self, Event as TermEvent, KeyCode, KeyModifiers};
 
 use crate::config::AppConfig;
 use crate::git::GitRepo;
-use crate::state::{AppState, Tab};
+use crate::state::AppState;
 use crate::ui::Terminal;
 use crate::watcher::{FsWatcher, FsWatcherEvent};
 
@@ -209,8 +209,7 @@ impl App {
         match event {
             TermEvent::Key(key) => {
                 // Overlay mode: intercept keys before normal handling.
-                // Only the Changes tab has an overlay; PR is read-only.
-                if self.state.active_tab() == Tab::Changes && self.state.is_overlay_visible() {
+                if self.state.is_overlay_visible() {
                     match (key.modifiers, key.code) {
                         (KeyModifiers::CONTROL, KeyCode::Char('c')) => return Ok(true),
                         (_, KeyCode::Esc)
@@ -227,50 +226,24 @@ impl App {
                 }
 
                 match (key.modifiers, key.code) {
-                    // Tab switching — intercept first, before any per-tab routing.
-                    (_, KeyCode::Tab) => {
-                        self.state.next_tab();
-                        return Ok(false);
-                    }
-                    (_, KeyCode::BackTab) => {
-                        self.state.prev_tab();
-                        return Ok(false);
-                    }
-                    (_, KeyCode::Char('1')) => {
-                        self.state.set_tab(Tab::Changes);
-                        return Ok(false);
-                    }
-                    (_, KeyCode::Char('2')) => {
-                        self.state.set_tab(Tab::Pr);
-                        return Ok(false);
-                    }
-
                     // Quit
                     (_, KeyCode::Char('q')) => return Ok(true),
                     (KeyModifiers::CONTROL, KeyCode::Char('c')) => return Ok(true),
 
-                    // Navigation — per-tab routing (PR tab is read-only).
+                    // Navigation
                     (_, KeyCode::Char('j')) | (_, KeyCode::Down) => {
-                        if self.state.active_tab() == Tab::Changes {
-                            self.state.select_next();
-                        }
+                        self.state.select_next();
                     }
                     (_, KeyCode::Char('k')) | (_, KeyCode::Up) => {
-                        if self.state.active_tab() == Tab::Changes {
-                            self.state.select_previous();
-                        }
+                        self.state.select_previous();
                     }
 
                     // Expand / open diff
                     (_, KeyCode::Enter) | (_, KeyCode::Char('l')) | (_, KeyCode::Right) => {
-                        if self.state.active_tab() == Tab::Changes {
-                            self.handle_expand()?;
-                        }
+                        self.handle_expand()?;
                     }
                     (_, KeyCode::Char('h')) | (_, KeyCode::Left) => {
-                        if self.state.active_tab() == Tab::Changes {
-                            self.state.collapse_selected();
-                        }
+                        self.state.collapse_selected();
                     }
 
                     // Refresh manually

@@ -62,27 +62,11 @@ impl App {
 
         let branch = git.branch_name().unwrap_or_else(|_| "HEAD".to_string());
 
-        let base_ref = base_override.as_deref().or(config.base_branch.as_deref());
-        let resolved_base = git.resolve_base_branch(base_ref, None);
-        let (merge_base, files) = match &resolved_base {
-            Some(base_name) => match git.merge_base(base_name) {
-                Ok(Some(mb)) => match git.branch_status(mb) {
-                    Ok(f) => (Some(mb), f),
-                    Err(e) if e.is_env_change() => {
-                        tracing::debug!(error = %e, "branch_status failed, falling back");
-                        (None, git.status()?)
-                    }
-                    Err(e) => return Err(e.into()),
-                },
-                Ok(None) => (None, git.status()?),
-                Err(e) if e.is_env_change() => {
-                    tracing::debug!(error = %e, "merge_base failed, falling back");
-                    (None, git.status()?)
-                }
-                Err(e) => return Err(e.into()),
-            },
-            None => (None, git.status()?),
-        };
+        let (merge_base, resolved_base, files) = Self::compute_branch_files(
+            &git,
+            base_override.as_deref(),
+            config.base_branch.as_deref(),
+        )?;
 
         let flash_duration = Duration::from_millis(config.display.flash_duration_ms);
         let mut state = AppState::new(files, flash_duration, branch);
@@ -96,7 +80,7 @@ impl App {
         state.set_stash_count(git.stash_count().unwrap_or(0));
         state.set_ahead_behind(git.ahead_behind().unwrap_or(None));
         state.set_repo_state(git.repo_state());
-        state.set_merge_base(merge_base, resolved_base.unwrap_or_default());
+        state.set_merge_base(merge_base, resolved_base);
 
         let user_themes_dir = crate::theme::default_user_themes_dir();
         let theme_name_or_path = theme_override.as_deref().unwrap_or(&config.theme);
@@ -299,6 +283,39 @@ impl App {
         Ok(false)
     }
 
+    /// Resolve merge base and compute file list. Falls back to working-tree
+    /// status when no merge base is available or on error.
+    fn compute_branch_files(
+        git: &GitRepo,
+        base_override: Option<&str>,
+        config_base: Option<&str>,
+    ) -> Result<(Option<gix::ObjectId>, String, Vec<crate::git::FileEntry>)> {
+        let base_ref = base_override.or(config_base);
+        let resolved_base = git.resolve_base_branch(base_ref);
+
+        let (merge_base, files) = match &resolved_base {
+            Some(base_name) => match git.merge_base(base_name) {
+                Ok(Some(mb)) => match git.branch_status(mb) {
+                    Ok(f) => (Some(mb), f),
+                    Err(e) if e.is_env_change() => {
+                        tracing::debug!(error = %e, "branch_status failed, falling back");
+                        (None, git.status()?)
+                    }
+                    Err(e) => return Err(e.into()),
+                },
+                Ok(None) => (None, git.status()?),
+                Err(e) if e.is_env_change() => {
+                    tracing::debug!(error = %e, "merge_base failed, falling back");
+                    (None, git.status()?)
+                }
+                Err(e) => return Err(e.into()),
+            },
+            None => (None, git.status()?),
+        };
+
+        Ok((merge_base, resolved_base.unwrap_or_default(), files))
+    }
+
     /// Recompute git status on filesystem change
     fn handle_fs_change(&mut self) -> Result<()> {
         tracing::debug!("Filesystem change detected, recomputing status");
@@ -307,7 +324,7 @@ impl App {
             .base_override
             .as_deref()
             .or(self.config.base_branch.as_deref());
-        let resolved_base = self.git.resolve_base_branch(base_ref, None);
+        let resolved_base = self.git.resolve_base_branch(base_ref);
         let (merge_base, files_result) = match &resolved_base {
             Some(base_name) => match self.git.merge_base(base_name) {
                 Ok(Some(mb)) => (Some(mb), self.git.branch_status(mb)),
@@ -472,21 +489,11 @@ impl App {
         let debounce = Duration::from_millis(self.config.debounce_ms);
         let (fs_rx, watcher) = FsWatcher::new(&path, debounce)?;
 
-        let base_ref = self
-            .base_override
-            .as_deref()
-            .or(self.config.base_branch.as_deref());
-        let resolved_base = git.resolve_base_branch(base_ref, None);
-        let (merge_base, files) = match &resolved_base {
-            Some(base_name) => match git.merge_base(base_name) {
-                Ok(Some(mb)) => match git.branch_status(mb) {
-                    Ok(f) => (Some(mb), f),
-                    Err(_) => (None, git.status()?),
-                },
-                _ => (None, git.status()?),
-            },
-            None => (None, git.status()?),
-        };
+        let (merge_base, resolved_base, files) = Self::compute_branch_files(
+            &git,
+            self.base_override.as_deref(),
+            self.config.base_branch.as_deref(),
+        )?;
 
         let branch = git.branch_name().unwrap_or_else(|_| "HEAD".to_string());
         let repo_name = git.repo_name();
@@ -494,8 +501,7 @@ impl App {
 
         self.state
             .reset_for_switch(files, branch, repo_name, worktree_name);
-        self.state
-            .set_merge_base(merge_base, resolved_base.unwrap_or_default());
+        self.state.set_merge_base(merge_base, resolved_base);
 
         if let Ok((sha, msg)) = git.head_info() {
             self.state.set_head_info(sha, msg);

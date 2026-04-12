@@ -486,10 +486,11 @@ impl GitRepo {
         None
     }
 
-    /// Walk ancestors of both `a` and `b` to find their nearest common ancestor.
+    /// Find the merge base (most recent common ancestor) of two commits.
     ///
-    /// Collects all ancestors of `b` into a hash set, then walks ancestors of `a`
-    /// until a common commit is found.
+    /// TODO: This collects all ancestors of `b` into memory before walking `a`.
+    /// For repos with very long histories (100k+ commits), consider using an
+    /// interleaved BFS or gix's built-in merge-base support for better perf.
     fn find_merge_base(
         &self,
         a: gix::ObjectId,
@@ -534,25 +535,20 @@ impl GitRepo {
     }
 
     /// Resolve the base branch name using priority:
-    /// 1. CLI override (`cli_base`)
-    /// 2. Config value (`config_base`)
-    /// 3. Auto-detect from origin/HEAD
-    /// 4. Fallback to origin/main, then origin/master
-    pub fn resolve_base_branch(
-        &self,
-        cli_base: Option<&str>,
-        config_base: Option<&str>,
-    ) -> Option<String> {
-        // Priority 1 & 2: explicit overrides
-        if let Some(base) = cli_base.or(config_base) {
+    /// 1. Explicit override (CLI flag or config value, pre-merged by caller)
+    /// 2. Auto-detect from origin/HEAD
+    /// 3. Fallback to origin/main, then origin/master
+    pub fn resolve_base_branch(&self, explicit_base: Option<&str>) -> Option<String> {
+        if let Some(base) = explicit_base {
             return Some(base.to_string());
         }
 
-        // Priority 3: resolve origin/HEAD — try to read the symbolic ref target
-        if let Ok(reference) = self.repo.find_reference("refs/remotes/origin/HEAD") {
-            let target_name = reference.name().shorten().to_string();
-            if target_name != "origin/HEAD" {
-                return Some(target_name);
+        // Priority 2: resolve origin/HEAD symbolic ref to its target.
+        // gix's symbolic ref API can be tricky, so read the file directly.
+        let origin_head_path = self.repo.git_dir().join("refs/remotes/origin/HEAD");
+        if let Ok(content) = std::fs::read_to_string(&origin_head_path) {
+            if let Some(target) = content.strip_prefix("ref: refs/remotes/origin/") {
+                return Some(target.trim().to_string());
             }
         }
 
@@ -670,7 +666,11 @@ impl GitRepo {
             }
         }
 
-        // Also check HEAD tree for files added in commits but not in worktree status
+        // Check HEAD tree for files that were added in commits on this branch
+        // but are now clean relative to the index (i.e., committed and unchanged
+        // in the worktree, so `self.status()` doesn't report them). These files
+        // still need to appear in the branch diff since they differ from the
+        // merge base.
         if let Ok(head_commit) = self.repo.head_commit() {
             if let Ok(head_tree) = head_commit.tree() {
                 let mut head_blobs: HashMap<String, gix::ObjectId> = HashMap::new();
@@ -1299,22 +1299,32 @@ mod tests {
     #[test]
     fn test_resolve_base_branch_with_explicit() {
         let repo = GitRepo::new(std::path::Path::new(".")).unwrap();
-        let result = repo.resolve_base_branch(Some("main"), None);
+        let result = repo.resolve_base_branch(Some("main"));
         assert_eq!(result, Some("main".to_string()));
     }
 
     #[test]
-    fn test_resolve_base_branch_cli_overrides_config() {
-        let repo = GitRepo::new(std::path::Path::new(".")).unwrap();
-        let result = repo.resolve_base_branch(Some("develop"), Some("main"));
-        assert_eq!(result, Some("develop".to_string()));
+    fn test_resolve_base_branch_none_when_no_remote() {
+        let dir = std::env::temp_dir().join("git-rt-test-no-remote");
+        std::fs::create_dir_all(&dir).ok();
+        let result = std::process::Command::new("git")
+            .args(["init", "-b", "main"])
+            .current_dir(&dir)
+            .output();
+        if result.is_ok() {
+            if let Ok(repo) = GitRepo::new(&dir) {
+                let result = repo.resolve_base_branch(None);
+                assert!(result.is_none(), "should be None with no remote");
+            }
+        }
+        std::fs::remove_dir_all(&dir).ok();
     }
 
     #[test]
     fn test_branch_status_returns_entries() {
         let repo = GitRepo::new(std::path::Path::new(".")).unwrap();
 
-        if let Some(base) = repo.resolve_base_branch(None, None) {
+        if let Some(base) = repo.resolve_base_branch(None) {
             if let Ok(Some(mb)) = repo.merge_base(&base) {
                 let result = repo.branch_status(mb);
                 assert!(result.is_ok());
@@ -1330,7 +1340,7 @@ mod tests {
     #[test]
     fn test_branch_diff_file_missing_path() {
         let repo = GitRepo::new(std::path::Path::new(".")).unwrap();
-        if let Some(base) = repo.resolve_base_branch(None, None) {
+        if let Some(base) = repo.resolve_base_branch(None) {
             if let Ok(Some(mb)) = repo.merge_base(&base) {
                 let result = repo.branch_diff_file("nonexistent-file-xyz.rs", mb);
                 assert!(result.is_ok());

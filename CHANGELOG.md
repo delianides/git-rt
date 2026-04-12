@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.5.0](https://github.com/delianides/git-rt/compare/v0.4.0...v0.5.0) (2026-04-12)
+
+
+### Features
+
+* branch-scoped file list (merge base to worktree) ([#31](https://github.com/delianides/git-rt/issues/31)) ([4c8d182](https://github.com/delianides/git-rt/commit/4c8d18297ccfa9b1d9a2895ddb50301cd26a4f5a))
+
 ## [0.4.0](https://github.com/delianides/git-rt/compare/v0.3.0...v0.4.0) (2026-04-12)
 
 

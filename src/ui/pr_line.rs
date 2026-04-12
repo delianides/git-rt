@@ -16,7 +16,7 @@
 //!   whole checks segment is omitted.
 
 use ratatui::{
-    layout::Rect,
+    layout::{Alignment, Constraint, Direction, Layout, Rect},
     style::{Color, Modifier, Style},
     text::{Line, Span},
     widgets::Paragraph,
@@ -26,10 +26,10 @@ use ratatui::{
 use crate::state::{AppState, MergeableStatus, PrDisplayInfo, PrState, PrStatus};
 use crate::theme::Theme;
 
-/// Should the PR line be rendered at all? True only when PR data has been
-/// loaded (not loading, not errored, not missing).
-pub fn has_pr_line(state: &AppState) -> bool {
-    state.pr_state().info.is_some()
+/// The bottom bar is always rendered (even without a PR) because it shows
+/// the repo name. Returns true when the bar should be rendered.
+pub fn has_bottom_bar(_state: &AppState) -> bool {
+    true
 }
 
 /// PR-state color mapping (shared with the main-pane border indicator).
@@ -74,25 +74,54 @@ fn build_line_from_info(info: &PrDisplayInfo, theme: &Theme) -> Line<'static> {
         spans.push(Span::styled(label.to_string(), Style::default().fg(color)));
     }
 
-    // Check counts.
+    // Check counts — hybrid display:
+    // - failures present → per-category breakdown (passed/failed/pending)
+    // - pending, no failures → yellow fraction (completed/total)
+    // - all passed → green fraction (passed/total)
     let checks = &info.checks;
-    let show_passed = checks.passed > 0;
-    let show_failed = checks.failed > 0;
-    if show_passed {
-        spans.push(Span::styled("  ", sep_style));
-        spans.push(Span::styled("✓ ", Style::default().fg(Color::Green)));
-        spans.push(Span::styled(
-            checks.passed.to_string(),
-            Style::default().fg(Color::Green),
-        ));
-    }
-    if show_failed {
-        spans.push(Span::styled("  ", sep_style));
-        spans.push(Span::styled("✗ ", Style::default().fg(Color::Red)));
-        spans.push(Span::styled(
-            checks.failed.to_string(),
-            Style::default().fg(Color::Red),
-        ));
+    if checks.total > 0 {
+        if checks.failed > 0 {
+            // Failure mode: per-category breakdown
+            if checks.passed > 0 {
+                spans.push(Span::styled("  ", sep_style));
+                spans.push(Span::styled("✓ ", Style::default().fg(Color::Green)));
+                spans.push(Span::styled(
+                    checks.passed.to_string(),
+                    Style::default().fg(Color::Green),
+                ));
+            }
+            spans.push(Span::styled("  ", sep_style));
+            spans.push(Span::styled("✗ ", Style::default().fg(Color::Red)));
+            spans.push(Span::styled(
+                checks.failed.to_string(),
+                Style::default().fg(Color::Red),
+            ));
+            if checks.pending > 0 {
+                spans.push(Span::styled("  ", sep_style));
+                spans.push(Span::styled("◐ ", Style::default().fg(Color::Yellow)));
+                spans.push(Span::styled(
+                    checks.pending.to_string(),
+                    Style::default().fg(Color::Yellow),
+                ));
+            }
+        } else if checks.pending > 0 {
+            // In progress: yellow fraction
+            let completed = checks.passed + checks.skipped;
+            spans.push(Span::styled("  ", sep_style));
+            spans.push(Span::styled("◐ ", Style::default().fg(Color::Yellow)));
+            spans.push(Span::styled(
+                format!("{}/{}", completed, checks.total),
+                Style::default().fg(Color::Yellow),
+            ));
+        } else {
+            // All passed: green fraction
+            spans.push(Span::styled("  ", sep_style));
+            spans.push(Span::styled("✓ ", Style::default().fg(Color::Green)));
+            spans.push(Span::styled(
+                format!("{}/{}", checks.passed, checks.total),
+                Style::default().fg(Color::Green),
+            ));
+        }
     }
 
     Line::from(spans)
@@ -109,10 +138,51 @@ fn mergeable_indicator(status: &MergeableStatus) -> Option<(&'static str, &'stat
     }
 }
 
-/// Render the PR status line into `area`. Expects a 1-row Rect.
+/// Render the bottom status bar into `area`. Expects a 1-row Rect.
+///
+/// Layout: PR line (when present) on the left, repo name right-aligned on
+/// the right. The bar is always rendered because the repo name is always
+/// shown.
 pub fn render_pr_line(frame: &mut Frame, state: &AppState, theme: &Theme, area: Rect) {
+    let repo = state.repo_name();
+    let repo_width = if repo.is_empty() {
+        0
+    } else {
+        // +1 for trailing space padding so the name doesn't hug the edge.
+        repo.chars().count() as u16 + 1
+    };
+    let total_width = area.width;
+
+    // Reserve right side for repo name (clamped to total width).
+    let repo_width = repo_width.min(total_width);
+    let left_width = total_width.saturating_sub(repo_width);
+
+    let chunks = Layout::default()
+        .direction(Direction::Horizontal)
+        .constraints([
+            Constraint::Length(left_width),
+            Constraint::Length(repo_width),
+        ])
+        .split(area);
+
+    let left_area = chunks[0];
+    let right_area = chunks[1];
+
+    // Left: PR line if present
     if let Some(line) = build_pr_line(state.pr_state(), theme) {
-        frame.render_widget(Paragraph::new(line), area);
+        frame.render_widget(Paragraph::new(line), left_area);
+    }
+
+    // Right: repo name, right-aligned
+    if !repo.is_empty() {
+        let repo_line = Line::from(vec![
+            Span::styled(repo.to_string(), Style::default().fg(theme.header_text)),
+            Span::raw(" "),
+        ]);
+        frame.render_widget(
+            Paragraph::new(repo_line).alignment(Alignment::Right),
+            right_area,
+        );
     }
 }
 
@@ -168,6 +238,7 @@ mod tests {
             mergeable,
             labels: vec![],
             assignees: vec![],
+            url: String::new(),
         }
     }
 
@@ -178,22 +249,22 @@ mod tests {
     }
 
     #[test]
-    fn test_has_pr_line_false_without_info() {
+    fn test_has_bottom_bar_always_true() {
         let s = AppState::new(vec![], Duration::from_millis(600), "main".to_string());
-        assert!(!has_pr_line(&s));
+        assert!(has_bottom_bar(&s));
     }
 
     #[test]
-    fn test_has_pr_line_true_with_info() {
+    fn test_has_bottom_bar_true_with_pr_info() {
         let s = state_with(make_info(MergeableStatus::Clean, 12, 0, 0));
-        assert!(has_pr_line(&s));
+        assert!(has_bottom_bar(&s));
     }
 
     #[test]
     fn test_build_pr_line_clean_with_passing_checks() {
         let info = make_info(MergeableStatus::Clean, 12, 0, 0);
         let line = build_pr_line(&pr_state_with(info), &test_theme()).unwrap();
-        assert_eq!(line_text(&line), " PR #142  ✓ clean  ✓ 12");
+        assert_eq!(line_text(&line), " PR #142  ✓ clean  ✓ 12/12");
     }
 
     #[test]
@@ -221,20 +292,48 @@ mod tests {
     fn test_build_pr_line_unknown_mergeable_omits_segment() {
         let info = make_info(MergeableStatus::Unknown, 12, 0, 0);
         let line = build_pr_line(&pr_state_with(info), &test_theme()).unwrap();
-        assert_eq!(line_text(&line), " PR #142  ✓ 12");
+        assert_eq!(line_text(&line), " PR #142  ✓ 12/12");
     }
 
     #[test]
     fn test_build_pr_line_behind_base() {
         let info = make_info(MergeableStatus::Behind, 12, 0, 0);
         let line = build_pr_line(&pr_state_with(info), &test_theme()).unwrap();
-        assert_eq!(line_text(&line), " PR #142  ⚠ behind  ✓ 12");
+        assert_eq!(line_text(&line), " PR #142  ⚠ behind  ✓ 12/12");
     }
 
     #[test]
     fn test_build_pr_line_returns_none_without_info() {
         let pr = PrState::default();
         assert!(build_pr_line(&pr, &test_theme()).is_none());
+    }
+
+    #[test]
+    fn test_checks_all_pending_shows_fraction() {
+        let info = make_info(MergeableStatus::Clean, 0, 0, 12);
+        let line = build_pr_line(&pr_state_with(info), &test_theme()).unwrap();
+        assert_eq!(line_text(&line), " PR #142  ✓ clean  ◐ 0/12");
+    }
+
+    #[test]
+    fn test_checks_mixed_pending_no_failures_shows_fraction() {
+        let info = make_info(MergeableStatus::Clean, 8, 0, 4);
+        let line = build_pr_line(&pr_state_with(info), &test_theme()).unwrap();
+        assert_eq!(line_text(&line), " PR #142  ✓ clean  ◐ 8/12");
+    }
+
+    #[test]
+    fn test_checks_with_failures_shows_per_category() {
+        let info = make_info(MergeableStatus::Clean, 9, 2, 1);
+        let line = build_pr_line(&pr_state_with(info), &test_theme()).unwrap();
+        assert_eq!(line_text(&line), " PR #142  ✓ clean  ✓ 9  ✗ 2  ◐ 1");
+    }
+
+    #[test]
+    fn test_checks_all_passed_shows_green_fraction() {
+        let info = make_info(MergeableStatus::Clean, 12, 0, 0);
+        let line = build_pr_line(&pr_state_with(info), &test_theme()).unwrap();
+        assert_eq!(line_text(&line), " PR #142  ✓ clean  ✓ 12/12");
     }
 
     /// Helper: make a `PrState` containing the given display info.

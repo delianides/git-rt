@@ -1,9 +1,10 @@
 //! UI rendering module.
 //!
 //! Provides the [`Terminal`] wrapper and the main `render` function that draws
-//! the bordered file list (with repo stats in the top border title) and an
-//! optional one-row PR status strip below the border when a PR is open
-//! against the branch, plus the diff overlay.
+//! the bordered file list (with file/branch stats in the top border title)
+//! and a persistent one-row bottom bar with PR status on the left (when a
+//! PR is open against the branch) and the repo name right-aligned on the
+//! right, plus the diff overlay.
 
 pub mod diff_overlay;
 pub mod header;
@@ -71,29 +72,29 @@ impl Terminal {
 
 /// Top-level render function.
 ///
-/// Splits the frame into up to two regions:
-/// 1. Main pane (bordered block; title carries repo/file/branch/worktree
-///    stats, body is the file list)
-/// 2. Optional PR status strip (1 row) — only when PR data is available
+/// Splits the frame into two regions:
+/// 1. Main pane (bordered block; title carries file/branch stats, body is
+///    the file list)
+/// 2. Persistent bottom bar (1 row) — PR status on the left when a PR is
+///    open, repo name right-aligned on the right (always rendered)
 ///
-/// The diff overlay is drawn on top when visible. The old bottom status
-/// line is gone — all of its content lives in the main pane's title now.
+/// The diff overlay is drawn on top when visible.
 fn render(frame: &mut Frame, state: &AppState, config: &AppConfig, theme: &Theme) {
     let area = frame.area();
 
-    let has_pr = pr_line::has_pr_line(state);
-    let pr_line_height: u16 = if has_pr { 1 } else { 0 };
+    let has_pr = state.pr_state().info.is_some();
+    let bottom_bar_height: u16 = 1;
 
     let chunks = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
-            Constraint::Min(3),                 // main pane
-            Constraint::Length(pr_line_height), // optional PR status strip
+            Constraint::Min(3),                    // main pane
+            Constraint::Length(bottom_bar_height), // persistent bottom bar
         ])
         .split(area);
 
     let main_area = chunks[0];
-    let pr_line_area = chunks[1];
+    let bottom_bar_area = chunks[1];
 
     // 1. Main pane. Border color reflects PR state when a PR is open,
     // otherwise the usual flash / focused / default progression.
@@ -118,10 +119,9 @@ fn render(frame: &mut Frame, state: &AppState, config: &AppConfig, theme: &Theme
 
     render_file_list(frame, state, config, theme, inner);
 
-    // 2. Optional PR status strip (height = 0 when no PR data).
-    if has_pr {
-        pr_line::render_pr_line(frame, state, theme, pr_line_area);
-    }
+    // 2. Persistent bottom bar (PR status on the left when a PR exists,
+    //    repo name right-aligned on the right — always shown).
+    pr_line::render_pr_line(frame, state, theme, bottom_bar_area);
 
     // 3. Diff overlay on top of everything when it's visible.
     if state.is_overlay_visible() {
@@ -150,7 +150,7 @@ fn render(frame: &mut Frame, state: &AppState, config: &AppConfig, theme: &Theme
 
 /// Return the main pane border color derived from the current PR state.
 /// Falls back to the theme's default border color when no PR data exists
-/// (though the caller normally guards on `has_pr_line` first).
+/// (though the caller normally guards on `has_pr` first).
 fn pr_border_color_from_state(state: &AppState, theme: &Theme) -> ratatui::style::Color {
     state
         .pr_state()

@@ -28,30 +28,57 @@ pub enum FsWatcherEvent {
 }
 
 /// Classify a single path into one of the three categories.
+///
+/// Recognizes both main-gitdir paths (`.git/HEAD`, `.git/index`, `.git/refs/heads/…`)
+/// and linked-worktree gitdir paths (`.git/worktrees/<name>/HEAD`,
+/// `.git/worktrees/<name>/index`). Linked worktrees store their own `HEAD`
+/// and `index` under `.git/worktrees/<name>/` while sharing `refs/heads/`
+/// and `packed-refs` with the common (main) gitdir.
 pub fn classify_path(path: &Path) -> PathClass {
     let s = path.to_string_lossy();
-    if s.contains("/.git/") {
-        if s.ends_with("/.git/HEAD") {
-            return PathClass::HeadChange;
-        }
-        if s.ends_with("/.git/packed-refs") {
-            return PathClass::HeadChange;
-        }
-        if s.contains("/.git/refs/heads/") {
-            return PathClass::HeadChange;
-        }
-        if s.ends_with("/.git/index") {
-            return PathClass::FsChange;
-        }
-        // Remote-side refs: treat as FsChange (refresh status/ahead-behind)
-        // but not HeadChange (doesn't move local HEAD).
-        if s.contains("/.git/refs/remotes/") {
-            return PathClass::FsChange;
-        }
-        PathClass::Ignored
-    } else {
-        PathClass::FsChange
+    if !s.contains("/.git/") {
+        return PathClass::FsChange;
     }
+
+    // Reflog files are named like real refs (e.g. `.git/logs/HEAD`) but are
+    // write-only history, not live state — always ignore them.
+    if s.contains("/.git/logs/") {
+        return PathClass::Ignored;
+    }
+
+    // HEAD files: main gitdir OR linked worktree gitdir.
+    //   .git/HEAD                        → main worktree's HEAD
+    //   .git/worktrees/<name>/HEAD       → linked worktree's HEAD
+    if s.ends_with("/.git/HEAD") || (s.contains("/.git/worktrees/") && s.ends_with("/HEAD")) {
+        return PathClass::HeadChange;
+    }
+
+    // packed-refs lives in the common gitdir and is shared across worktrees.
+    if s.ends_with("/.git/packed-refs") {
+        return PathClass::HeadChange;
+    }
+
+    // Branch refs live in the common gitdir; shared by all worktrees.
+    if s.contains("/.git/refs/heads/") {
+        return PathClass::HeadChange;
+    }
+
+    // index files: main gitdir OR linked worktree gitdir.
+    //   .git/index                       → main worktree's staging index
+    //   .git/worktrees/<name>/index      → linked worktree's staging index
+    // Either firing should trigger a `git.status()` recompute so that
+    // freshly-committed files disappear from the Changes tab.
+    if s.ends_with("/.git/index") || (s.contains("/.git/worktrees/") && s.ends_with("/index")) {
+        return PathClass::FsChange;
+    }
+
+    // Remote-side refs: treat as FsChange (refresh status/ahead-behind)
+    // but not HeadChange (doesn't move local HEAD).
+    if s.contains("/.git/refs/remotes/") {
+        return PathClass::FsChange;
+    }
+
+    PathClass::Ignored
 }
 
 /// Filesystem watcher that sends debounced change notifications
@@ -115,20 +142,38 @@ impl FsWatcher {
             .watch(repo_path, RecursiveMode::Recursive)
             .context("Failed to watch repository path")?;
 
-        // Watch key .git files directly (not all of .git/, which is noisy)
+        // Watch key .git files directly (not all of .git/, which is noisy).
+        //
+        // Notes on linked worktrees:
+        //   - `resolve_git_dir` returns the **worktree-specific** gitdir,
+        //     e.g. `<main>/.git/worktrees/<name>/`. The worktree-specific
+        //     `HEAD` and `index` live there and must be watched directly.
+        //   - `resolve_common_git_dir` returns the **common** gitdir
+        //     (`<main>/.git/`). `refs/heads/<branch>` and `packed-refs`
+        //     live there and are shared across all worktrees. They must
+        //     also be watched so branch-ref advances in a linked worktree
+        //     are observed.
+        //   - For a main worktree the two resolvers return the same path;
+        //     the `!=` guard avoids redundant watches without duplicating
+        //     setup branches.
         if let Some(git_dir) = crate::git::resolve_git_dir(repo_path) {
-            for candidate in [
-                git_dir.join("index"),
-                git_dir.join("HEAD"),
-                git_dir.join("packed-refs"),
-            ] {
+            // Worktree-specific files: HEAD + index. packed-refs is NOT in
+            // the worktree-specific dir (only in common) — skip it here.
+            for candidate in [git_dir.join("index"), git_dir.join("HEAD")] {
                 if candidate.exists() {
                     let _ = debouncer.watch(&candidate, RecursiveMode::NonRecursive);
                 }
             }
-            // Watch refs/heads recursively so both flat and nested branches
+        }
+        if let Some(common_dir) = crate::git::resolve_common_git_dir(repo_path) {
+            // packed-refs: may or may not exist depending on `git gc` state.
+            let packed_refs = common_dir.join("packed-refs");
+            if packed_refs.exists() {
+                let _ = debouncer.watch(&packed_refs, RecursiveMode::NonRecursive);
+            }
+            // refs/heads: watched recursively so nested branches
             // (e.g., refs/heads/feature/foo) are observed.
-            let refs_heads = git_dir.join("refs").join("heads");
+            let refs_heads = common_dir.join("refs").join("heads");
             if refs_heads.exists() {
                 let _ = debouncer.watch(&refs_heads, RecursiveMode::Recursive);
             }
@@ -206,6 +251,64 @@ mod tests {
     fn test_classify_git_config_is_ignored() {
         assert_eq!(
             classify_path(Path::new("/repo/.git/config")),
+            PathClass::Ignored
+        );
+    }
+
+    // --- Linked worktree gitdir paths --------------------------------------
+    //
+    // For a linked worktree, `HEAD` and `index` live in a per-worktree
+    // subdirectory under `.git/worktrees/<name>/`, not directly under `.git/`.
+    // These cases exist for the previous classifier regression where a
+    // commit inside a linked worktree failed to refresh the Changes tab
+    // because `.git/worktrees/<name>/index` was classified as Ignored.
+
+    #[test]
+    fn test_classify_linked_worktree_index_is_fs_change() {
+        assert_eq!(
+            classify_path(Path::new("/repo/.git/worktrees/feat/index")),
+            PathClass::FsChange
+        );
+        // Nested worktree name (git allows `git worktree add` with nested
+        // names via the internal `-` separator; the on-disk path can still
+        // use slashes through the `.git/worktrees/<slug>/` dir).
+        assert_eq!(
+            classify_path(Path::new("/repo/.git/worktrees/drew-tabbed-view/index")),
+            PathClass::FsChange
+        );
+    }
+
+    #[test]
+    fn test_classify_linked_worktree_head_is_head_change() {
+        assert_eq!(
+            classify_path(Path::new("/repo/.git/worktrees/feat/HEAD")),
+            PathClass::HeadChange
+        );
+    }
+
+    #[test]
+    fn test_classify_reflog_is_ignored() {
+        // `.git/logs/HEAD` is a reflog, not a real HEAD update — should be
+        // Ignored even though the filename is `HEAD`.
+        assert_eq!(
+            classify_path(Path::new("/repo/.git/logs/HEAD")),
+            PathClass::Ignored
+        );
+        assert_eq!(
+            classify_path(Path::new("/repo/.git/logs/refs/heads/main")),
+            PathClass::Ignored
+        );
+    }
+
+    #[test]
+    fn test_classify_linked_worktree_commondir_file_is_ignored() {
+        // .git/worktrees/<name>/commondir — internal metadata, not a trigger.
+        assert_eq!(
+            classify_path(Path::new("/repo/.git/worktrees/feat/commondir")),
+            PathClass::Ignored
+        );
+        assert_eq!(
+            classify_path(Path::new("/repo/.git/worktrees/feat/gitdir")),
             PathClass::Ignored
         );
     }

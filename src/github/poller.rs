@@ -8,7 +8,7 @@ use crossbeam_channel::{bounded, Receiver, Sender};
 use crate::github::client::{get_remote_url, parse_remote_url};
 use crate::github::convert;
 use crate::github::query::{self, GqlResponse};
-use crate::state::PrDisplayInfo;
+use crate::state::{PrDisplayInfo, PrStatus};
 
 /// Events sent from the GitHub polling thread to the main event loop.
 #[derive(Debug)]
@@ -23,7 +23,7 @@ pub enum GitHubEvent {
 
 /// Fetch PR data via a single GraphQL request.
 ///
-/// Returns `Ok(None)` when the repository has no matching open PR.
+/// Returns `Ok(None)` when the repository has no matching open or merged PR.
 /// Returns `Err` for network failures, JSON parse failures, or any
 /// non-empty `errors` array in the GraphQL response.
 ///
@@ -91,14 +91,20 @@ pub fn start_polling(repo_path: &Path, branch: &str, token: &str) -> Receiver<Gi
                 let event = match fetch_pr_data(&owner, &repo, &branch, &token) {
                     Ok(Some(info)) => {
                         poll_manager.report(&info);
-                        GitHubEvent::PrUpdate(info)
+                        let is_merged = info.state == PrStatus::Merged;
+                        let event = GitHubEvent::PrUpdate(info);
+                        if is_merged {
+                            let _ = tx.send(event);
+                            tracing::info!(branch = %branch, "PR merged, stopping poller");
+                            break;
+                        }
+                        event
                     }
                     Ok(None) => GitHubEvent::NoPr,
                     Err(e) => GitHubEvent::Error(format!("{e:#}")),
                 };
 
                 if tx.send(event).is_err() {
-                    // Receiver dropped, stop polling
                     break;
                 }
 

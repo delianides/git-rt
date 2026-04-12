@@ -14,7 +14,7 @@ pub fn to_pr_display_info(data: Option<GqlData>) -> Option<PrDisplayInfo> {
 }
 
 fn pr_to_display_info(pr: GqlPullRequest) -> PrDisplayInfo {
-    let state = map_pr_state(pr.is_draft, &pr.merge_state_status);
+    let state = map_pr_state(&pr.state, pr.is_draft, &pr.merge_state_status);
     let mergeable = map_mergeable(&pr.mergeable, &pr.merge_state_status);
     let reviews = dedup_reviews(pr.reviews.nodes);
     let (checks_vec, counts) = flatten_check_runs(&pr.commits);
@@ -49,8 +49,10 @@ struct ChecksCounts {
     skipped: usize,
 }
 
-fn map_pr_state(is_draft: bool, merge_state_status: &str) -> PrStatus {
-    if is_draft || merge_state_status == "DRAFT" {
+fn map_pr_state(api_state: &str, is_draft: bool, merge_state_status: &str) -> PrStatus {
+    if api_state == "MERGED" {
+        PrStatus::Merged
+    } else if is_draft || merge_state_status == "DRAFT" {
         PrStatus::Draft
     } else {
         PrStatus::Open
@@ -166,6 +168,7 @@ mod tests {
           {
             "number": 42,
             "title": "Add feature X",
+            "state": "OPEN",
             "isDraft": false,
             "mergeable": "MERGEABLE",
             "mergeStateStatus": "CLEAN",
@@ -249,6 +252,7 @@ mod tests {
           {
             "number": 1,
             "title": "wip",
+            "state": "OPEN",
             "isDraft": true,
             "mergeable": "MERGEABLE",
             "mergeStateStatus": "DRAFT",
@@ -279,6 +283,7 @@ mod tests {
           {
             "number": 1,
             "title": "t",
+            "state": "OPEN",
             "isDraft": false,
             "mergeable": "CONFLICTING",
             "mergeStateStatus": "DIRTY",
@@ -309,6 +314,7 @@ mod tests {
           {
             "number": 1,
             "title": "t",
+            "state": "OPEN",
             "isDraft": false,
             "mergeable": "MERGEABLE",
             "mergeStateStatus": "BEHIND",
@@ -339,6 +345,7 @@ mod tests {
           {
             "number": 1,
             "title": "t",
+            "state": "OPEN",
             "isDraft": false,
             "mergeable": "MERGEABLE",
             "mergeStateStatus": "UNSTABLE",
@@ -395,6 +402,7 @@ mod tests {
           {
             "number": 1,
             "title": "t",
+            "state": "OPEN",
             "isDraft": false,
             "mergeable": "MERGEABLE",
             "mergeStateStatus": "CLEAN",
@@ -444,6 +452,7 @@ mod tests {
           {
             "number": 1,
             "title": "t",
+            "state": "OPEN",
             "isDraft": false,
             "mergeable": "MERGEABLE",
             "mergeStateStatus": "CLEAN",
@@ -495,6 +504,7 @@ mod tests {
           {
             "number": 1,
             "title": "t",
+            "state": "OPEN",
             "isDraft": false,
             "mergeable": "MERGEABLE",
             "mergeStateStatus": "CLEAN",
@@ -512,6 +522,7 @@ mod tests {
                           "checkRuns": {
                             "nodes": [
                               { "name": "lint",  "status": "COMPLETED", "conclusion": "NEUTRAL" },
+
                               { "name": "retry", "status": "COMPLETED", "conclusion": "STALE" }
                             ]
                           }
@@ -548,6 +559,7 @@ mod tests {
           {
             "number": 9,
             "title": "empty",
+            "state": "OPEN",
             "isDraft": false,
             "mergeable": "MERGEABLE",
             "mergeStateStatus": "CLEAN",
@@ -581,6 +593,7 @@ mod tests {
           {
             "number": 1,
             "title": "t",
+            "state": "OPEN",
             "isDraft": false,
             "mergeable": "MERGEABLE",
             "mergeStateStatus": "CLEAN",
@@ -617,6 +630,7 @@ mod tests {
           {
             "number": 1,
             "title": "t",
+            "state": "OPEN",
             "isDraft": false,
             "mergeable": "MERGEABLE",
             "mergeStateStatus": "CLEAN",
@@ -641,5 +655,43 @@ mod tests {
         assert_eq!(info.reviews.len(), 1);
         assert_eq!(info.reviews[0].reviewer, "bob");
         assert_eq!(info.reviews[0].state, ReviewState::Approved);
+    }
+
+    #[test]
+    fn merged_pr_maps_to_merged_status() {
+        let resp = parse(
+            r#"{
+  "data": {
+    "repository": {
+      "pullRequests": {
+        "nodes": [
+          {
+            "number": 99,
+            "title": "Ship it",
+            "state": "MERGED",
+            "isDraft": false,
+            "mergeable": "UNKNOWN",
+            "mergeStateStatus": "UNKNOWN",
+            "comments": { "totalCount": 5 },
+            "labels": { "nodes": [{ "name": "shipped" }] },
+            "assignees": { "nodes": [] },
+            "reviews": {
+              "nodes": [
+                { "author": { "login": "reviewer" }, "state": "APPROVED" }
+              ]
+            },
+            "commits": { "nodes": [] }
+          }
+        ]
+      }
+    }
+  }
+}"#,
+        );
+        let info = to_pr_display_info(resp.data).expect("expected Some PrDisplayInfo");
+        assert_eq!(info.number, 99);
+        assert_eq!(info.title, "Ship it");
+        assert_eq!(info.state, PrStatus::Merged);
+        assert_eq!(info.comment_count, 5);
     }
 }

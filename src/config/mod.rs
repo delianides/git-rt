@@ -20,6 +20,9 @@ pub struct AppConfig {
     pub keys: KeyConfig,
     /// Named actions that can be triggered on files
     pub actions: HashMap<String, ActionConfig>,
+    /// Base branch for branch-scoped diff (e.g. "main", "develop").
+    /// Auto-detected from remote if omitted.
+    pub base_branch: Option<String>,
 }
 
 impl Default for AppConfig {
@@ -31,6 +34,7 @@ impl Default for AppConfig {
             pr: PrConfig::default(),
             keys: KeyConfig::default(),
             actions: HashMap::new(),
+            base_branch: None,
         }
     }
 }
@@ -306,6 +310,25 @@ enter = "inline"
             "/home/user/repo/src/main.rs",
         );
         assert_eq!(cmd.unwrap(), "open /home/user/repo/src/main.rs");
+    }
+
+    #[test]
+    fn test_base_branch_config() {
+        let dir = std::env::temp_dir().join("git-rt-test-config-base-branch");
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("config.toml");
+        std::fs::write(&path, "base_branch = \"develop\"\n").unwrap();
+
+        let config = AppConfig::load(Some(&path)).unwrap();
+        assert_eq!(config.base_branch.as_deref(), Some("develop"));
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn test_base_branch_default_none() {
+        let config = AppConfig::default();
+        assert!(config.base_branch.is_none());
     }
 
     #[test]

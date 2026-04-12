@@ -428,6 +428,95 @@ impl GitRepo {
         Some(id.detach())
     }
 
+    /// Compute the merge base between HEAD and the given base ref.
+    ///
+    /// Returns `None` if the ref can't be resolved, if HEAD equals the merge base
+    /// (i.e., the current branch is fully behind the base), or if HEAD is detached
+    /// and equals the base commit.
+    pub fn merge_base(&self, base_ref: &str) -> Result<Option<gix::ObjectId>, GitFailure> {
+        let base_id = self.resolve_ref_to_commit(base_ref);
+        let base_id = match base_id {
+            Some(id) => id,
+            None => return Ok(None),
+        };
+
+        let head_commit = match self.repo.head_commit() {
+            Ok(c) => c,
+            Err(e) => return Err(GitFailure::EnvChange(format!("merge_base head: {e}"))),
+        };
+        let head_id = head_commit.id().detach();
+
+        if head_id == base_id {
+            return Ok(None);
+        }
+
+        let base = self
+            .find_merge_base(head_id, base_id)
+            .map_err(|e| GitFailure::EnvChange(format!("merge_base walk: {e}")))?;
+
+        match base {
+            Some(mb) if mb == head_id => Ok(None),
+            other => Ok(other),
+        }
+    }
+
+    /// Try to resolve a ref name to a commit ObjectId.
+    ///
+    /// Tries multiple candidate forms: as-is, "origin/<name>",
+    /// "refs/remotes/origin/<name>", and "refs/heads/<name>".
+    fn resolve_ref_to_commit(&self, name: &str) -> Option<gix::ObjectId> {
+        let candidates = [
+            name.to_string(),
+            format!("origin/{name}"),
+            format!("refs/remotes/origin/{name}"),
+            format!("refs/heads/{name}"),
+        ];
+
+        for candidate in &candidates {
+            if let Ok(reference) = self.repo.find_reference(candidate.as_str()) {
+                let id = reference.id().detach();
+                if let Ok(obj) = self.repo.find_object(id) {
+                    if obj.kind == gix::object::Kind::Commit {
+                        return Some(id);
+                    }
+                }
+            }
+        }
+
+        None
+    }
+
+    /// Find the merge base (most recent common ancestor) of two commits.
+    ///
+    /// TODO: This collects all ancestors of `b` into memory before walking `a`.
+    /// For repos with very long histories (100k+ commits), consider using an
+    /// interleaved BFS or gix's built-in merge-base support for better perf.
+    fn find_merge_base(
+        &self,
+        a: gix::ObjectId,
+        b: gix::ObjectId,
+    ) -> Result<Option<gix::ObjectId>, Box<dyn std::error::Error + Send + Sync>> {
+        let b_ancestors: std::collections::HashSet<gix::ObjectId> = {
+            let mut set = std::collections::HashSet::new();
+            let walk = self.repo.rev_walk([b]).all()?;
+            for info in walk {
+                let info = info?;
+                set.insert(info.id);
+            }
+            set
+        };
+
+        let walk = self.repo.rev_walk([a]).all()?;
+        for info in walk {
+            let info = info?;
+            if b_ancestors.contains(&info.id) {
+                return Ok(Some(info.id));
+            }
+        }
+
+        Ok(None)
+    }
+
     /// Check if the repo is in a special state (rebase, merge, cherry-pick, etc.)
     pub fn repo_state(&self) -> Option<String> {
         match self.repo.state() {
@@ -443,6 +532,265 @@ impl GitRepo {
             Some(gix::state::InProgress::RevertSequence) => Some("REVERTING".to_string()),
             None => None,
         }
+    }
+
+    /// Resolve the base branch name using priority:
+    /// 1. Explicit override (CLI flag or config value, pre-merged by caller)
+    /// 2. Auto-detect from origin/HEAD
+    /// 3. Fallback to origin/main, then origin/master
+    pub fn resolve_base_branch(&self, explicit_base: Option<&str>) -> Option<String> {
+        if let Some(base) = explicit_base {
+            return Some(base.to_string());
+        }
+
+        // Priority 2: resolve origin/HEAD symbolic ref to its target.
+        // gix's symbolic ref API can be tricky, so read the file directly.
+        let origin_head_path = self.repo.git_dir().join("refs/remotes/origin/HEAD");
+        if let Ok(content) = std::fs::read_to_string(&origin_head_path) {
+            if let Some(target) = content.strip_prefix("ref: refs/remotes/origin/") {
+                return Some(target.trim().to_string());
+            }
+        }
+
+        // Priority 4: fallback
+        if self
+            .resolve_ref_to_commit("refs/remotes/origin/main")
+            .is_some()
+        {
+            return Some("main".to_string());
+        }
+        if self
+            .resolve_ref_to_commit("refs/remotes/origin/master")
+            .is_some()
+        {
+            return Some("master".to_string());
+        }
+
+        None
+    }
+
+    /// Compute file status for all changes between a merge base commit and the
+    /// current working tree (committed + uncommitted on this branch).
+    ///
+    /// 1. Loads the merge base commit tree and collects all blobs into a map.
+    /// 2. Compares each blob against the current worktree file.
+    /// 3. Adds files that are new on this branch (not in the merge base).
+    pub fn branch_status(&self, merge_base: gix::ObjectId) -> Result<Vec<FileEntry>, GitFailure> {
+        use std::collections::HashMap;
+
+        let work_dir = match self.repo.workdir() {
+            Some(d) => d.to_path_buf(),
+            None => return Ok(vec![]),
+        };
+
+        // Load the merge base tree
+        let mb_commit = self
+            .repo
+            .find_object(merge_base)
+            .map_err(|e| GitFailure::EnvChange(format!("branch_status find merge base: {e}")))?
+            .try_into_commit()
+            .map_err(|e| GitFailure::EnvChange(format!("branch_status into commit: {e}")))?;
+        let mb_tree = mb_commit
+            .tree()
+            .map_err(|e| GitFailure::EnvChange(format!("branch_status tree: {e}")))?;
+
+        // Collect all blobs from the merge base tree
+        let mut mb_blobs: HashMap<String, gix::ObjectId> = HashMap::new();
+        collect_tree_blobs(&self.repo, &mb_tree, "", &mut mb_blobs)
+            .map_err(|e| GitFailure::EnvChange(format!("branch_status walk tree: {e}")))?;
+
+        // Current index-worktree status for untracked file detection
+        let wt_status = self.status().unwrap_or_default();
+
+        let mut entries: HashMap<String, FileEntry> = HashMap::new();
+
+        // Compare merge base blobs against worktree files
+        for (path, blob_id) in &mb_blobs {
+            let worktree_path = work_dir.join(path);
+            if worktree_path.exists() {
+                let blob = match self.repo.find_object(*blob_id) {
+                    Ok(b) => b,
+                    Err(_) => continue,
+                };
+                let old_text = String::from_utf8_lossy(&blob.data);
+                let new_text = match std::fs::read_to_string(&worktree_path) {
+                    Ok(t) => t,
+                    Err(_) => continue,
+                };
+
+                if old_text.as_ref() != new_text.as_str() {
+                    let (ins, del) = count_line_changes(&old_text, &new_text);
+                    entries.insert(
+                        path.clone(),
+                        FileEntry {
+                            path: path.clone(),
+                            status: FileStatus::Modified,
+                            insertions: ins,
+                            deletions: del,
+                        },
+                    );
+                }
+            } else {
+                // File existed at merge base but is gone now
+                let blob = match self.repo.find_object(*blob_id) {
+                    Ok(b) => b,
+                    Err(_) => continue,
+                };
+                let old_text = String::from_utf8_lossy(&blob.data);
+                let del = old_text.lines().count();
+                entries.insert(
+                    path.clone(),
+                    FileEntry {
+                        path: path.clone(),
+                        status: FileStatus::Deleted,
+                        insertions: 0,
+                        deletions: del,
+                    },
+                );
+            }
+        }
+
+        // Add files that are in the worktree but not in the merge base (new on this branch)
+        for wt_entry in &wt_status {
+            if !mb_blobs.contains_key(&wt_entry.path) && !entries.contains_key(&wt_entry.path) {
+                let mut entry = wt_entry.clone();
+                if entry.status != FileStatus::Untracked {
+                    entry.status = FileStatus::Added;
+                }
+                let worktree_path = work_dir.join(&entry.path);
+                if let Ok(content) = std::fs::read_to_string(&worktree_path) {
+                    entry.insertions = content.lines().count();
+                    entry.deletions = 0;
+                }
+                entries.insert(entry.path.clone(), entry);
+            }
+        }
+
+        // Check HEAD tree for files that were added in commits on this branch
+        // but are now clean relative to the index (i.e., committed and unchanged
+        // in the worktree, so `self.status()` doesn't report them). These files
+        // still need to appear in the branch diff since they differ from the
+        // merge base.
+        if let Ok(head_commit) = self.repo.head_commit() {
+            if let Ok(head_tree) = head_commit.tree() {
+                let mut head_blobs: HashMap<String, gix::ObjectId> = HashMap::new();
+                let _ = collect_tree_blobs(&self.repo, &head_tree, "", &mut head_blobs);
+
+                for path in head_blobs.keys() {
+                    if !mb_blobs.contains_key(path) && !entries.contains_key(path) {
+                        let worktree_path = work_dir.join(path);
+                        if worktree_path.exists() {
+                            let new_text =
+                                std::fs::read_to_string(&worktree_path).unwrap_or_default();
+                            entries.insert(
+                                path.clone(),
+                                FileEntry {
+                                    path: path.clone(),
+                                    status: FileStatus::Added,
+                                    insertions: new_text.lines().count(),
+                                    deletions: 0,
+                                },
+                            );
+                        }
+                    }
+                }
+            }
+        }
+
+        let mut result: Vec<FileEntry> = entries.into_values().collect();
+        result.sort_by(|a, b| a.path.cmp(&b.path));
+        Ok(result)
+    }
+
+    /// Compute the unified diff for a single file between the merge base
+    /// and the current working tree.
+    pub fn branch_diff_file(
+        &self,
+        path: &str,
+        merge_base: gix::ObjectId,
+    ) -> Result<FileDiff, GitFailure> {
+        let work_dir = match self.repo.workdir() {
+            Some(d) => d.to_path_buf(),
+            None => return Ok(FileDiff::default()),
+        };
+        let worktree_path = work_dir.join(path);
+
+        // Load the merge base tree and find the blob for this path
+        let mb_commit = self
+            .repo
+            .find_object(merge_base)
+            .map_err(|e| GitFailure::EnvChange(format!("branch_diff_file find mb: {e}")))?
+            .try_into_commit()
+            .map_err(|e| GitFailure::EnvChange(format!("branch_diff_file into commit: {e}")))?;
+        let mb_tree = mb_commit
+            .tree()
+            .map_err(|e| GitFailure::EnvChange(format!("branch_diff_file tree: {e}")))?;
+
+        let old_text = self.find_blob_in_tree(&mb_tree, path);
+
+        match (old_text, worktree_path.exists()) {
+            (Some(old), true) => {
+                // File exists in both merge base and worktree — diff them
+                let new_text = match std::fs::read_to_string(&worktree_path) {
+                    Ok(t) => t,
+                    Err(_) => return Ok(FileDiff::default()),
+                };
+                Ok(synthesize_text_diff(&old, &new_text))
+            }
+            (Some(old), false) => {
+                // File was in merge base but deleted
+                Ok(synthesize_deletion_diff(&old))
+            }
+            (None, true) => {
+                // New file on this branch — all additions
+                self.diff_untracked(path)
+                    .map_err(|e| GitFailure::Failed(format!("branch_diff_file untracked: {e}")))
+            }
+            (None, false) => {
+                // File doesn't exist anywhere
+                Ok(FileDiff::default())
+            }
+        }
+    }
+
+    /// Look up a file path in a tree and return its blob content as a String.
+    fn find_blob_in_tree(&self, tree: &gix::Tree<'_>, path: &str) -> Option<String> {
+        let parts: Vec<&str> = path.split('/').collect();
+        self.walk_tree_for_blob(tree, &parts)
+    }
+
+    /// Recursively walk a tree to find a blob at the given path parts.
+    fn walk_tree_for_blob(&self, tree: &gix::Tree<'_>, parts: &[&str]) -> Option<String> {
+        use gix::bstr::ByteSlice;
+
+        if parts.is_empty() {
+            return None;
+        }
+
+        for entry_ref in tree.iter() {
+            let entry = entry_ref.ok()?;
+            let name = entry.filename().to_str().ok()?;
+            if name != parts[0] {
+                continue;
+            }
+
+            if parts.len() == 1 {
+                // Leaf — should be a blob
+                let obj = self.repo.find_object(entry.id()).ok()?;
+                return std::str::from_utf8(&obj.data).ok().map(|s| s.to_string());
+            } else {
+                // Subtree — recurse
+                let subtree = self
+                    .repo
+                    .find_object(entry.id())
+                    .ok()?
+                    .try_into_tree()
+                    .ok()?;
+                return self.walk_tree_for_blob(&subtree, &parts[1..]);
+            }
+        }
+
+        None
     }
 
     /// Create a synthetic diff for untracked files (all lines as additions)
@@ -497,6 +845,39 @@ fn count_reachable_exclusive(
     }
 
     Ok(count)
+}
+
+/// Recursively collect all blob entries from a gix tree into a path -> id map.
+fn collect_tree_blobs(
+    repo: &gix::Repository,
+    tree: &gix::Tree<'_>,
+    prefix: &str,
+    out: &mut std::collections::HashMap<String, gix::ObjectId>,
+) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    use gix::bstr::ByteSlice;
+    use gix::object::tree::EntryKind;
+
+    for entry_ref in tree.iter() {
+        let entry = entry_ref?;
+        let name = entry.filename().to_str().unwrap_or("").to_string();
+        let path = if prefix.is_empty() {
+            name.clone()
+        } else {
+            format!("{prefix}/{name}")
+        };
+
+        match entry.mode().kind() {
+            EntryKind::Blob | EntryKind::BlobExecutable => {
+                out.insert(path, entry.id().detach());
+            }
+            EntryKind::Tree => {
+                let subtree = repo.find_object(entry.id())?.try_into_tree()?;
+                collect_tree_blobs(repo, &subtree, &path, out)?;
+            }
+            _ => {}
+        }
+    }
+    Ok(())
 }
 
 /// Synthesize a FileDiff between two texts using a simple prefix/suffix trim.
@@ -890,11 +1271,80 @@ mod tests {
     }
 
     #[test]
+    fn test_merge_base_returns_none_on_same_branch() {
+        let repo = GitRepo::new(std::path::Path::new(".")).unwrap();
+        let branch = repo.branch_name().unwrap();
+        let result = repo.merge_base(&branch);
+        assert!(result.is_ok());
+        assert!(result.unwrap().is_none());
+    }
+
+    #[test]
+    fn test_merge_base_returns_none_for_nonexistent_ref() {
+        let repo = GitRepo::new(std::path::Path::new(".")).unwrap();
+        let result = repo.merge_base("nonexistent-branch-xyz-99999");
+        assert!(result.is_ok());
+        assert!(result.unwrap().is_none());
+    }
+
+    #[test]
     fn test_new_returns_not_a_repo_for_invalid_path() {
         let temp = std::env::temp_dir().join("git-rt-test-not-a-repo-task2");
         std::fs::create_dir_all(&temp).unwrap();
         let result = GitRepo::new(&temp);
         assert!(result.is_err());
         std::fs::remove_dir_all(&temp).ok();
+    }
+
+    #[test]
+    fn test_resolve_base_branch_with_explicit() {
+        let repo = GitRepo::new(std::path::Path::new(".")).unwrap();
+        let result = repo.resolve_base_branch(Some("main"));
+        assert_eq!(result, Some("main".to_string()));
+    }
+
+    #[test]
+    fn test_resolve_base_branch_none_when_no_remote() {
+        let dir = std::env::temp_dir().join("git-rt-test-no-remote");
+        std::fs::create_dir_all(&dir).ok();
+        let result = std::process::Command::new("git")
+            .args(["init", "-b", "main"])
+            .current_dir(&dir)
+            .output();
+        if result.is_ok() {
+            if let Ok(repo) = GitRepo::new(&dir) {
+                let result = repo.resolve_base_branch(None);
+                assert!(result.is_none(), "should be None with no remote");
+            }
+        }
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn test_branch_status_returns_entries() {
+        let repo = GitRepo::new(std::path::Path::new(".")).unwrap();
+
+        if let Some(base) = repo.resolve_base_branch(None) {
+            if let Ok(Some(mb)) = repo.merge_base(&base) {
+                let result = repo.branch_status(mb);
+                assert!(result.is_ok());
+                let entries = result.unwrap();
+                for entry in &entries {
+                    assert!(!entry.path.is_empty());
+                    assert!(!entry.path.starts_with('/'));
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn test_branch_diff_file_missing_path() {
+        let repo = GitRepo::new(std::path::Path::new(".")).unwrap();
+        if let Some(base) = repo.resolve_base_branch(None) {
+            if let Ok(Some(mb)) = repo.merge_base(&base) {
+                let result = repo.branch_diff_file("nonexistent-file-xyz.rs", mb);
+                assert!(result.is_ok());
+            }
+        }
     }
 }

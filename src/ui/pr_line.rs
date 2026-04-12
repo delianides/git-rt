@@ -58,17 +58,11 @@ fn build_line_from_info(info: &PrDisplayInfo, theme: &Theme) -> Line<'static> {
     let mut spans: Vec<Span<'static>> = Vec::new();
     spans.push(Span::raw(" "));
 
-    // PR number in state color + bold, with OSC 8 hyperlink when URL is available.
-    let pr_text = if info.url.is_empty() {
-        format!("PR #{}", info.number)
-    } else {
-        format!(
-            "\x1b]8;;{}\x1b\\PR #{}\x1b]8;;\x1b\\",
-            info.url, info.number
-        )
-    };
+    // PR number in state color + bold.
+    // OSC 8 hyperlink is applied post-render in render_pr_line() as a buffer
+    // workaround for https://github.com/ratatui/ratatui/issues/902.
     spans.push(Span::styled(
-        pr_text,
+        format!("PR #{}", info.number),
         Style::default()
             .fg(state_color)
             .add_modifier(Modifier::BOLD),
@@ -147,9 +141,33 @@ fn mergeable_indicator(status: &MergeableStatus) -> Option<(&'static str, &'stat
 }
 
 /// Render the PR status line into `area`. Expects a 1-row Rect.
+///
+/// After rendering the line normally via ratatui, this applies an OSC 8
+/// hyperlink to the PR number cells in the buffer. This is a workaround
+/// for <https://github.com/ratatui/ratatui/issues/902> — ratatui
+/// miscalculates the width of ANSI escape sequences, so we render plain
+/// text first and patch the buffer cells with hyperlink escapes afterward.
 pub fn render_pr_line(frame: &mut Frame, state: &AppState, theme: &Theme, area: Rect) {
-    if let Some(line) = build_pr_line(state.pr_state(), theme) {
+    let pr_state = state.pr_state();
+    if let Some(line) = build_pr_line(pr_state, theme) {
         frame.render_widget(Paragraph::new(line), area);
+
+        // Apply OSC 8 hyperlink to the PR number cells in the buffer.
+        if let Some(info) = &pr_state.info {
+            if !info.url.is_empty() {
+                let pr_label = format!("PR #{}", info.number);
+                // The PR number starts at column 1 (column 0 is leading space).
+                let start_col = area.x + 1;
+                let buf = frame.buffer_mut();
+                for (i, ch) in pr_label.chars().enumerate() {
+                    let col = start_col + i as u16;
+                    if col < area.x + area.width {
+                        let hyperlink = format!("\x1b]8;;{}\x07{}\x1b]8;;\x07", info.url, ch);
+                        buf[(col, area.y)].set_symbol(&hyperlink);
+                    }
+                }
+            }
+        }
     }
 }
 
@@ -276,18 +294,18 @@ mod tests {
     }
 
     #[test]
-    fn test_pr_number_contains_osc8_hyperlink() {
+    fn test_pr_number_is_plain_text_in_line() {
+        // OSC 8 hyperlinks are applied at the buffer level in render_pr_line(),
+        // not embedded in span content. Verify the line contains plain text.
         let mut info = make_info(MergeableStatus::Clean, 0, 0, 0);
         info.url = "https://github.com/owner/repo/pull/142".to_string();
         let line = build_pr_line(&pr_state_with(info), &test_theme()).unwrap();
-        let pr_span = &line.spans[1];
-        let content = pr_span.content.as_ref();
-        assert!(content.contains("\x1b]8;;"), "missing OSC 8 open sequence");
+        let text = line_text(&line);
+        assert!(text.contains("PR #142"), "missing PR number");
         assert!(
-            content.contains("https://github.com/owner/repo/pull/142"),
-            "missing URL"
+            !text.contains("\x1b]8;;"),
+            "OSC 8 should not be in span content"
         );
-        assert!(content.contains("PR #142"), "missing visible text");
     }
 
     #[test]

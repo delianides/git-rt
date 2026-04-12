@@ -133,6 +133,8 @@ pub struct AppState {
     flash_message: Option<(String, Instant)>,
     /// Whether the diff overlay is currently shown
     overlay_visible: bool,
+    /// Whether the help popup is currently shown
+    help_visible: bool,
     /// PR widget state
     pr_state: PrState,
     /// When set, the pane border should flash until this instant.
@@ -168,6 +170,7 @@ impl AppState {
             repo_state: None,
             flash_message: None,
             overlay_visible: false,
+            help_visible: false,
             pr_state: PrState::default(),
             border_flash_until: None,
             merge_base: None,
@@ -349,6 +352,26 @@ impl AppState {
     pub fn hide_overlay(&mut self) {
         self.overlay_visible = false;
         self.diff_scroll = 0;
+    }
+
+    // -- Help overlay --
+
+    /// Returns true if the help popup is currently visible
+    pub fn is_help_visible(&self) -> bool {
+        self.help_visible
+    }
+
+    /// Show the help popup. Also hides the diff overlay to enforce the
+    /// "only one overlay at a time" rule.
+    pub fn show_help(&mut self) {
+        self.help_visible = true;
+        self.overlay_visible = false;
+        self.diff_scroll = 0;
+    }
+
+    /// Hide the help popup
+    pub fn hide_help(&mut self) {
+        self.help_visible = false;
     }
 
     // -- PR state --
@@ -833,6 +856,31 @@ mod tests {
         assert!(state.is_overlay_visible());
         state.hide_overlay();
         assert!(!state.is_overlay_visible());
+    }
+
+    #[test]
+    fn test_help_visible_default_false() {
+        let s = AppState::new(vec![], Duration::from_millis(600), "main".to_string());
+        assert!(!s.is_help_visible());
+    }
+
+    #[test]
+    fn test_show_hide_help() {
+        let mut s = AppState::new(vec![], Duration::from_millis(600), "main".to_string());
+        s.show_help();
+        assert!(s.is_help_visible());
+        s.hide_help();
+        assert!(!s.is_help_visible());
+    }
+
+    #[test]
+    fn test_show_help_hides_diff_overlay() {
+        let mut s = AppState::new(vec![], Duration::from_millis(600), "main".to_string());
+        s.show_overlay();
+        assert!(s.is_overlay_visible());
+        s.show_help();
+        assert!(s.is_help_visible());
+        assert!(!s.is_overlay_visible());
     }
 
     #[test]

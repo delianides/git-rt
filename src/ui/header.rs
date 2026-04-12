@@ -1,6 +1,6 @@
-//! Main pane title header — the compact `repo · N files +ins -del ·
-//! branch · worktree · ↑↓ · stash` line that lives in the rounded top
-//! border via `Block::title`.
+//! Main pane title header — the compact `N files +ins -del · branch ·
+//! ↑↓ · stash` line that lives in the rounded top border via
+//! `Block::title`.
 //!
 //! When a flash message is active (e.g., "Switched to worktree: X"),
 //! the title is replaced with the flash text for the flash duration so
@@ -30,30 +30,14 @@ pub fn build_header_title(state: &AppState, theme: &Theme) -> Line<'static> {
     let total_ins: usize = files.iter().map(|f| f.insertions).sum();
     let total_del: usize = files.iter().map(|f| f.deletions).sum();
 
-    let repo = state.repo_name();
     let branch = state.branch();
-    let worktree = state.worktree_name();
-    let show_worktree = !worktree.is_empty() && worktree != repo;
 
     let text_style = Style::default().fg(theme.header_text);
     let sep_style = Style::default().fg(theme.header_separator);
 
     let mut spans: Vec<Span<'static>> = vec![Span::raw(" ")];
-    let mut first = true;
 
-    // Helper: push ` · ` separator unless we're on the first segment.
-    // We handle this inline to avoid borrow-checker gymnastics with a closure.
-
-    // repo
-    if !repo.is_empty() {
-        spans.push(Span::styled(repo.to_string(), text_style));
-        first = false;
-    }
-
-    // file count + diff stats
-    if !first {
-        spans.push(Span::styled(" · ", sep_style));
-    }
+    // file count + diff stats (always shown)
     spans.push(Span::styled(format!("{file_count} files"), text_style));
     if total_ins > 0 || total_del > 0 {
         spans.push(Span::raw(" "));
@@ -67,43 +51,25 @@ pub fn build_header_title(state: &AppState, theme: &Theme) -> Line<'static> {
             Style::default().fg(theme.file_deletions),
         ));
     }
-    first = false;
 
     // branch
     if !branch.is_empty() {
-        if !first {
-            spans.push(Span::styled(" · ", sep_style));
-        }
+        spans.push(Span::styled(" · ", sep_style));
         spans.push(Span::styled(branch.to_string(), text_style));
-        first = false;
-    }
-
-    // worktree (only when distinct from repo)
-    if show_worktree {
-        if !first {
-            spans.push(Span::styled(" · ", sep_style));
-        }
-        spans.push(Span::styled(worktree.to_string(), text_style));
-        first = false;
     }
 
     // ahead/behind (only when non-zero)
     if let Some((ahead, behind)) = state.ahead_behind() {
         if ahead > 0 || behind > 0 {
-            if !first {
-                spans.push(Span::styled(" · ", sep_style));
-            }
+            spans.push(Span::styled(" · ", sep_style));
             spans.push(Span::styled(format!("↑{ahead} ↓{behind}"), text_style));
-            first = false;
         }
     }
 
     // stash count (only when > 0)
     let stash = state.stash_count();
     if stash > 0 {
-        if !first {
-            spans.push(Span::styled(" · ", sep_style));
-        }
+        spans.push(Span::styled(" · ", sep_style));
         spans.push(Span::styled(format!("{stash} stash"), text_style));
     }
 
@@ -138,7 +104,7 @@ mod tests {
     fn test_header_title_basic() {
         let s = fresh_state();
         let line = build_header_title(&s, &test_theme());
-        assert_eq!(line_text(&line), " git-rt · 0 files · main ");
+        assert_eq!(line_text(&line), " 0 files · main ");
     }
 
     #[test]
@@ -160,7 +126,7 @@ mod tests {
             },
         ]);
         let line = build_header_title(&s, &test_theme());
-        assert_eq!(line_text(&line), " git-rt · 2 files +16 -3 · main ");
+        assert_eq!(line_text(&line), " 2 files +16 -3 · main ");
     }
 
     #[test]
@@ -170,10 +136,7 @@ mod tests {
         s.set_ahead_behind(Some((2, 1)));
         s.set_stash_count(3);
         let line = build_header_title(&s, &test_theme());
-        assert_eq!(
-            line_text(&line),
-            " git-rt · 0 files · main · drew-branch · ↑2 ↓1 · 3 stash "
-        );
+        assert_eq!(line_text(&line), " 0 files · main · ↑2 ↓1 · 3 stash ");
     }
 
     #[test]
@@ -181,7 +144,7 @@ mod tests {
         let mut s = fresh_state();
         s.set_ahead_behind(Some((0, 0)));
         let line = build_header_title(&s, &test_theme());
-        assert_eq!(line_text(&line), " git-rt · 0 files · main ");
+        assert_eq!(line_text(&line), " 0 files · main ");
     }
 
     #[test]
@@ -189,16 +152,7 @@ mod tests {
         let mut s = fresh_state();
         s.set_stash_count(0);
         let line = build_header_title(&s, &test_theme());
-        assert_eq!(line_text(&line), " git-rt · 0 files · main ");
-    }
-
-    #[test]
-    fn test_header_title_hides_worktree_when_matches_repo() {
-        let mut s = fresh_state();
-        // worktree_name is set to "git-rt" by fresh_state(), same as repo_name
-        s.set_worktree_name("git-rt".to_string());
-        let line = build_header_title(&s, &test_theme());
-        assert_eq!(line_text(&line), " git-rt · 0 files · main ");
+        assert_eq!(line_text(&line), " 0 files · main ");
     }
 
     #[test]

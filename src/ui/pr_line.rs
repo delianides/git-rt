@@ -16,7 +16,7 @@
 //!   whole checks segment is omitted.
 
 use ratatui::{
-    layout::Rect,
+    layout::{Alignment, Constraint, Direction, Layout, Rect},
     style::{Color, Modifier, Style},
     text::{Line, Span},
     widgets::Paragraph,
@@ -26,10 +26,10 @@ use ratatui::{
 use crate::state::{AppState, MergeableStatus, PrDisplayInfo, PrState, PrStatus};
 use crate::theme::Theme;
 
-/// Should the PR line be rendered at all? True only when PR data has been
-/// loaded (not loading, not errored, not missing).
-pub fn has_pr_line(state: &AppState) -> bool {
-    state.pr_state().info.is_some()
+/// The bottom bar is always rendered (even without a PR) because it shows
+/// the repo name. Returns true when the bar should be rendered.
+pub fn has_bottom_bar(_state: &AppState) -> bool {
+    true
 }
 
 /// PR-state color mapping (shared with the main-pane border indicator).
@@ -138,10 +138,51 @@ fn mergeable_indicator(status: &MergeableStatus) -> Option<(&'static str, &'stat
     }
 }
 
-/// Render the PR status line into `area`. Expects a 1-row Rect.
+/// Render the bottom status bar into `area`. Expects a 1-row Rect.
+///
+/// Layout: PR line (when present) on the left, repo name right-aligned on
+/// the right. The bar is always rendered because the repo name is always
+/// shown.
 pub fn render_pr_line(frame: &mut Frame, state: &AppState, theme: &Theme, area: Rect) {
+    let repo = state.repo_name();
+    let repo_width = if repo.is_empty() {
+        0
+    } else {
+        // +1 for trailing space padding so the name doesn't hug the edge.
+        repo.chars().count() as u16 + 1
+    };
+    let total_width = area.width;
+
+    // Reserve right side for repo name (clamped to total width).
+    let repo_width = repo_width.min(total_width);
+    let left_width = total_width.saturating_sub(repo_width);
+
+    let chunks = Layout::default()
+        .direction(Direction::Horizontal)
+        .constraints([
+            Constraint::Length(left_width),
+            Constraint::Length(repo_width),
+        ])
+        .split(area);
+
+    let left_area = chunks[0];
+    let right_area = chunks[1];
+
+    // Left: PR line if present
     if let Some(line) = build_pr_line(state.pr_state(), theme) {
-        frame.render_widget(Paragraph::new(line), area);
+        frame.render_widget(Paragraph::new(line), left_area);
+    }
+
+    // Right: repo name, right-aligned
+    if !repo.is_empty() {
+        let repo_line = Line::from(vec![
+            Span::styled(repo.to_string(), Style::default().fg(theme.header_text)),
+            Span::raw(" "),
+        ]);
+        frame.render_widget(
+            Paragraph::new(repo_line).alignment(Alignment::Right),
+            right_area,
+        );
     }
 }
 
@@ -208,15 +249,15 @@ mod tests {
     }
 
     #[test]
-    fn test_has_pr_line_false_without_info() {
+    fn test_has_bottom_bar_always_true() {
         let s = AppState::new(vec![], Duration::from_millis(600), "main".to_string());
-        assert!(!has_pr_line(&s));
+        assert!(has_bottom_bar(&s));
     }
 
     #[test]
-    fn test_has_pr_line_true_with_info() {
+    fn test_has_bottom_bar_true_with_pr_info() {
         let s = state_with(make_info(MergeableStatus::Clean, 12, 0, 0));
-        assert!(has_pr_line(&s));
+        assert!(has_bottom_bar(&s));
     }
 
     #[test]

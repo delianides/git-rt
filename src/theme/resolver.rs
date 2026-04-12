@@ -314,6 +314,27 @@ mod tests {
     }
 
     #[test]
+    fn test_status_fields_override_fallback() {
+        let mut registry = registry_with_mocha();
+        registry.insert(
+            "custom".to_string(),
+            ThemeFile {
+                name: "custom".to_string(),
+                extends: Some(ROOT_THEME_NAME.to_string()),
+                colors: ThemeColors {
+                    status_modified: Some("#aabbcc".into()),
+                    ..Default::default()
+                },
+            },
+        );
+        let theme = resolve(registry.get("custom").unwrap(), &registry).unwrap();
+        // Provided value wins
+        assert_eq!(theme.status_modified, Color::Rgb(0xaa, 0xbb, 0xcc));
+        // Others still fall back
+        assert_eq!(theme.status_added, Color::Rgb(0x98, 0xc3, 0x79));
+    }
+
+    #[test]
     fn test_resolve_invalid_color_fails() {
         let mut broken = make_complete_mocha();
         broken.colors.bg = Some("not-a-color".to_string());

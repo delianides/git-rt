@@ -1,10 +1,10 @@
 //! UI rendering module.
 //!
-//! Provides the [`Terminal`] wrapper and the main `render` function that draws
-//! the bordered file list (with file/branch stats in the top border title)
-//! and a persistent one-row bottom bar with PR status on the left (when a
-//! PR is open against the branch) and the repo name right-aligned on the
-//! right, plus the diff overlay.
+//! Provides the [`Terminal`] wrapper and the main `render` function that
+//! draws the bordered file list (with `repo/branch` + file/branch stats
+//! in the top border title). A 1-row bottom bar is rendered below the
+//! main pane only when a PR exists against the current branch; otherwise
+//! the main pane takes the full frame.
 
 pub mod diff_overlay;
 pub mod header;
@@ -72,30 +72,22 @@ impl Terminal {
 // ── Main render entry point ──────────────────────────────────────────────────
 
 /// Top-level render function.
-///
-/// Splits the frame into two regions:
-/// 1. Main pane (bordered block; title carries file/branch stats, body is
-///    the file list)
-/// 2. Persistent bottom bar (1 row) — PR status on the left when a PR is
-///    open, repo name right-aligned on the right (always rendered)
-///
-/// The diff overlay is drawn on top when visible.
 fn render(frame: &mut Frame, state: &AppState, config: &AppConfig, theme: &Theme) {
     let area = frame.area();
 
-    let has_pr = state.pr_state().info.is_some();
-    let bottom_bar_height: u16 = 1;
+    let has_pr = pr_line::has_bottom_bar(state);
 
-    let chunks = Layout::default()
-        .direction(Direction::Vertical)
-        .constraints([
-            Constraint::Min(3),                    // main pane
-            Constraint::Length(bottom_bar_height), // persistent bottom bar
-        ])
-        .split(area);
-
-    let main_area = chunks[0];
-    let bottom_bar_area = chunks[1];
+    // Layout: when a PR exists, reserve a 1-row bottom bar; otherwise
+    // the main pane takes the full frame.
+    let (main_area, bottom_bar_area) = if has_pr {
+        let chunks = Layout::default()
+            .direction(Direction::Vertical)
+            .constraints([Constraint::Min(3), Constraint::Length(1)])
+            .split(area);
+        (chunks[0], Some(chunks[1]))
+    } else {
+        (area, None)
+    };
 
     // 1. Main pane. Border color reflects PR state when a PR is open,
     // otherwise the usual flash / focused / default progression.
@@ -120,9 +112,10 @@ fn render(frame: &mut Frame, state: &AppState, config: &AppConfig, theme: &Theme
 
     render_file_list(frame, state, config, theme, inner);
 
-    // 2. Persistent bottom bar (PR status on the left when a PR exists,
-    //    repo name right-aligned on the right — always shown).
-    pr_line::render_pr_line(frame, state, theme, bottom_bar_area);
+    // 2. Bottom bar (only when a PR exists).
+    if let Some(bottom) = bottom_bar_area {
+        pr_line::render_pr_line(frame, state, theme, bottom);
+    }
 
     // 3. Help overlay takes priority over diff overlay — they are mutually
     //    exclusive per show_help / show_overlay, but rendering both would

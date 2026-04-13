@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.7.0](https://github.com/delianides/git-rt/compare/v0.6.0...v0.7.0) (2026-04-13)
+
+
+### Features
+
+* fall back to main worktree when watched tree is removed ([#41](https://github.com/delianides/git-rt/issues/41)) ([c2c2b98](https://github.com/delianides/git-rt/commit/c2c2b98cbe42b9091d4ade21d2be1b9029c3194d))
+* **ui:** move repo/branch into header, hide bottom bar when no PR ([#39](https://github.com/delianides/git-rt/issues/39)) ([65dc73a](https://github.com/delianides/git-rt/commit/65dc73abb59823455ba2b49ca11fbec57b563de7))
+
 ## [0.6.0](https://github.com/delianides/git-rt/compare/v0.5.0...v0.6.0) (2026-04-12)
 
 

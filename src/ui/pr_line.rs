@@ -1,5 +1,6 @@
-//! Compact PR status line rendered directly below the main pane border
-//! when a PR is open against the current branch.
+//! Compact PR status line rendered in the 1-row bottom bar when a PR is
+//! open against the current branch. The bar is hidden entirely when no
+//! PR is present — see `has_bottom_bar` and `ui::render`.
 //!
 //! Format:
 //!
@@ -11,12 +12,10 @@
 //! - `PR #<number>` — in the PR-state color (green/red/magenta/gray)
 //! - mergeable indicator: `✓ clean`, `✗ conflicts`, `⚠ behind`, or omitted
 //!   when the status is still `Unknown`
-//! - check counts: `✓ <passed>` (green) and `✗ <failed>` (red). Segments
-//!   with a zero count are omitted. If the PR has no checks at all, the
-//!   whole checks segment is omitted.
+//! - check counts — hybrid display (see `build_line_from_info`).
 
 use ratatui::{
-    layout::{Alignment, Constraint, Direction, Layout, Rect},
+    layout::Rect,
     style::{Color, Modifier, Style},
     text::{Line, Span},
     widgets::Paragraph,
@@ -26,10 +25,10 @@ use ratatui::{
 use crate::state::{AppState, MergeableStatus, PrDisplayInfo, PrState, PrStatus};
 use crate::theme::Theme;
 
-/// The bottom bar is always rendered (even without a PR) because it shows
-/// the repo name. Returns true when the bar should be rendered.
-pub fn has_bottom_bar(_state: &AppState) -> bool {
-    true
+/// The bottom bar is only rendered when a PR exists against the current
+/// branch. When no PR is present the row is reclaimed by the main pane.
+pub fn has_bottom_bar(state: &AppState) -> bool {
+    state.pr_state().info.is_some()
 }
 
 /// PR-state color mapping (shared with the main-pane border indicator).
@@ -140,49 +139,11 @@ fn mergeable_indicator(status: &MergeableStatus) -> Option<(&'static str, &'stat
 
 /// Render the bottom status bar into `area`. Expects a 1-row Rect.
 ///
-/// Layout: PR line (when present) on the left, repo name right-aligned on
-/// the right. The bar is always rendered because the repo name is always
-/// shown.
+/// Callers must only invoke this when `has_bottom_bar(state)` returns
+/// `true`. The row is a single left-aligned PR status line.
 pub fn render_pr_line(frame: &mut Frame, state: &AppState, theme: &Theme, area: Rect) {
-    let repo = state.repo_name();
-    let repo_width = if repo.is_empty() {
-        0
-    } else {
-        // +1 for trailing space padding so the name doesn't hug the edge.
-        repo.chars().count() as u16 + 1
-    };
-    let total_width = area.width;
-
-    // Reserve right side for repo name (clamped to total width).
-    let repo_width = repo_width.min(total_width);
-    let left_width = total_width.saturating_sub(repo_width);
-
-    let chunks = Layout::default()
-        .direction(Direction::Horizontal)
-        .constraints([
-            Constraint::Length(left_width),
-            Constraint::Length(repo_width),
-        ])
-        .split(area);
-
-    let left_area = chunks[0];
-    let right_area = chunks[1];
-
-    // Left: PR line if present
     if let Some(line) = build_pr_line(state.pr_state(), theme) {
-        frame.render_widget(Paragraph::new(line), left_area);
-    }
-
-    // Right: repo name, right-aligned
-    if !repo.is_empty() {
-        let repo_line = Line::from(vec![
-            Span::styled(repo.to_string(), Style::default().fg(theme.header_text)),
-            Span::raw(" "),
-        ]);
-        frame.render_widget(
-            Paragraph::new(repo_line).alignment(Alignment::Right),
-            right_area,
-        );
+        frame.render_widget(Paragraph::new(line), area);
     }
 }
 
@@ -249,9 +210,9 @@ mod tests {
     }
 
     #[test]
-    fn test_has_bottom_bar_always_true() {
+    fn test_has_bottom_bar_false_without_pr() {
         let s = AppState::new(vec![], Duration::from_millis(600), "main".to_string());
-        assert!(has_bottom_bar(&s));
+        assert!(!has_bottom_bar(&s));
     }
 
     #[test]

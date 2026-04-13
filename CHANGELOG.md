@@ -1,5 +1,20 @@
 # Changelog
 
+## [0.8.0](https://github.com/delianides/git-rt/compare/v0.7.0...v0.8.0) (2026-04-13)
+
+
+### Features
+
+* **app:** open detected PR in browser on `p` ([#46](https://github.com/delianides/git-rt/issues/46)) ([69466c9](https://github.com/delianides/git-rt/commit/69466c95f25497f386e53e02b393969b996e46c8))
+* **app:** open selected file in configured git difftool on `d` ([#47](https://github.com/delianides/git-rt/issues/47)) ([b81d13d](https://github.com/delianides/git-rt/commit/b81d13ddb5a6adba6147717ab51554183b372043))
+* edit selected file on 'e' ([#45](https://github.com/delianides/git-rt/issues/45)) ([d8c39eb](https://github.com/delianides/git-rt/commit/d8c39eb0ddc769e04ddb7fdb76e710063963d1d4))
+* remove actions system ([#43](https://github.com/delianides/git-rt/issues/43)) ([a0de06b](https://github.com/delianides/git-rt/commit/a0de06b771c96fc35a2e4cc44086981ca6b9c748))
+
+
+### Bug Fixes
+
+* **activity:** rank worktrees by git-native signals ([#42](https://github.com/delianides/git-rt/issues/42)) ([11a264c](https://github.com/delianides/git-rt/commit/11a264c64a2744452e976fe7d682331b11b5d1c5))
+
 ## [0.7.0](https://github.com/delianides/git-rt/compare/v0.6.0...v0.7.0) (2026-04-13)
 
 

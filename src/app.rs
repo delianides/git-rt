@@ -33,6 +33,14 @@ pub struct App {
     repo_path: PathBuf,
     /// The path currently being watched
     watch_path: PathBuf,
+    /// The path of the main worktree — stable fallback target when
+    /// the watched worktree is removed.
+    main_worktree_path: PathBuf,
+    /// Tracks whether we have already warned the user that the main worktree
+    /// is missing. Prevents the tick-level existence check from spamming the
+    /// flash message every 250 ms when both the watched path and the main
+    /// worktree are gone.
+    main_missing_warned: bool,
     /// Worktree monitor (None if auto-follow is disabled)
     worktree_monitor: Option<crate::watcher::worktree::WorktreeMonitor>,
     /// Receiver for worktree events
@@ -41,6 +49,32 @@ pub struct App {
     gh_rx: Option<Receiver<crate::github::GitHubEvent>>,
     /// CLI override for base branch
     base_override: Option<String>,
+}
+
+/// The action the tick-level existence check or `Removed` handler should take.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum FallbackAction {
+    /// Watched path still exists — do nothing.
+    None,
+    /// Watched path is gone but the main worktree is available — switch to it.
+    SwitchToMain,
+    /// Watched path is gone and the main worktree is also missing — hold state
+    /// and surface a user-visible flash.
+    MainMissing,
+}
+
+/// Decide whether to fall back to the main worktree based on filesystem state.
+pub(crate) fn fallback_decision(
+    watch_path: &std::path::Path,
+    main_path: &std::path::Path,
+) -> FallbackAction {
+    if watch_path.exists() {
+        return FallbackAction::None;
+    }
+    if watch_path == main_path || !main_path.exists() {
+        return FallbackAction::MainMissing;
+    }
+    FallbackAction::SwitchToMain
 }
 
 impl App {
@@ -105,6 +139,8 @@ impl App {
             None
         };
 
+        let main_worktree_path = crate::git::main_worktree_path(&repo_path);
+
         Ok(Self {
             state,
             git,
@@ -115,6 +151,8 @@ impl App {
             tick_rate: Duration::from_millis(250),
             repo_path,
             watch_path,
+            main_worktree_path,
+            main_missing_warned: false,
             worktree_monitor,
             wt_rx,
             gh_rx,
@@ -204,6 +242,15 @@ impl App {
             // Tick
             if last_tick.elapsed() >= self.tick_rate {
                 last_tick = Instant::now();
+
+                // If the watched directory disappeared without a Removed
+                // event (e.g. `rm -rf`), fall back to the main worktree.
+                if matches!(
+                    fallback_decision(&self.watch_path, &self.main_worktree_path),
+                    FallbackAction::SwitchToMain | FallbackAction::MainMissing,
+                ) {
+                    self.fallback_to_main()?;
+                }
             }
         }
     }
@@ -433,16 +480,17 @@ impl App {
                 tracing::info!(worktree = %info.name, "New worktree detected, switching");
                 self.switch_to_worktree(info)?;
             }
-            WorktreeEvent::Removed(name) => {
-                tracing::info!(worktree = %name, "Worktree removed");
-                let is_current = self
+            WorktreeEvent::Removed { name, path } => {
+                tracing::info!(worktree = %name, path = ?path, "Worktree removed");
+                let is_current_by_path = self.watch_path == path;
+                let is_current_by_name = self
                     .worktree_monitor
                     .as_ref()
                     .and_then(|m| m.current_target())
                     .map(|t| t == name)
                     .unwrap_or(false);
-                if is_current {
-                    self.switch_to_path(self.repo_path.clone())?;
+                if is_current_by_path || is_current_by_name {
+                    self.fallback_to_main()?;
                 }
             }
             WorktreeEvent::BranchChanged { worktree, branch } => {
@@ -552,5 +600,100 @@ impl App {
         };
 
         Ok(())
+    }
+
+    /// Fall back to the main worktree when the watched worktree is gone.
+    ///
+    /// Uses `fallback_decision` to choose among switching, flashing a
+    /// "main-missing" warning, or no-op. Idempotent — safe to call on
+    /// every tick.
+    fn fallback_to_main(&mut self) -> Result<()> {
+        match fallback_decision(&self.watch_path, &self.main_worktree_path) {
+            FallbackAction::None => {
+                self.main_missing_warned = false;
+                Ok(())
+            }
+            FallbackAction::SwitchToMain => {
+                let main = self.main_worktree_path.clone();
+                tracing::info!(
+                    watch = ?self.watch_path,
+                    main = ?main,
+                    "Watched worktree removed — switching to main"
+                );
+                self.switch_to_path(main)?;
+                self.state
+                    .set_flash_message("Worktree removed — switched to main".to_string());
+                if let Some(ref mut monitor) = self.worktree_monitor {
+                    monitor.set_current_target(None);
+                }
+                self.main_missing_warned = false;
+                Ok(())
+            }
+            FallbackAction::MainMissing => {
+                if !self.main_missing_warned {
+                    tracing::warn!(
+                        watch = ?self.watch_path,
+                        main = ?self.main_worktree_path,
+                        "Watched worktree and main worktree both missing — holding state"
+                    );
+                    self.state
+                        .set_flash_message("Main worktree is missing — holding state".to_string());
+                    self.main_missing_warned = true;
+                }
+                Ok(())
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+mod fallback_tests {
+    use super::*;
+    use tempfile::tempdir;
+
+    #[test]
+    fn test_fallback_decision_watch_path_exists() {
+        let tmp = tempdir().unwrap();
+        let watch = tmp.path().join("wt");
+        let main = tmp.path().join("main");
+        std::fs::create_dir_all(&watch).unwrap();
+        std::fs::create_dir_all(&main).unwrap();
+
+        assert_eq!(fallback_decision(&watch, &main), FallbackAction::None,);
+    }
+
+    #[test]
+    fn test_fallback_decision_watch_gone_main_exists() {
+        let tmp = tempdir().unwrap();
+        let watch = tmp.path().join("wt"); // never created
+        let main = tmp.path().join("main");
+        std::fs::create_dir_all(&main).unwrap();
+
+        assert_eq!(
+            fallback_decision(&watch, &main),
+            FallbackAction::SwitchToMain,
+        );
+    }
+
+    #[test]
+    fn test_fallback_decision_watch_equals_main() {
+        let tmp = tempdir().unwrap();
+        let shared = tmp.path().join("repo");
+        // Intentionally do not create — emulate "main itself is missing"
+        assert_eq!(
+            fallback_decision(&shared, &shared),
+            FallbackAction::MainMissing,
+        );
+    }
+
+    #[test]
+    fn test_fallback_decision_both_missing() {
+        let tmp = tempdir().unwrap();
+        let watch = tmp.path().join("wt");
+        let main = tmp.path().join("main");
+        assert_eq!(
+            fallback_decision(&watch, &main),
+            FallbackAction::MainMissing,
+        );
     }
 }

@@ -227,7 +227,7 @@ fn render_file_list(
                 format!("-{}", file.deletions),
                 Style::default().fg(theme.file_deletions),
             ),
-            Span::raw(" "),
+            Span::raw("/"),
             Span::styled(
                 format!("+{}", file.insertions),
                 Style::default().fg(theme.file_insertions),

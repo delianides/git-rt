@@ -4,6 +4,10 @@ use std::time::{Duration, Instant};
 use anyhow::{Context, Result};
 use crossbeam_channel::Receiver;
 use crossterm::event::{self, Event as TermEvent, KeyCode, KeyModifiers};
+use crossterm::execute;
+use crossterm::terminal::{
+    disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen,
+};
 
 use crate::config::AppConfig;
 use crate::git::GitRepo;
@@ -108,6 +112,29 @@ fn shell_single_quote(s: &str) -> String {
     }
     out.push('\'');
     out
+}
+
+/// RAII guard around a foreground child process. Suspend() leaves raw mode and
+/// the alt screen; Drop restores them (and clears the screen) so ratatui redraws
+/// cleanly. Drop runs on panic, so the terminal is always restored.
+struct TerminalGuard<'a> {
+    terminal: &'a mut Terminal,
+}
+
+impl<'a> TerminalGuard<'a> {
+    fn suspend(terminal: &'a mut Terminal) -> Result<Self> {
+        disable_raw_mode().context("disable_raw_mode")?;
+        execute!(std::io::stdout(), LeaveAlternateScreen).context("LeaveAlternateScreen")?;
+        Ok(Self { terminal })
+    }
+}
+
+impl Drop for TerminalGuard<'_> {
+    fn drop(&mut self) {
+        let _ = enable_raw_mode();
+        let _ = execute!(std::io::stdout(), EnterAlternateScreen);
+        let _ = self.terminal.clear();
+    }
 }
 
 impl App {
@@ -220,7 +247,7 @@ impl App {
             // Check for terminal events with timeout
             if event::poll(timeout.min(Duration::from_millis(50)))? {
                 let term_event = event::read()?;
-                if self.handle_terminal_event(term_event)? {
+                if self.handle_terminal_event(term_event, terminal)? {
                     return Ok(());
                 }
             }
@@ -289,7 +316,7 @@ impl App {
     }
 
     /// Handle terminal input events. Returns true if the app should quit.
-    fn handle_terminal_event(&mut self, event: TermEvent) -> Result<bool> {
+    fn handle_terminal_event(&mut self, event: TermEvent, terminal: &mut Terminal) -> Result<bool> {
         match event {
             TermEvent::Key(key) => {
                 // Help overlay mode: intercept keys before anything else.
@@ -350,6 +377,11 @@ impl App {
                     // Refresh manually
                     (_, KeyCode::Char('r')) => {
                         self.handle_fs_change()?;
+                    }
+
+                    // Edit selected file
+                    (_, KeyCode::Char('e')) => {
+                        self.edit_selected_file(terminal)?;
                     }
 
                     // Help popup
@@ -462,6 +494,31 @@ impl App {
         }
         self.state.set_repo_state(self.git.repo_state());
 
+        Ok(())
+    }
+
+    /// Open the currently selected file in an editor. No-op when no file is selected.
+    fn edit_selected_file(&mut self, terminal: &mut Terminal) -> Result<()> {
+        let Some(path) = self.state.selected_path() else {
+            tracing::debug!("no file selected; skipping edit");
+            return Ok(());
+        };
+        let editor = resolve_editor(&self.config);
+        let quoted = shell_single_quote(&path);
+        let cmd = format!("{editor} {quoted}");
+        tracing::info!(%cmd, cwd = %self.watch_path.display(), "Launching editor");
+
+        let _guard = TerminalGuard::suspend(terminal)?;
+        let status = std::process::Command::new("sh")
+            .arg("-c")
+            .arg(&cmd)
+            .current_dir(&self.watch_path)
+            .status()
+            .with_context(|| format!("failed to launch editor: {cmd}"))?;
+
+        if !status.success() {
+            tracing::info!(?status, "Editor exited non-zero");
+        }
         Ok(())
     }
 

@@ -1,14 +1,14 @@
 # git-rt
 
-A real-time terminal dashboard for git changes. Watch your working tree update live as you edit files, with inline diffs and configurable actions.
+A real-time terminal dashboard for git changes. Watch your working tree update live as you edit files, with inline diffs, PR status, and configurable actions.
 
 ![status: early development](https://img.shields.io/badge/status-early%20development-orange)
 
-## What it does
-
-Run `git-rt` in a terminal pane alongside your editor. It shows a live-updating view of all changed files with insertion/deletion counts, and lets you expand any file to see its diff inline.
-
 ![git-rt screenshot](assets/screenshot.png)
+
+## Overview
+
+Run `git-rt` in a terminal pane alongside your editor. It shows a live-updating list of changed files with insertion/deletion counts, expandable inline diffs, and — when the current branch has a PR open on GitHub — a compact PR status strip with review, check, and mergeability state. Updates are event-driven via filesystem watches; there is no polling of the working tree.
 
 ## Install
 
@@ -16,144 +16,172 @@ Run `git-rt` in a terminal pane alongside your editor. It shows a live-updating 
 cargo install --path .
 ```
 
+Or see [Development](#development) for a Nix-based setup.
+
 ## Usage
 
 ```bash
-# Run in the current git repository
+# Current directory
 git-rt
 
-# Run for a specific repo
+# Specific repo
 git-rt /path/to/repo
 
-# Custom debounce interval
+# Custom debounce
 git-rt --debounce 500
 ```
 
-### Default keybindings
+### CLI flags
 
-| Key           | Action             |
-| ------------- | ------------------ |
-| `j` / `↓`     | Move down          |
-| `k` / `↑`     | Move up            |
-| `Enter` / `l` | Expand file diff   |
-| `h`           | Collapse file diff |
-| `r`           | Refresh            |
-| `q`           | Quit               |
+| Flag                      | Purpose                                                                 |
+| ------------------------- | ----------------------------------------------------------------------- |
+| `[PATH]`                  | Repository path (default `.`)                                           |
+| `-c, --config <FILE>`     | Path to config file                                                     |
+| `-d, --debounce <MS>`     | Filesystem debounce in ms (default `200`)                               |
+| `--log <LEVEL>`           | Logging level: `trace`, `debug`, `info`, `warn`, `error`                |
+| `--worktree <NAME\|PATH>` | Pin worktree by name or path; auto-follow remains active                |
+| `--branch <BRANCH>`       | Pin to the worktree with this branch checked out; auto-follow active   |
+| `--no-follow`             | Disable auto-follow to other worktrees                                  |
+| `--theme <NAME\|PATH>`    | Theme override (built-in name or path to a `.toml` theme file)          |
+| `--base <BRANCH>`         | Base branch for the branch-scoped diff range                            |
+
+## Keybindings
+
+| Key                   | Action                                                |
+| --------------------- | ----------------------------------------------------- |
+| `j` / `↓`             | Select next file                                      |
+| `k` / `↑`             | Select previous file                                  |
+| `Enter` / `l` / `→`   | Expand the selected file's diff                       |
+| `Space`               | Toggle expand/collapse of the selected file           |
+| `h` / `←`             | Collapse the diff (or close the overlay)              |
+| `r`                   | Refresh                                               |
+| `?`                   | Show the help popup                                   |
+| `q` / `Ctrl+C`        | Quit                                                  |
+
+Diff display is either an **overlay** (default) or **inline** expansion, selectable via `[keys].enter` in the config. Inside the diff overlay, `j`/`k` scroll and `Esc`, `q`, `Space`, `h`, or `←` close it.
 
 ## Configuration
 
-Create `~/.config/git-rt/config.toml` to customize behavior.
+Config lives at `~/.config/git-rt/config.toml`. All sections are optional; defaults are used for anything you omit.
 
-### Color Palette
-
-Define custom named colors in the top-level `[colors]` section. These can be referenced in statusline format strings using `{name}...{/}` tags. The 16 built-in terminal color names (red, green, blue, yellow, cyan, magenta, white, black, gray, darkgray, lightred, lightgreen, lightyellow, lightblue, lightmagenta, lightcyan) are always available without defining them. Palette entries can override built-in names.
+### Top-level
 
 ```toml
-[colors]
-ins = "#50FA7B"
-del = "#FF5555"
-branch = "#BD93F9"
-muted = "#6272A4"
+theme = "catppuccin-mocha"   # built-in theme name or user theme file name
+debounce_ms = 200            # filesystem event debounce in ms
+base_branch = "main"         # base for branch-scoped diff (merge-base..worktree)
 ```
 
-### Statusline
-
-Top and bottom statuslines are independently configurable with format strings. The top bar is hidden by default. Pass an empty string to hide either bar.
-
-Format tokens: `%b` (branch), `%c` (file count), `%+` (total insertions), `%-` (total deletions), `%R` (refresh counter), `%h` (HEAD short SHA), `%H` (HEAD message), `%w` (worktree name), `%n` (repo name), `%a` (ahead/behind), `%m` (modified count), `%u` (untracked count), `%s` (staged count), `%S` (stash count), `%G` (git state), `%?` (help), `%=` (right-align marker).
-
-Style tags: `{color}...{/}`, `{bold}...{/}`, `{dim}...{/}`. Colors can be palette names, built-in names, or hex (`{#FF5555}...{/}`).
-
-```toml
-[display.statusline.top]
-status_line = "{dim}%n{/}  {muted}%h{/}"
-foreground_color = "white"
-background_color = "#1E1E1E"
-
-[display.statusline.bottom]
-status_line = "{branch}%b{/}  %c files  {del}%-{/} {ins}%+{/}  %=%R"
-foreground_color = "white"
-background_color = "#1E1E1E"
-```
-
-### File Line Format
-
-Customize how each file row is displayed with a format string.
-
-Tokens: `%s` (status char), `%S` (staged char), `%f` (path), `%n` (filename), `%d` (directory), `%e` (extension), `%-` (deletions), `%+` (insertions), `%t` (total changes), `%g` (change graph), `%b` (branch), `%=` (right-align).
+### `[display]`
 
 ```toml
 [display]
-file_line = "%s %f %= %- %+"
-show_expand_marker = true
+context_lines = 3            # diff context lines
+flash_on_change = true       # flash a file row when it changes
+flash_duration_ms = 600      # flash duration
 ```
 
-### UI Colors
+### `[keys]`
+
+Rebindable single-character keys plus the diff display mode.
 
 ```toml
-[display.colors.ui]
-selection_bg = "darkgray"
-selection_fg = "white"
-flash_bg = "#64641E"
-empty_text = "darkgray"
+[keys]
+quit = "q"
+up = "k"
+down = "j"
+expand = "l"
+collapse = "h"
+refresh = "r"
+enter = "overlay"            # "overlay" (default) or "inline"
 ```
 
-### Actions
+### `[pr]`
+
+Controls the compact PR status strip that appears when the current branch has an open PR on GitHub.
 
 ```toml
-[actions.open_editor]
+[pr]
+enabled = true
+show_labels = false
+```
+
+The GitHub token is discovered from the `GITHUB_TOKEN` environment variable or your `git config`. If no token is available the PR strip silently stays hidden.
+
+### `[actions.*]`
+
+Actions are user-defined shell commands bound to a key, triggered on the currently selected file. Each action is its own table.
+
+```toml
+[actions.edit]
 key = "e"
 command = "nvim {file}"
 
-[actions.diff_view]
+[actions.blame]
+key = "b"
+command = "git blame {file} | less -R"
+
+[actions.diff]
 key = "d"
 command = "git diff -- {file} | delta"
 ```
 
-### Sample Config
+Template variables:
+
+- `{file}` — path relative to the repo root
+- `{abs_file}` — absolute path
+
+Commands are executed via `sh -c`, so shell features (pipes, redirects, subshells) are available.
+
+### Full example
 
 ```toml
+theme = "catppuccin-mocha"
 debounce_ms = 200
-
-[colors]
-ins = "#50FA7B"
-del = "#FF5555"
-branch = "#BD93F9"
-muted = "#6272A4"
+base_branch = "main"
 
 [display]
 context_lines = 3
 flash_on_change = true
 flash_duration_ms = 600
-file_line = "%s %f %= %- %+"
-show_expand_marker = true
 
-[display.statusline.top]
-status_line = "{dim}%n{/}"
-foreground_color = "white"
-background_color = "#282A36"
+[keys]
+enter = "overlay"
 
-[display.statusline.bottom]
-status_line = "{branch}%b{/}  %c files  {del}%-{/} {ins}%+{/}  %=%R"
-foreground_color = "white"
-background_color = "#282A36"
-
-[display.colors.ui]
-selection_bg = "#44475A"
-selection_fg = "#F8F8F2"
-flash_bg = "#64641E"
-empty_text = "#6272A4"
-
-[display.padding]
-top = 1
-bottom = 0
-left = 0
-right = 2
+[pr]
+enabled = true
+show_labels = false
 
 [actions.edit]
 key = "e"
 command = "nvim {file}"
+
+[actions.blame]
+key = "b"
+command = "git blame {file} | less -R"
 ```
+
+## Themes
+
+git-rt ships with 11 built-in themes:
+
+- `catppuccin-mocha` (default)
+- `catppuccin-latte`
+- `one-dark`
+- `dracula`
+- `gruvbox-dark`
+- `nord`
+- `tokyo-night`
+- `solarized-dark`
+- `rose-pine`
+- `kanagawa`
+- `everforest-dark`
+
+Select one via the `theme` config key or the `--theme` CLI flag.
+
+User themes live in `~/.config/git-rt/themes/` — drop a `<name>.toml` file there and reference it as `theme = "<name>"`. A theme can inherit from another via `extends = "<other-theme>"` and override only the colors it wants to change.
+
+Want a theme that isn't in the list? [PRs welcome](https://github.com/delianides/git-rt/pulls) — add a `src/theme/builtin/<name>.toml` and register it in `src/theme/mod.rs`.
 
 ## Development
 

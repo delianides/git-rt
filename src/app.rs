@@ -94,6 +94,22 @@ fn resolve_editor(config: &crate::config::AppConfig) -> String {
     "vim".to_string()
 }
 
+/// Wrap a string in POSIX single-quotes, escaping any embedded single-quotes
+/// via the `'\''` idiom. Safe against spaces, `$`, backticks, quotes, etc.
+fn shell_single_quote(s: &str) -> String {
+    let mut out = String::with_capacity(s.len() + 2);
+    out.push('\'');
+    for c in s.chars() {
+        if c == '\'' {
+            out.push_str("'\\''");
+        } else {
+            out.push(c);
+        }
+    }
+    out.push('\'');
+    out
+}
+
 impl App {
     pub fn new(
         watch_path: PathBuf,
@@ -787,5 +803,30 @@ mod editor_tests {
             ..AppConfig::default()
         };
         assert_eq!(resolve_editor(&cfg), "emacs");
+    }
+
+    #[test]
+    fn quote_plain() {
+        assert_eq!(shell_single_quote("foo.rs"), "'foo.rs'");
+    }
+
+    #[test]
+    fn quote_space() {
+        assert_eq!(shell_single_quote("my file.rs"), "'my file.rs'");
+    }
+
+    #[test]
+    fn quote_apostrophe() {
+        assert_eq!(shell_single_quote("it's.rs"), "'it'\\''s.rs'");
+    }
+
+    #[test]
+    fn quote_dollar_and_backtick() {
+        assert_eq!(shell_single_quote("a$b`c.rs"), "'a$b`c.rs'");
+    }
+
+    #[test]
+    fn quote_empty() {
+        assert_eq!(shell_single_quote(""), "''");
     }
 }

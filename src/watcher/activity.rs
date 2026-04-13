@@ -62,9 +62,17 @@ fn read_main_head(common_git_dir: &Path) -> Option<String> {
 
 /// Rank a list of worktrees by most recent activity.
 ///
-/// Returns them sorted newest-first. Ties break alphabetically by `info.name`.
-/// Worktrees with no detectable activity sort last.
+/// Returns them sorted newest-first. Ties prefer the main worktree,
+/// then break alphabetically by `info.name`. Worktrees with no
+/// detectable activity sort last (same tiebreaker order).
 pub fn rank_by_activity(worktrees: &[WorktreeInfo]) -> Vec<WorktreeActivity> {
+    // Identify the main worktree by path: it matches the parent of the
+    // common git dir for any worktree in the set.
+    let main_path = worktrees
+        .first()
+        .and_then(|w| crate::git::resolve_common_git_dir(&w.path))
+        .and_then(|d| d.parent().map(|p| p.to_path_buf()));
+
     let mut ranked: Vec<WorktreeActivity> = worktrees
         .iter()
         .map(|info| WorktreeActivity {
@@ -73,11 +81,28 @@ pub fn rank_by_activity(worktrees: &[WorktreeInfo]) -> Vec<WorktreeActivity> {
         })
         .collect();
 
-    ranked.sort_by(|a, b| match (a.last_activity, b.last_activity) {
-        (Some(ta), Some(tb)) => tb.cmp(&ta).then_with(|| a.info.name.cmp(&b.info.name)),
-        (Some(_), None) => std::cmp::Ordering::Less,
-        (None, Some(_)) => std::cmp::Ordering::Greater,
-        (None, None) => a.info.name.cmp(&b.info.name),
+    ranked.sort_by(|a, b| {
+        let is_main = |w: &WorktreeActivity| {
+            main_path
+                .as_ref()
+                .map(|m| &w.info.path == m)
+                .unwrap_or(false)
+        };
+        // Primary: activity desc (None sorts last).
+        let activity = match (a.last_activity, b.last_activity) {
+            (Some(ta), Some(tb)) => tb.cmp(&ta),
+            (Some(_), None) => std::cmp::Ordering::Less,
+            (None, Some(_)) => std::cmp::Ordering::Greater,
+            (None, None) => std::cmp::Ordering::Equal,
+        };
+        // Tiebreak: main first, then alphabetical.
+        activity
+            .then_with(|| match (is_main(a), is_main(b)) {
+                (true, false) => std::cmp::Ordering::Less,
+                (false, true) => std::cmp::Ordering::Greater,
+                _ => std::cmp::Ordering::Equal,
+            })
+            .then_with(|| a.info.name.cmp(&b.info.name))
     });
 
     ranked

@@ -159,7 +159,7 @@ mod tests {
     use std::fs;
     use std::path::{Path, PathBuf};
     use std::process::Command;
-    use std::time::SystemTime;
+    use std::time::{Duration, SystemTime};
     use tempfile::tempdir;
 
     fn git(dir: &Path, args: &[&str]) {
@@ -262,5 +262,133 @@ mod tests {
             ranked[0].info.name, "main",
             "main should win after branch creation refreshed HEAD mtime"
         );
+    }
+
+    #[test]
+    fn ranks_by_head_commit_time() {
+        let tmp = tempdir().unwrap();
+        let main = tmp.path().join("repo");
+        init_repo(&main);
+        commit_empty(&main, "root");
+
+        // Linked A committed some time ago.
+        let linked_a = add_linked_worktree(&main, "older", "branch-a");
+        commit_empty(&linked_a, "older-commit");
+        // Backdate the HEAD + index of A so only committer time is fresh-ish.
+        let a_git = main.join(".git").join("worktrees").join("older");
+        backdate(&a_git.join("HEAD"), 10);
+        backdate(&a_git.join("index"), 10);
+
+        std::thread::sleep(Duration::from_secs(1));
+
+        // Linked B committed more recently.
+        let linked_b = add_linked_worktree(&main, "newer", "branch-b");
+        commit_empty(&linked_b, "newer-commit");
+
+        let worktrees = vec![
+            worktree_info("main", main),
+            worktree_info("older", linked_a),
+            worktree_info("newer", linked_b),
+        ];
+        let ranked = rank_by_activity(&worktrees);
+        assert_eq!(
+            ranked[0].info.name, "newer",
+            "newest commit should rank first"
+        );
+    }
+
+    #[test]
+    fn staging_boosts_worktree() {
+        let tmp = tempdir().unwrap();
+        let main = tmp.path().join("repo");
+        init_repo(&main);
+        commit_empty(&main, "root");
+
+        let linked = add_linked_worktree(&main, "other", "other-branch");
+        commit_empty(&linked, "other-commit");
+
+        // Backdate everything so only a fresh stage in main will move it ahead.
+        let main_git = main.join(".git");
+        let other_git = main_git.join("worktrees").join("other");
+        for p in [
+            main_git.join("HEAD"),
+            main_git.join("index"),
+            other_git.join("HEAD"),
+            other_git.join("index"),
+        ] {
+            if p.exists() {
+                backdate(&p, 30);
+            }
+        }
+
+        // Sleep so the fresh index mtime is demonstrably later than the
+        // (non-backdated) commit committer times for both worktrees.
+        std::thread::sleep(Duration::from_secs(2));
+
+        // Stage a file in main — rewrites main's index mtime to now.
+        fs::write(main.join("staged.txt"), "hi").unwrap();
+        git(&main, &["add", "staged.txt"]);
+
+        let worktrees = vec![worktree_info("main", main), worktree_info("other", linked)];
+        let ranked = rank_by_activity(&worktrees);
+        assert_eq!(ranked[0].info.name, "main", "fresh stage should win");
+    }
+
+    #[test]
+    fn main_wins_tiebreak_when_activity_equal() {
+        let tmp = tempdir().unwrap();
+        let main = tmp.path().join("repo");
+        init_repo(&main);
+        commit_empty(&main, "root");
+        let linked = add_linked_worktree(&main, "aaa-linked", "branch-a");
+
+        // Clamp all activity signals on both worktrees to the exact same instant.
+        let main_git = main.join(".git");
+        let linked_git = main_git.join("worktrees").join("aaa-linked");
+        let ts = FileTime::from_unix_time(1_700_000_000, 0);
+        for p in [
+            main_git.join("HEAD"),
+            main_git.join("index"),
+            linked_git.join("HEAD"),
+            linked_git.join("index"),
+        ] {
+            if p.exists() {
+                set_file_mtime(&p, ts).unwrap();
+            }
+        }
+
+        // Canonicalize paths so the main-worktree detection in
+        // `rank_by_activity` (which canonicalizes via commondir resolution
+        // when the first entry is a linked worktree) compares equal.
+        let main = main.canonicalize().unwrap();
+        let linked = linked.canonicalize().unwrap();
+        let worktrees = vec![
+            // Put linked first and give it an alphabetically-earlier name —
+            // only the main-preference tiebreaker can put main ahead.
+            worktree_info("aaa-linked", linked),
+            worktree_info("zzz-main", main),
+        ];
+        let ranked = rank_by_activity(&worktrees);
+        assert_eq!(
+            ranked[0].info.name, "zzz-main",
+            "main should win ties even when alphabetically later"
+        );
+    }
+
+    #[test]
+    fn missing_activity_sorts_last() {
+        let tmp = tempdir().unwrap();
+        let main = tmp.path().join("repo");
+        init_repo(&main);
+        commit_empty(&main, "root");
+
+        let worktrees = vec![
+            worktree_info("ghost", tmp.path().join("nonexistent")),
+            worktree_info("real", main),
+        ];
+        let ranked = rank_by_activity(&worktrees);
+        assert_eq!(ranked[0].info.name, "real");
+        assert_eq!(ranked[1].info.name, "ghost");
+        assert!(ranked[1].last_activity.is_none());
     }
 }

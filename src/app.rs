@@ -236,6 +236,15 @@ impl App {
             // Tick
             if last_tick.elapsed() >= self.tick_rate {
                 last_tick = Instant::now();
+
+                // If the watched directory disappeared without a Removed
+                // event (e.g. `rm -rf`), fall back to the main worktree.
+                if matches!(
+                    fallback_decision(&self.watch_path, &self.main_worktree_path),
+                    FallbackAction::SwitchToMain | FallbackAction::MainMissing,
+                ) {
+                    self.fallback_to_main()?;
+                }
             }
         }
     }

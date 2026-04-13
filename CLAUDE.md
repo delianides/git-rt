@@ -183,11 +183,13 @@ RUST_LOG=debug cargo run       # Run with debug logging
 - [ ] Virtual scrolling for large repos
 - [ ] Watch multiple repos
 
-## Crate Versions (as of project creation)
+## Crate Versions
+
+Source of truth is `Cargo.toml`. Current pins:
 
 - ratatui: 0.29
 - crossterm: 0.28
-- gix: 0.68
+- gix: 0.81
 - notify: 7.0
 - notify-debouncer-full: 0.4
 - clap: 4

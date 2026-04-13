@@ -17,6 +17,9 @@ pub struct AppConfig {
     pub pr: PrConfig,
     /// Keybinding overrides
     pub keys: KeyConfig,
+    /// Shell command used to open a file for editing. Falls back to `$EDITOR`,
+    /// then to `vim` when unset.
+    pub edit_command: Option<String>,
     /// Base branch for branch-scoped diff (e.g. "main", "develop").
     /// Auto-detected from remote if omitted.
     pub base_branch: Option<String>,
@@ -30,6 +33,7 @@ impl Default for AppConfig {
             display: DisplayConfig::default(),
             pr: PrConfig::default(),
             keys: KeyConfig::default(),
+            edit_command: None,
             base_branch: None,
         }
     }
@@ -283,5 +287,18 @@ show_labels = false
         assert_eq!(config.pr.layout.as_deref(), Some("right"));
 
         std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn edit_command_round_trip() {
+        let toml = r#"edit_command = "nvim -p""#;
+        let config: AppConfig = toml::from_str(toml).unwrap();
+        assert_eq!(config.edit_command.as_deref(), Some("nvim -p"));
+    }
+
+    #[test]
+    fn edit_command_defaults_to_none() {
+        let config = AppConfig::default();
+        assert!(config.edit_command.is_none());
     }
 }

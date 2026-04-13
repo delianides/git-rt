@@ -67,6 +67,12 @@ impl Terminal {
         })?;
         Ok(())
     }
+
+    /// Clear the screen. Used when restoring after a foreground child exits.
+    pub fn clear(&mut self) -> Result<()> {
+        self.terminal.clear()?;
+        Ok(())
+    }
 }
 
 // ── Main render entry point ──────────────────────────────────────────────────

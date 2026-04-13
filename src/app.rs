@@ -3,7 +3,13 @@ use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result};
 use crossbeam_channel::Receiver;
-use crossterm::event::{self, Event as TermEvent, KeyCode, KeyModifiers};
+use crossterm::event::{
+    self, DisableFocusChange, EnableFocusChange, Event as TermEvent, KeyCode, KeyModifiers,
+};
+use crossterm::execute;
+use crossterm::terminal::{
+    disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen,
+};
 
 use crate::config::AppConfig;
 use crate::git::GitRepo;
@@ -75,6 +81,63 @@ pub(crate) fn fallback_decision(
         return FallbackAction::MainMissing;
     }
     FallbackAction::SwitchToMain
+}
+
+/// Resolve the shell command used to edit a file.
+///
+/// Order: `config.edit_command` → `$EDITOR` (if set and non-empty) → `"vim"`.
+fn resolve_editor(config: &crate::config::AppConfig) -> String {
+    if let Some(cmd) = config.edit_command.as_ref() {
+        if !cmd.is_empty() {
+            return cmd.clone();
+        }
+    }
+    if let Ok(cmd) = std::env::var("EDITOR") {
+        if !cmd.is_empty() {
+            return cmd;
+        }
+    }
+    "vim".to_string()
+}
+
+/// Wrap a string in POSIX single-quotes, escaping any embedded single-quotes
+/// via the `'\''` idiom. Safe against spaces, `$`, backticks, quotes, etc.
+fn shell_single_quote(s: &str) -> String {
+    let mut out = String::with_capacity(s.len() + 2);
+    out.push('\'');
+    for c in s.chars() {
+        if c == '\'' {
+            out.push_str("'\\''");
+        } else {
+            out.push(c);
+        }
+    }
+    out.push('\'');
+    out
+}
+
+/// RAII guard around a foreground child process. Suspend() leaves raw mode and
+/// the alt screen; Drop restores them (and clears the screen) so ratatui redraws
+/// cleanly. Drop runs on panic, so the terminal is always restored.
+struct TerminalGuard<'a> {
+    terminal: &'a mut Terminal,
+}
+
+impl<'a> TerminalGuard<'a> {
+    fn suspend(terminal: &'a mut Terminal) -> Result<Self> {
+        disable_raw_mode().context("disable_raw_mode")?;
+        execute!(std::io::stdout(), LeaveAlternateScreen, DisableFocusChange)
+            .context("LeaveAlternateScreen + DisableFocusChange")?;
+        Ok(Self { terminal })
+    }
+}
+
+impl Drop for TerminalGuard<'_> {
+    fn drop(&mut self) {
+        let _ = enable_raw_mode();
+        let _ = execute!(std::io::stdout(), EnterAlternateScreen, EnableFocusChange);
+        let _ = self.terminal.clear();
+    }
 }
 
 impl App {
@@ -187,7 +250,7 @@ impl App {
             // Check for terminal events with timeout
             if event::poll(timeout.min(Duration::from_millis(50)))? {
                 let term_event = event::read()?;
-                if self.handle_terminal_event(term_event)? {
+                if self.handle_terminal_event(term_event, terminal)? {
                     return Ok(());
                 }
             }
@@ -256,7 +319,7 @@ impl App {
     }
 
     /// Handle terminal input events. Returns true if the app should quit.
-    fn handle_terminal_event(&mut self, event: TermEvent) -> Result<bool> {
+    fn handle_terminal_event(&mut self, event: TermEvent, terminal: &mut Terminal) -> Result<bool> {
         match event {
             TermEvent::Key(key) => {
                 // Help overlay mode: intercept keys before anything else.
@@ -317,6 +380,11 @@ impl App {
                     // Refresh manually
                     (_, KeyCode::Char('r')) => {
                         self.handle_fs_change()?;
+                    }
+
+                    // Edit selected file
+                    (_, KeyCode::Char('e')) => {
+                        self.edit_selected_file(terminal)?;
                     }
 
                     // Help popup
@@ -429,6 +497,31 @@ impl App {
         }
         self.state.set_repo_state(self.git.repo_state());
 
+        Ok(())
+    }
+
+    /// Open the currently selected file in an editor. No-op when no file is selected.
+    fn edit_selected_file(&mut self, terminal: &mut Terminal) -> Result<()> {
+        let Some(path) = self.state.selected_path() else {
+            tracing::debug!("no file selected; skipping edit");
+            return Ok(());
+        };
+        let editor = resolve_editor(&self.config);
+        let quoted = shell_single_quote(&path);
+        let cmd = format!("{editor} {quoted}");
+        tracing::info!(%cmd, cwd = %self.watch_path.display(), "Launching editor");
+
+        let _guard = TerminalGuard::suspend(terminal)?;
+        let status = std::process::Command::new("sh")
+            .arg("-c")
+            .arg(&cmd)
+            .current_dir(&self.watch_path)
+            .status()
+            .with_context(|| format!("failed to launch editor: {cmd}"))?;
+
+        if !status.success() {
+            tracing::info!(?status, "Editor exited non-zero");
+        }
         Ok(())
     }
 
@@ -695,5 +788,120 @@ mod fallback_tests {
             fallback_decision(&watch, &main),
             FallbackAction::MainMissing,
         );
+    }
+}
+
+#[cfg(test)]
+mod editor_tests {
+    use super::*;
+    use crate::config::AppConfig;
+    use std::sync::{Mutex, MutexGuard, OnceLock};
+
+    /// Serializes tests that mutate the process-global `EDITOR` env var so
+    /// they don't race when Cargo runs tests in parallel threads.
+    fn env_lock() -> MutexGuard<'static, ()> {
+        static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+        LOCK.get_or_init(|| Mutex::new(()))
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+    }
+
+    /// Guard that saves + restores a single env var around a block.
+    struct EnvGuard {
+        key: &'static str,
+        previous: Option<String>,
+    }
+
+    impl EnvGuard {
+        fn set(key: &'static str, value: &str) -> Self {
+            let previous = std::env::var(key).ok();
+            std::env::set_var(key, value);
+            Self { key, previous }
+        }
+        fn remove(key: &'static str) -> Self {
+            let previous = std::env::var(key).ok();
+            std::env::remove_var(key);
+            Self { key, previous }
+        }
+    }
+
+    impl Drop for EnvGuard {
+        fn drop(&mut self) {
+            match self.previous.take() {
+                Some(v) => std::env::set_var(self.key, v),
+                None => std::env::remove_var(self.key),
+            }
+        }
+    }
+
+    #[test]
+    fn config_value_wins() {
+        let _lock = env_lock();
+        let _g = EnvGuard::set("EDITOR", "emacs");
+        let cfg = AppConfig {
+            edit_command: Some("nvim -p".to_string()),
+            ..AppConfig::default()
+        };
+        assert_eq!(resolve_editor(&cfg), "nvim -p");
+    }
+
+    #[test]
+    fn falls_back_to_editor_env() {
+        let _lock = env_lock();
+        let _g = EnvGuard::set("EDITOR", "emacs");
+        let cfg = AppConfig::default();
+        assert_eq!(resolve_editor(&cfg), "emacs");
+    }
+
+    #[test]
+    fn falls_back_to_vim_when_unset() {
+        let _lock = env_lock();
+        let _g = EnvGuard::remove("EDITOR");
+        let cfg = AppConfig::default();
+        assert_eq!(resolve_editor(&cfg), "vim");
+    }
+
+    #[test]
+    fn empty_editor_env_falls_back_to_vim() {
+        let _lock = env_lock();
+        let _g = EnvGuard::set("EDITOR", "");
+        let cfg = AppConfig::default();
+        assert_eq!(resolve_editor(&cfg), "vim");
+    }
+
+    #[test]
+    fn empty_edit_command_falls_through() {
+        let _lock = env_lock();
+        let _g = EnvGuard::set("EDITOR", "emacs");
+        let cfg = AppConfig {
+            edit_command: Some(String::new()),
+            ..AppConfig::default()
+        };
+        assert_eq!(resolve_editor(&cfg), "emacs");
+    }
+
+    #[test]
+    fn quote_plain() {
+        assert_eq!(shell_single_quote("foo.rs"), "'foo.rs'");
+    }
+
+    #[test]
+    fn quote_space() {
+        assert_eq!(shell_single_quote("my file.rs"), "'my file.rs'");
+    }
+
+    #[test]
+    fn quote_apostrophe() {
+        assert_eq!(shell_single_quote("it's.rs"), "'it'\\''s.rs'");
+    }
+
+    #[test]
+    fn quote_dollar_and_backtick() {
+        assert_eq!(shell_single_quote("a$b`c.rs"), "'a$b`c.rs'");
+    }
+
+    #[test]
+    fn quote_empty() {
+        assert_eq!(shell_single_quote(""), "''");
     }
 }

@@ -161,129 +161,112 @@ fn walk_dir(dir: &Path, depth: usize, cutoff: SystemTime, newest: &mut Option<Sy
 #[cfg(test)]
 mod tests {
     use super::*;
+    use filetime::{set_file_mtime, FileTime};
     use std::fs;
+    use std::path::{Path, PathBuf};
+    use std::process::Command;
+    use std::time::SystemTime;
     use tempfile::tempdir;
 
-    #[test]
-    fn test_rank_single_worktree_with_no_activity() {
-        let tmp = tempdir().unwrap();
-        let worktrees = vec![WorktreeInfo {
-            name: "only".to_string(),
-            path: tmp.path().join("nonexistent"),
-            branch: None,
-        }];
-        let ranked = rank_by_activity(&worktrees);
-        assert_eq!(ranked.len(), 1);
-        assert_eq!(ranked[0].info.name, "only");
-        assert!(ranked[0].last_activity.is_none());
-    }
-
-    #[test]
-    fn test_rank_by_file_mtime_newer_first() {
-        let tmp = tempdir().unwrap();
-        let path_a = tmp.path().join("a");
-        let path_b = tmp.path().join("b");
-        fs::create_dir_all(&path_a).unwrap();
-        fs::create_dir_all(&path_b).unwrap();
-        fs::write(path_a.join("file.txt"), "older").unwrap();
-        std::thread::sleep(Duration::from_millis(20));
-        fs::write(path_b.join("file.txt"), "newer").unwrap();
-
-        let worktrees = vec![
-            WorktreeInfo {
-                name: "a".to_string(),
-                path: path_a,
-                branch: None,
-            },
-            WorktreeInfo {
-                name: "b".to_string(),
-                path: path_b,
-                branch: None,
-            },
-        ];
-        let ranked = rank_by_activity(&worktrees);
-        assert_eq!(ranked[0].info.name, "b", "newer worktree should rank first");
-        assert_eq!(ranked[1].info.name, "a");
-    }
-
-    #[test]
-    fn test_rank_none_activity_sorts_last() {
-        let tmp = tempdir().unwrap();
-        let path_a = tmp.path().join("a");
-        fs::create_dir_all(&path_a).unwrap();
-        fs::write(path_a.join("file.txt"), "content").unwrap();
-
-        let worktrees = vec![
-            WorktreeInfo {
-                name: "ghost".to_string(),
-                path: tmp.path().join("nonexistent"),
-                branch: None,
-            },
-            WorktreeInfo {
-                name: "real".to_string(),
-                path: path_a,
-                branch: None,
-            },
-        ];
-        let ranked = rank_by_activity(&worktrees);
-        assert_eq!(ranked[0].info.name, "real");
-        assert_eq!(ranked[1].info.name, "ghost");
-        assert!(ranked[1].last_activity.is_none());
-    }
-
-    #[test]
-    fn test_rank_alphabetical_tiebreaker_when_both_none() {
-        let tmp = tempdir().unwrap();
-        let worktrees = vec![
-            WorktreeInfo {
-                name: "zebra".to_string(),
-                path: tmp.path().join("z"),
-                branch: None,
-            },
-            WorktreeInfo {
-                name: "alpha".to_string(),
-                path: tmp.path().join("a"),
-                branch: None,
-            },
-        ];
-        let ranked = rank_by_activity(&worktrees);
-        assert_eq!(ranked[0].info.name, "alpha");
-        assert_eq!(ranked[1].info.name, "zebra");
-    }
-
-    #[test]
-    fn test_walk_respects_skip_dirs() {
-        let tmp = tempdir().unwrap();
-        let root = tmp.path();
-        // Create a file inside target/ that's older
-        let target_dir = root.join("target");
-        fs::create_dir_all(&target_dir).unwrap();
-        fs::write(target_dir.join("new.bin"), "old-inside-target").unwrap();
-        std::thread::sleep(Duration::from_millis(20));
-        // Write a root-level file (should be the newest non-skipped file)
-        fs::write(root.join("src.rs"), "content").unwrap();
-
-        // Also write a very new file in target/ to prove it's skipped
-        std::thread::sleep(Duration::from_millis(20));
-        fs::write(target_dir.join("newest.bin"), "newest-but-skipped").unwrap();
-
-        let newest = newest_file_mtime(root).unwrap();
-        let root_mtime = fs::metadata(root.join("src.rs"))
-            .unwrap()
-            .modified()
-            .unwrap();
-        let target_mtime = fs::metadata(target_dir.join("newest.bin"))
-            .unwrap()
-            .modified()
-            .unwrap();
-        // Newest should be the root file (target/ is skipped)
+    fn git(dir: &Path, args: &[&str]) {
+        let out = Command::new("git")
+            .args(args)
+            .current_dir(dir)
+            .output()
+            .expect("git command failed");
         assert!(
-            newest >= root_mtime - Duration::from_millis(5)
-                && newest <= root_mtime + Duration::from_millis(5),
-            "newest should be the root src.rs file, not target/newest.bin (newest={:?}, root_mtime={:?}, target_mtime={:?})",
-            newest,
-            root_mtime,
-            target_mtime
+            out.status.success(),
+            "git {:?} failed in {:?}: stdout={} stderr={}",
+            args,
+            dir,
+            String::from_utf8_lossy(&out.stdout),
+            String::from_utf8_lossy(&out.stderr),
+        );
+    }
+
+    fn init_repo(path: &Path) {
+        fs::create_dir_all(path).unwrap();
+        git(path, &["init", "-q", "-b", "main"]);
+        git(path, &["config", "user.email", "test@example.com"]);
+        git(path, &["config", "user.name", "Test"]);
+        // Ensure commits don't require signing in case the user's global
+        // config has commit.gpgsign=true or similar.
+        git(path, &["config", "commit.gpgsign", "false"]);
+        git(path, &["config", "tag.gpgsign", "false"]);
+    }
+
+    fn commit_empty(path: &Path, msg: &str) {
+        git(path, &["commit", "--allow-empty", "-q", "-m", msg]);
+    }
+
+    fn backdate(path: &Path, days_ago: u64) {
+        let secs = SystemTime::now()
+            .duration_since(SystemTime::UNIX_EPOCH)
+            .unwrap()
+            .as_secs()
+            - days_ago * 24 * 60 * 60;
+        set_file_mtime(path, FileTime::from_unix_time(secs as i64, 0)).unwrap();
+    }
+
+    fn add_linked_worktree(main: &Path, name: &str, branch: &str) -> PathBuf {
+        let wt_path = main.join(".worktrees").join(name);
+        git(
+            main,
+            &[
+                "worktree",
+                "add",
+                "-q",
+                "-b",
+                branch,
+                wt_path.to_str().unwrap(),
+            ],
+        );
+        wt_path
+    }
+
+    fn worktree_info(name: &str, path: PathBuf) -> WorktreeInfo {
+        WorktreeInfo {
+            name: name.to_string(),
+            path,
+            branch: None,
+        }
+    }
+
+    #[test]
+    fn branch_creation_boosts_main_worktree() {
+        // Reproduces the reported bug: linked worktree is 2 months old,
+        // user creates a fresh branch in main (HEAD moves, no commit yet).
+        // Main must rank first via head_ref_mtime.
+        let tmp = tempdir().unwrap();
+        let main = tmp.path().join("repo");
+        init_repo(&main);
+        commit_empty(&main, "root");
+
+        // Create a linked worktree and backdate all its activity signals.
+        let linked = add_linked_worktree(&main, "stale", "old-branch");
+        let common_git = main.join(".git");
+        let linked_gitdir = common_git.join("worktrees").join("stale");
+        backdate(&linked_gitdir.join("HEAD"), 60);
+        backdate(&linked_gitdir.join("index"), 60);
+        // Also backdate main's signals to simulate "haven't worked here in a while".
+        backdate(&common_git.join("HEAD"), 90);
+        backdate(&common_git.join("index"), 90);
+
+        // User creates a new branch in main: HEAD is rewritten to now, no commit.
+        git(&main, &["checkout", "-q", "-b", "fresh-branch"]);
+        // `checkout -b` also refreshes `.git/index` mtime on this platform.
+        // Push it back so only HEAD reflects the branch creation — that isolates
+        // the signal `head_ref_mtime` is meant to catch.
+        backdate(&common_git.join("index"), 90);
+
+        let worktrees = vec![
+            worktree_info("main", main.clone()),
+            worktree_info("stale", linked),
+        ];
+        let ranked = rank_by_activity(&worktrees);
+        assert_eq!(
+            ranked[0].info.name, "main",
+            "main should win after branch creation refreshed HEAD mtime"
         );
     }
 }

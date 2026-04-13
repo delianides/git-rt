@@ -433,7 +433,7 @@ impl App {
                 tracing::info!(worktree = %info.name, "New worktree detected, switching");
                 self.switch_to_worktree(info)?;
             }
-            WorktreeEvent::Removed(name) => {
+            WorktreeEvent::Removed { name, path: _ } => {
                 tracing::info!(worktree = %name, "Worktree removed");
                 let is_current = self
                     .worktree_monitor

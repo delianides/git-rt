@@ -19,7 +19,10 @@ pub struct WorktreeInfo {
 #[derive(Debug)]
 pub enum WorktreeEvent {
     Added(WorktreeInfo),
-    Removed(String),
+    Removed {
+        name: String,
+        path: PathBuf,
+    },
     /// A worktree's HEAD changed to a different branch.
     BranchChanged {
         worktree: String,
@@ -129,6 +132,8 @@ pub struct WorktreeMonitor {
     head_watchers: HashMap<String, Debouncer<RecommendedWatcher, RecommendedCache>>,
     known_branches: HashMap<String, String>,
     known_worktrees: HashMap<String, WorktreeInfo>,
+    /// Names of worktrees discovered via scan_and_reconcile (linked worktrees only, not main).
+    linked_worktree_names: std::collections::HashSet<String>,
     current_target: Option<String>,
     common_git_dir: PathBuf,
     git_worktrees_dir: PathBuf,
@@ -174,6 +179,7 @@ impl WorktreeMonitor {
             head_watchers: HashMap::new(),
             known_branches: HashMap::new(),
             known_worktrees: HashMap::new(),
+            linked_worktree_names: std::collections::HashSet::new(),
             current_target: None,
             common_git_dir: common_git_dir.clone(),
             git_worktrees_dir,
@@ -224,21 +230,25 @@ impl WorktreeMonitor {
         let current = list_worktrees(&self.git_worktrees_dir);
         let current_names: std::collections::HashSet<String> =
             current.iter().map(|w| w.name.clone()).collect();
-        // Filter known_worktrees to only linked worktrees (those that exist in git_worktrees_dir).
-        // The main worktree is registered separately and should not be removed during reconciliation.
-        let known_names: std::collections::HashSet<String> = self
-            .known_worktrees
-            .keys()
-            .filter(|name| self.git_worktrees_dir.join(name).is_dir())
-            .cloned()
-            .collect();
+        // Use the set of previously-tracked linked worktree names rather than checking the
+        // filesystem at reconcile time. The main worktree is registered separately via
+        // known_worktrees but is never added to linked_worktree_names, so it will not be
+        // included here and will not generate a spurious Removed event.
+        let known_names = self.linked_worktree_names.clone();
 
         // Detect removed
         for name in known_names.difference(&current_names) {
+            let removed_path = self.known_worktrees.get(name).map(|info| info.path.clone());
             self.known_worktrees.remove(name);
             self.known_branches.remove(name);
             self.head_watchers.remove(name);
-            let _ = self.event_tx.try_send(WorktreeEvent::Removed(name.clone()));
+            self.linked_worktree_names.remove(name);
+            if let Some(path) = removed_path {
+                let _ = self.event_tx.try_send(WorktreeEvent::Removed {
+                    name: name.clone(),
+                    path,
+                });
+            }
             tracing::info!(worktree = %name, "Worktree removed");
         }
 
@@ -249,6 +259,7 @@ impl WorktreeMonitor {
                     self.known_branches.insert(wt.name.clone(), branch.clone());
                 }
                 self.start_head_watcher(wt);
+                self.linked_worktree_names.insert(wt.name.clone());
                 self.known_worktrees.insert(wt.name.clone(), wt.clone());
                 let _ = self.event_tx.try_send(WorktreeEvent::Added(wt.clone()));
                 tracing::info!(worktree = %wt.name, path = ?wt.path, "Worktree added");
@@ -529,6 +540,48 @@ mod tests {
     #[test]
     fn test_read_branch_from_head_empty() {
         assert_eq!(read_branch_from_head(""), None);
+    }
+
+    #[test]
+    fn test_scan_and_reconcile_removed_event_carries_path() {
+        let tmp = tempdir().unwrap();
+        // Fake main gitdir at <tmp>/.git. No commondir file, so
+        // resolve_common_git_dir returns this as the common dir.
+        let git_dir = tmp.path().join(".git");
+        fs::create_dir_all(&git_dir).unwrap();
+        fs::write(git_dir.join("HEAD"), "ref: refs/heads/main\n").unwrap();
+
+        let (rx, mut monitor) =
+            WorktreeMonitor::new(tmp.path(), Duration::from_millis(10)).unwrap();
+
+        // Drain any startup events so subsequent try_recv only observes reconcile output.
+        while rx.try_recv().is_ok() {}
+
+        // Register a linked worktree on disk under .git/worktrees/my-wt.
+        let wt_path = tmp.path().join("my-wt");
+        fs::create_dir_all(&wt_path).unwrap();
+        let worktrees_dir = git_dir.join("worktrees");
+        fs::create_dir_all(&worktrees_dir).unwrap();
+        setup_fake_worktree(&worktrees_dir, "my-wt", &wt_path, Some("feature"));
+
+        monitor.scan_and_reconcile();
+        // Drain the Added event emitted for "my-wt".
+        while rx.try_recv().is_ok() {}
+
+        // Simulate removal of the worktree metadata.
+        fs::remove_dir_all(worktrees_dir.join("my-wt")).unwrap();
+        monitor.scan_and_reconcile();
+
+        // Expect a Removed event with both name and path populated.
+        let mut saw_removed_with_path = false;
+        while let Ok(ev) = rx.try_recv() {
+            if let WorktreeEvent::Removed { name, path } = ev {
+                assert_eq!(name, "my-wt");
+                assert_eq!(path, wt_path);
+                saw_removed_with_path = true;
+            }
+        }
+        assert!(saw_removed_with_path, "expected Removed event with path");
     }
 
     #[test]

@@ -420,9 +420,9 @@ impl App {
                         self.state.show_help();
                     }
 
-                    // Open external difftool (stub)
+                    // Open external difftool for selected file
                     (_, KeyCode::Char('d')) => {
-                        // TODO: open external difftool
+                        self.open_difftool(terminal)?;
                     }
 
                     _ => {}
@@ -549,6 +549,36 @@ impl App {
 
         if !status.success() {
             tracing::info!(?status, "Editor exited non-zero");
+        }
+        Ok(())
+    }
+
+    /// Open the currently selected file in the configured git difftool.
+    /// Uses the app's merge base when set (matching the branch-scoped in-app
+    /// view); otherwise falls back to working-tree vs index. No-op when no
+    /// file is selected.
+    fn open_difftool(&mut self, terminal: &mut Terminal) -> Result<()> {
+        let Some(path) = self.state.selected_path() else {
+            tracing::debug!("no file selected; skipping open_difftool");
+            return Ok(());
+        };
+        let quoted = shell_single_quote(&path);
+        let cmd = match self.state.merge_base() {
+            Some(mb) => format!("git difftool -y {} -- {}", mb.to_hex(), quoted),
+            None => format!("git difftool -y -- {}", quoted),
+        };
+        tracing::info!(%cmd, cwd = %self.watch_path.display(), "Launching difftool");
+
+        let _guard = TerminalGuard::suspend(terminal)?;
+        let status = std::process::Command::new("sh")
+            .arg("-c")
+            .arg(&cmd)
+            .current_dir(&self.watch_path)
+            .status()
+            .with_context(|| format!("failed to launch difftool: {cmd}"))?;
+
+        if !status.success() {
+            tracing::info!(?status, "difftool exited non-zero");
         }
         Ok(())
     }

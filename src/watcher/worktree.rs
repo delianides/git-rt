@@ -132,8 +132,8 @@ pub struct WorktreeMonitor {
     head_watchers: HashMap<String, Debouncer<RecommendedWatcher, RecommendedCache>>,
     known_branches: HashMap<String, String>,
     known_worktrees: HashMap<String, WorktreeInfo>,
-    /// Names of worktrees discovered via scan_and_reconcile (linked worktrees only, not main).
-    linked_worktree_names: std::collections::HashSet<String>,
+    /// Name of the main worktree, used to exclude it when computing linked-worktree sets.
+    main_worktree_name: Option<String>,
     current_target: Option<String>,
     common_git_dir: PathBuf,
     git_worktrees_dir: PathBuf,
@@ -179,7 +179,7 @@ impl WorktreeMonitor {
             head_watchers: HashMap::new(),
             known_branches: HashMap::new(),
             known_worktrees: HashMap::new(),
-            linked_worktree_names: std::collections::HashSet::new(),
+            main_worktree_name: None,
             current_target: None,
             common_git_dir: common_git_dir.clone(),
             git_worktrees_dir,
@@ -217,6 +217,7 @@ impl WorktreeMonitor {
                     .insert(main_info.name.clone(), branch.clone());
             }
             monitor.start_head_watcher(&main_info);
+            monitor.main_worktree_name = Some(main_info.name.clone());
             monitor
                 .known_worktrees
                 .insert(main_info.name.clone(), main_info);
@@ -230,26 +231,33 @@ impl WorktreeMonitor {
         let current = list_worktrees(&self.git_worktrees_dir);
         let current_names: std::collections::HashSet<String> =
             current.iter().map(|w| w.name.clone()).collect();
-        // Use the set of previously-tracked linked worktree names rather than checking the
-        // filesystem at reconcile time. The main worktree is registered separately via
-        // known_worktrees but is never added to linked_worktree_names, so it will not be
-        // included here and will not generate a spurious Removed event.
-        let known_names = self.linked_worktree_names.clone();
+        // Linked worktrees are every known worktree except the main one.
+        // Deriving from known_worktrees keeps a single source of truth and prevents
+        // the main worktree from generating a spurious Removed event.
+        let known_names: std::collections::HashSet<String> = self
+            .known_worktrees
+            .keys()
+            .filter(|name| Some(name.as_str()) != self.main_worktree_name.as_deref())
+            .cloned()
+            .collect();
 
         // Detect removed
         for name in known_names.difference(&current_names) {
-            let removed_path = self.known_worktrees.get(name).map(|info| info.path.clone());
+            // Invariant: every entry in known_names is also in known_worktrees,
+            // so this expect should never fire.
+            let path = self
+                .known_worktrees
+                .get(name)
+                .map(|info| info.path.clone())
+                .expect("known_worktrees must contain every name in known_names");
             self.known_worktrees.remove(name);
             self.known_branches.remove(name);
             self.head_watchers.remove(name);
-            self.linked_worktree_names.remove(name);
-            if let Some(path) = removed_path {
-                let _ = self.event_tx.try_send(WorktreeEvent::Removed {
-                    name: name.clone(),
-                    path,
-                });
-            }
-            tracing::info!(worktree = %name, "Worktree removed");
+            let _ = self.event_tx.try_send(WorktreeEvent::Removed {
+                name: name.clone(),
+                path: path.clone(),
+            });
+            tracing::info!(worktree = %name, path = ?path, "Worktree removed");
         }
 
         // Detect added
@@ -259,7 +267,6 @@ impl WorktreeMonitor {
                     self.known_branches.insert(wt.name.clone(), branch.clone());
                 }
                 self.start_head_watcher(wt);
-                self.linked_worktree_names.insert(wt.name.clone());
                 self.known_worktrees.insert(wt.name.clone(), wt.clone());
                 let _ = self.event_tx.try_send(WorktreeEvent::Added(wt.clone()));
                 tracing::info!(worktree = %wt.name, path = ?wt.path, "Worktree added");

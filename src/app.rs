@@ -33,6 +33,9 @@ pub struct App {
     repo_path: PathBuf,
     /// The path currently being watched
     watch_path: PathBuf,
+    /// The path of the main worktree — stable fallback target when
+    /// the watched worktree is removed.
+    main_worktree_path: PathBuf,
     /// Worktree monitor (None if auto-follow is disabled)
     worktree_monitor: Option<crate::watcher::worktree::WorktreeMonitor>,
     /// Receiver for worktree events
@@ -105,6 +108,8 @@ impl App {
             None
         };
 
+        let main_worktree_path = crate::git::main_worktree_path(&repo_path);
+
         Ok(Self {
             state,
             git,
@@ -115,6 +120,7 @@ impl App {
             tick_rate: Duration::from_millis(250),
             repo_path,
             watch_path,
+            main_worktree_path,
             worktree_monitor,
             wt_rx,
             gh_rx,

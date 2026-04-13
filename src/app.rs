@@ -735,6 +735,16 @@ mod fallback_tests {
 mod editor_tests {
     use super::*;
     use crate::config::AppConfig;
+    use std::sync::{Mutex, MutexGuard, OnceLock};
+
+    /// Serializes tests that mutate the process-global `EDITOR` env var so
+    /// they don't race when Cargo runs tests in parallel threads.
+    fn env_lock() -> MutexGuard<'static, ()> {
+        static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+        LOCK.get_or_init(|| Mutex::new(()))
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+    }
 
     /// Guard that saves + restores a single env var around a block.
     struct EnvGuard {
@@ -766,6 +776,7 @@ mod editor_tests {
 
     #[test]
     fn config_value_wins() {
+        let _lock = env_lock();
         let _g = EnvGuard::set("EDITOR", "emacs");
         let cfg = AppConfig {
             edit_command: Some("nvim -p".to_string()),
@@ -776,6 +787,7 @@ mod editor_tests {
 
     #[test]
     fn falls_back_to_editor_env() {
+        let _lock = env_lock();
         let _g = EnvGuard::set("EDITOR", "emacs");
         let cfg = AppConfig::default();
         assert_eq!(resolve_editor(&cfg), "emacs");
@@ -783,6 +795,7 @@ mod editor_tests {
 
     #[test]
     fn falls_back_to_vim_when_unset() {
+        let _lock = env_lock();
         let _g = EnvGuard::remove("EDITOR");
         let cfg = AppConfig::default();
         assert_eq!(resolve_editor(&cfg), "vim");
@@ -790,6 +803,7 @@ mod editor_tests {
 
     #[test]
     fn empty_editor_env_falls_back_to_vim() {
+        let _lock = env_lock();
         let _g = EnvGuard::set("EDITOR", "");
         let cfg = AppConfig::default();
         assert_eq!(resolve_editor(&cfg), "vim");
@@ -797,6 +811,7 @@ mod editor_tests {
 
     #[test]
     fn empty_edit_command_falls_through() {
+        let _lock = env_lock();
         let _g = EnvGuard::set("EDITOR", "emacs");
         let cfg = AppConfig {
             edit_command: Some(String::new()),

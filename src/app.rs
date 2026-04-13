@@ -77,6 +77,23 @@ pub(crate) fn fallback_decision(
     FallbackAction::SwitchToMain
 }
 
+/// Resolve the shell command used to edit a file.
+///
+/// Order: `config.edit_command` → `$EDITOR` (if set and non-empty) → `"vim"`.
+fn resolve_editor(config: &crate::config::AppConfig) -> String {
+    if let Some(cmd) = config.edit_command.as_ref() {
+        if !cmd.is_empty() {
+            return cmd.clone();
+        }
+    }
+    if let Ok(cmd) = std::env::var("EDITOR") {
+        if !cmd.is_empty() {
+            return cmd;
+        }
+    }
+    "vim".to_string()
+}
+
 impl App {
     pub fn new(
         watch_path: PathBuf,
@@ -695,5 +712,80 @@ mod fallback_tests {
             fallback_decision(&watch, &main),
             FallbackAction::MainMissing,
         );
+    }
+}
+
+#[cfg(test)]
+mod editor_tests {
+    use super::*;
+    use crate::config::AppConfig;
+
+    /// Guard that saves + restores a single env var around a block.
+    struct EnvGuard {
+        key: &'static str,
+        previous: Option<String>,
+    }
+
+    impl EnvGuard {
+        fn set(key: &'static str, value: &str) -> Self {
+            let previous = std::env::var(key).ok();
+            std::env::set_var(key, value);
+            Self { key, previous }
+        }
+        fn remove(key: &'static str) -> Self {
+            let previous = std::env::var(key).ok();
+            std::env::remove_var(key);
+            Self { key, previous }
+        }
+    }
+
+    impl Drop for EnvGuard {
+        fn drop(&mut self) {
+            match self.previous.take() {
+                Some(v) => std::env::set_var(self.key, v),
+                None => std::env::remove_var(self.key),
+            }
+        }
+    }
+
+    #[test]
+    fn config_value_wins() {
+        let _g = EnvGuard::set("EDITOR", "emacs");
+        let cfg = AppConfig {
+            edit_command: Some("nvim -p".to_string()),
+            ..AppConfig::default()
+        };
+        assert_eq!(resolve_editor(&cfg), "nvim -p");
+    }
+
+    #[test]
+    fn falls_back_to_editor_env() {
+        let _g = EnvGuard::set("EDITOR", "emacs");
+        let cfg = AppConfig::default();
+        assert_eq!(resolve_editor(&cfg), "emacs");
+    }
+
+    #[test]
+    fn falls_back_to_vim_when_unset() {
+        let _g = EnvGuard::remove("EDITOR");
+        let cfg = AppConfig::default();
+        assert_eq!(resolve_editor(&cfg), "vim");
+    }
+
+    #[test]
+    fn empty_editor_env_falls_back_to_vim() {
+        let _g = EnvGuard::set("EDITOR", "");
+        let cfg = AppConfig::default();
+        assert_eq!(resolve_editor(&cfg), "vim");
+    }
+
+    #[test]
+    fn empty_edit_command_falls_through() {
+        let _g = EnvGuard::set("EDITOR", "emacs");
+        let cfg = AppConfig {
+            edit_command: Some(String::new()),
+            ..AppConfig::default()
+        };
+        assert_eq!(resolve_editor(&cfg), "emacs");
     }
 }

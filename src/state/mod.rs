@@ -104,6 +104,7 @@ pub struct AppState {
     /// Number of times the file list has been refreshed
     refresh_count: usize,
     /// When the app started (for computing "last updated N seconds ago")
+    #[allow(dead_code)]
     start_time: Instant,
     /// When the last refresh happened
     last_refresh: Instant,

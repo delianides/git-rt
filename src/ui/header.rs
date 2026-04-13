@@ -1,4 +1,4 @@
-//! Main pane title header — the compact `N files +ins -del · branch ·
+//! Main pane title header — the compact `repo/branch · N files +ins -del ·
 //! ↑↓ · stash` line that lives in the rounded top border via
 //! `Block::title`.
 //!
@@ -30,12 +30,25 @@ pub fn build_header_title(state: &AppState, theme: &Theme) -> Line<'static> {
     let total_ins: usize = files.iter().map(|f| f.insertions).sum();
     let total_del: usize = files.iter().map(|f| f.deletions).sum();
 
+    let repo = state.repo_name();
     let branch = state.branch();
 
     let text_style = Style::default().fg(theme.header_text);
     let sep_style = Style::default().fg(theme.header_separator);
 
     let mut spans: Vec<Span<'static>> = vec![Span::raw(" ")];
+
+    // Leading `repo/branch` segment (with graceful fallbacks).
+    let leading = match (repo.is_empty(), branch.is_empty()) {
+        (false, false) => Some(format!("{repo}/{branch}")),
+        (true, false) => Some(branch.to_string()),
+        (false, true) => Some(repo.to_string()),
+        (true, true) => None,
+    };
+    if let Some(text) = leading {
+        spans.push(Span::styled(text, text_style));
+        spans.push(Span::styled(" · ", sep_style));
+    }
 
     // file count + diff stats (always shown)
     spans.push(Span::styled(format!("{file_count} files"), text_style));
@@ -50,12 +63,6 @@ pub fn build_header_title(state: &AppState, theme: &Theme) -> Line<'static> {
             format!("-{total_del}"),
             Style::default().fg(theme.file_deletions),
         ));
-    }
-
-    // branch
-    if !branch.is_empty() {
-        spans.push(Span::styled(" · ", sep_style));
-        spans.push(Span::styled(branch.to_string(), text_style));
     }
 
     // ahead/behind (only when non-zero)
@@ -104,7 +111,7 @@ mod tests {
     fn test_header_title_basic() {
         let s = fresh_state();
         let line = build_header_title(&s, &test_theme());
-        assert_eq!(line_text(&line), " 0 files · main ");
+        assert_eq!(line_text(&line), " git-rt/main · 0 files ");
     }
 
     #[test]
@@ -126,17 +133,19 @@ mod tests {
             },
         ]);
         let line = build_header_title(&s, &test_theme());
-        assert_eq!(line_text(&line), " 2 files +16 -3 · main ");
+        assert_eq!(line_text(&line), " git-rt/main · 2 files +16 -3 ");
     }
 
     #[test]
-    fn test_header_title_with_worktree_and_ab_and_stash() {
+    fn test_header_title_with_ab_and_stash() {
         let mut s = fresh_state();
-        s.set_worktree_name("drew-branch".to_string());
         s.set_ahead_behind(Some((2, 1)));
         s.set_stash_count(3);
         let line = build_header_title(&s, &test_theme());
-        assert_eq!(line_text(&line), " 0 files · main · ↑2 ↓1 · 3 stash ");
+        assert_eq!(
+            line_text(&line),
+            " git-rt/main · 0 files · ↑2 ↓1 · 3 stash "
+        );
     }
 
     #[test]
@@ -144,7 +153,7 @@ mod tests {
         let mut s = fresh_state();
         s.set_ahead_behind(Some((0, 0)));
         let line = build_header_title(&s, &test_theme());
-        assert_eq!(line_text(&line), " 0 files · main ");
+        assert_eq!(line_text(&line), " git-rt/main · 0 files ");
     }
 
     #[test]
@@ -152,7 +161,7 @@ mod tests {
         let mut s = fresh_state();
         s.set_stash_count(0);
         let line = build_header_title(&s, &test_theme());
-        assert_eq!(line_text(&line), " 0 files · main ");
+        assert_eq!(line_text(&line), " git-rt/main · 0 files ");
     }
 
     #[test]
@@ -161,5 +170,28 @@ mod tests {
         s.set_flash_message("Switched to worktree: foo".to_string());
         let line = build_header_title(&s, &test_theme());
         assert_eq!(line_text(&line), " Switched to worktree: foo ");
+    }
+
+    #[test]
+    fn test_header_title_empty_repo_name_shows_branch_only() {
+        let s = AppState::new(vec![], Duration::from_millis(600), "main".to_string());
+        // repo_name left empty
+        let line = build_header_title(&s, &test_theme());
+        assert_eq!(line_text(&line), " main · 0 files ");
+    }
+
+    #[test]
+    fn test_header_title_detached_head_shows_repo_only() {
+        let mut s = AppState::new(vec![], Duration::from_millis(600), String::new());
+        s.set_repo_name("git-rt".to_string());
+        let line = build_header_title(&s, &test_theme());
+        assert_eq!(line_text(&line), " git-rt · 0 files ");
+    }
+
+    #[test]
+    fn test_header_title_no_repo_no_branch_omits_segment() {
+        let s = AppState::new(vec![], Duration::from_millis(600), String::new());
+        let line = build_header_title(&s, &test_theme());
+        assert_eq!(line_text(&line), " 0 files ");
     }
 }

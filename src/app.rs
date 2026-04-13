@@ -465,16 +465,17 @@ impl App {
                 tracing::info!(worktree = %info.name, "New worktree detected, switching");
                 self.switch_to_worktree(info)?;
             }
-            WorktreeEvent::Removed { name, path: _ } => {
-                tracing::info!(worktree = %name, "Worktree removed");
-                let is_current = self
+            WorktreeEvent::Removed { name, path } => {
+                tracing::info!(worktree = %name, path = ?path, "Worktree removed");
+                let is_current_by_path = self.watch_path == path;
+                let is_current_by_name = self
                     .worktree_monitor
                     .as_ref()
                     .and_then(|m| m.current_target())
                     .map(|t| t == name)
                     .unwrap_or(false);
-                if is_current {
-                    self.switch_to_path(self.repo_path.clone())?;
+                if is_current_by_path || is_current_by_name {
+                    self.fallback_to_main()?;
                 }
             }
             WorktreeEvent::BranchChanged { worktree, branch } => {
@@ -584,6 +585,42 @@ impl App {
         };
 
         Ok(())
+    }
+
+    /// Fall back to the main worktree when the watched worktree is gone.
+    ///
+    /// Uses `fallback_decision` to choose among switching, flashing a
+    /// "main-missing" warning, or no-op. Idempotent — safe to call on
+    /// every tick.
+    fn fallback_to_main(&mut self) -> Result<()> {
+        match fallback_decision(&self.watch_path, &self.main_worktree_path) {
+            FallbackAction::None => Ok(()),
+            FallbackAction::SwitchToMain => {
+                let main = self.main_worktree_path.clone();
+                tracing::info!(
+                    watch = ?self.watch_path,
+                    main = ?main,
+                    "Watched worktree removed — switching to main"
+                );
+                self.switch_to_path(main)?;
+                self.state
+                    .set_flash_message("Worktree removed — switched to main".to_string());
+                if let Some(ref mut monitor) = self.worktree_monitor {
+                    monitor.set_current_target(None);
+                }
+                Ok(())
+            }
+            FallbackAction::MainMissing => {
+                tracing::warn!(
+                    watch = ?self.watch_path,
+                    main = ?self.main_worktree_path,
+                    "Watched worktree and main worktree both missing — holding state"
+                );
+                self.state
+                    .set_flash_message("Main worktree is missing — holding state".to_string());
+                Ok(())
+            }
+        }
     }
 }
 

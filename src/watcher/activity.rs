@@ -1,23 +1,13 @@
 //! Rank worktrees by recent activity for cold-start auto-switch.
 //!
-//! Uses a hybrid signal: primary is the git index mtime (fast stat call,
-//! covers staging/commits/checkouts), fallback is a capped recursive file
-//! walk of the worktree directory. The result is a `WorktreeActivity` with
-//! an optional `last_activity` timestamp.
+//! Activity is the max of three git-native signals per worktree: HEAD
+//! commit's committer time, HEAD ref mtime, and index mtime. Main
+//! worktree wins ties, then alphabetical.
 
 use std::path::Path;
 use std::time::{Duration, SystemTime};
 
 use super::worktree::{list_worktrees, WorktreeInfo};
-
-/// Maximum depth of the recursive walk fallback.
-const MAX_WALK_DEPTH: usize = 6;
-
-/// Files modified more than this long ago are skipped during the walk.
-const MAX_FILE_AGE: Duration = Duration::from_secs(7 * 24 * 60 * 60); // 7 days
-
-/// Directories skipped during the walk.
-const SKIP_DIRS: &[&str] = &[".git", "target", "node_modules", ".worktrees"];
 
 /// A worktree with its computed activity timestamp.
 #[derive(Debug, Clone)]
@@ -93,18 +83,20 @@ pub fn rank_by_activity(worktrees: &[WorktreeInfo]) -> Vec<WorktreeActivity> {
     ranked
 }
 
-/// Compute the last activity timestamp for a worktree at the given path.
-/// Uses index mtime as the primary signal, falls back to a capped walk.
+/// Compute the last activity timestamp for a worktree.
+/// Takes the max of three git-native signals:
+/// 1. HEAD commit's committer time (primary),
+/// 2. mtime of the worktree's HEAD ref file (catches branch creation/checkout),
+/// 3. mtime of the worktree's index file (catches staging).
 fn compute_activity(worktree_path: &Path) -> Option<SystemTime> {
-    let index_mtime = index_mtime(worktree_path);
-    let walk_mtime = newest_file_mtime(worktree_path);
-
-    match (index_mtime, walk_mtime) {
-        (Some(a), Some(b)) => Some(a.max(b)),
-        (Some(a), None) => Some(a),
-        (None, Some(b)) => Some(b),
-        (None, None) => None,
-    }
+    [
+        head_commit_time(worktree_path),
+        head_ref_mtime(worktree_path),
+        index_mtime(worktree_path),
+    ]
+    .into_iter()
+    .flatten()
+    .max()
 }
 
 /// Get the mtime of the worktree's `.git/index` file.
@@ -115,47 +107,24 @@ fn index_mtime(worktree_path: &Path) -> Option<SystemTime> {
     std::fs::metadata(&index_path).ok()?.modified().ok()
 }
 
-/// Recursively walk the worktree to find the newest modified file.
-/// Respects depth, age, and directory skip list.
-fn newest_file_mtime(root: &Path) -> Option<SystemTime> {
-    let now = SystemTime::now();
-    let cutoff = now - MAX_FILE_AGE;
-    let mut newest: Option<SystemTime> = None;
-    walk_dir(root, 0, cutoff, &mut newest);
-    newest
+/// Get the committer timestamp of the worktree's HEAD commit via gix.
+/// Returns `None` for unborn branches, missing repos, or corrupt commits.
+fn head_commit_time(worktree_path: &Path) -> Option<SystemTime> {
+    let repo = gix::open(worktree_path).ok()?;
+    let commit = repo.head_commit().ok()?;
+    let committer = commit.committer().ok()?;
+    let time = committer.time().ok()?;
+    let secs: u64 = time.seconds.try_into().ok()?;
+    Some(SystemTime::UNIX_EPOCH + Duration::from_secs(secs))
 }
 
-fn walk_dir(dir: &Path, depth: usize, cutoff: SystemTime, newest: &mut Option<SystemTime>) {
-    if depth > MAX_WALK_DEPTH {
-        return;
-    }
-    let entries = match std::fs::read_dir(dir) {
-        Ok(e) => e,
-        Err(_) => return,
-    };
-    for entry in entries.flatten() {
-        let name = entry.file_name();
-        let name_str = name.to_string_lossy();
-        if SKIP_DIRS.iter().any(|skip| name_str == *skip) {
-            continue;
-        }
-        let path = entry.path();
-        let metadata = match entry.metadata() {
-            Ok(m) => m,
-            Err(_) => continue,
-        };
-        if metadata.is_dir() {
-            walk_dir(&path, depth + 1, cutoff, newest);
-        } else if let Ok(mtime) = metadata.modified() {
-            if mtime < cutoff {
-                continue;
-            }
-            match newest {
-                Some(current) if mtime <= *current => {}
-                _ => *newest = Some(mtime),
-            }
-        }
-    }
+/// Get the mtime of the worktree's HEAD file.
+/// Main worktree: `<common_git_dir>/HEAD`.
+/// Linked worktree: `<common_git_dir>/worktrees/<name>/HEAD`.
+fn head_ref_mtime(worktree_path: &Path) -> Option<SystemTime> {
+    let git_dir = crate::git::resolve_git_dir(worktree_path)?;
+    let head_path = git_dir.join("HEAD");
+    std::fs::metadata(&head_path).ok()?.modified().ok()
 }
 
 #[cfg(test)]

@@ -36,6 +36,11 @@ pub struct App {
     /// The path of the main worktree — stable fallback target when
     /// the watched worktree is removed.
     main_worktree_path: PathBuf,
+    /// Tracks whether we have already warned the user that the main worktree
+    /// is missing. Prevents the tick-level existence check from spamming the
+    /// flash message every 250 ms when both the watched path and the main
+    /// worktree are gone.
+    main_missing_warned: bool,
     /// Worktree monitor (None if auto-follow is disabled)
     worktree_monitor: Option<crate::watcher::worktree::WorktreeMonitor>,
     /// Receiver for worktree events
@@ -147,6 +152,7 @@ impl App {
             repo_path,
             watch_path,
             main_worktree_path,
+            main_missing_warned: false,
             worktree_monitor,
             wt_rx,
             gh_rx,
@@ -603,7 +609,10 @@ impl App {
     /// every tick.
     fn fallback_to_main(&mut self) -> Result<()> {
         match fallback_decision(&self.watch_path, &self.main_worktree_path) {
-            FallbackAction::None => Ok(()),
+            FallbackAction::None => {
+                self.main_missing_warned = false;
+                Ok(())
+            }
             FallbackAction::SwitchToMain => {
                 let main = self.main_worktree_path.clone();
                 tracing::info!(
@@ -617,16 +626,20 @@ impl App {
                 if let Some(ref mut monitor) = self.worktree_monitor {
                     monitor.set_current_target(None);
                 }
+                self.main_missing_warned = false;
                 Ok(())
             }
             FallbackAction::MainMissing => {
-                tracing::warn!(
-                    watch = ?self.watch_path,
-                    main = ?self.main_worktree_path,
-                    "Watched worktree and main worktree both missing — holding state"
-                );
-                self.state
-                    .set_flash_message("Main worktree is missing — holding state".to_string());
+                if !self.main_missing_warned {
+                    tracing::warn!(
+                        watch = ?self.watch_path,
+                        main = ?self.main_worktree_path,
+                        "Watched worktree and main worktree both missing — holding state"
+                    );
+                    self.state
+                        .set_flash_message("Main worktree is missing — holding state".to_string());
+                    self.main_missing_warned = true;
+                }
                 Ok(())
             }
         }

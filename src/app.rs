@@ -46,6 +46,32 @@ pub struct App {
     base_override: Option<String>,
 }
 
+/// The action the tick-level existence check or `Removed` handler should take.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum FallbackAction {
+    /// Watched path still exists — do nothing.
+    None,
+    /// Watched path is gone but the main worktree is available — switch to it.
+    SwitchToMain,
+    /// Watched path is gone and the main worktree is also missing — hold state
+    /// and surface a user-visible flash.
+    MainMissing,
+}
+
+/// Decide whether to fall back to the main worktree based on filesystem state.
+pub(crate) fn fallback_decision(
+    watch_path: &std::path::Path,
+    main_path: &std::path::Path,
+) -> FallbackAction {
+    if watch_path.exists() {
+        return FallbackAction::None;
+    }
+    if watch_path == main_path || !main_path.exists() {
+        return FallbackAction::MainMissing;
+    }
+    FallbackAction::SwitchToMain
+}
+
 impl App {
     pub fn new(
         watch_path: PathBuf,
@@ -558,5 +584,57 @@ impl App {
         };
 
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod fallback_tests {
+    use super::*;
+    use tempfile::tempdir;
+
+    #[test]
+    fn test_fallback_decision_watch_path_exists() {
+        let tmp = tempdir().unwrap();
+        let watch = tmp.path().join("wt");
+        let main = tmp.path().join("main");
+        std::fs::create_dir_all(&watch).unwrap();
+        std::fs::create_dir_all(&main).unwrap();
+
+        assert_eq!(fallback_decision(&watch, &main), FallbackAction::None,);
+    }
+
+    #[test]
+    fn test_fallback_decision_watch_gone_main_exists() {
+        let tmp = tempdir().unwrap();
+        let watch = tmp.path().join("wt"); // never created
+        let main = tmp.path().join("main");
+        std::fs::create_dir_all(&main).unwrap();
+
+        assert_eq!(
+            fallback_decision(&watch, &main),
+            FallbackAction::SwitchToMain,
+        );
+    }
+
+    #[test]
+    fn test_fallback_decision_watch_equals_main() {
+        let tmp = tempdir().unwrap();
+        let shared = tmp.path().join("repo");
+        // Intentionally do not create — emulate "main itself is missing"
+        assert_eq!(
+            fallback_decision(&shared, &shared),
+            FallbackAction::MainMissing,
+        );
+    }
+
+    #[test]
+    fn test_fallback_decision_both_missing() {
+        let tmp = tempdir().unwrap();
+        let watch = tmp.path().join("wt");
+        let main = tmp.path().join("main");
+        assert_eq!(
+            fallback_decision(&watch, &main),
+            FallbackAction::MainMissing,
+        );
     }
 }

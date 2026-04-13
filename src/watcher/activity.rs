@@ -66,12 +66,14 @@ fn read_main_head(common_git_dir: &Path) -> Option<String> {
 /// then break alphabetically by `info.name`. Worktrees with no
 /// detectable activity sort last (same tiebreaker order).
 pub fn rank_by_activity(worktrees: &[WorktreeInfo]) -> Vec<WorktreeActivity> {
-    // Identify the main worktree by path: it matches the parent of the
-    // common git dir for any worktree in the set.
+    // Resolve the main worktree's canonical path from any worktree in the set.
+    // `main_worktree_path` canonicalizes for linked worktrees, so compare paths
+    // canonicalized on both sides — callers may pass un-canonicalized paths
+    // (e.g. `/tmp` vs `/private/tmp` on macOS).
     let main_path = worktrees
         .first()
-        .and_then(|w| crate::git::resolve_common_git_dir(&w.path))
-        .and_then(|d| d.parent().map(|p| p.to_path_buf()));
+        .map(|w| crate::git::main_worktree_path(&w.path))
+        .and_then(|p| p.canonicalize().ok());
 
     let mut ranked: Vec<WorktreeActivity> = worktrees
         .iter()
@@ -85,7 +87,7 @@ pub fn rank_by_activity(worktrees: &[WorktreeInfo]) -> Vec<WorktreeActivity> {
         let is_main = |w: &WorktreeActivity| {
             main_path
                 .as_ref()
-                .map(|m| &w.info.path == m)
+                .and_then(|m| w.info.path.canonicalize().ok().map(|c| &c == m))
                 .unwrap_or(false)
         };
         // Primary: activity desc (None sorts last).
@@ -357,11 +359,6 @@ mod tests {
             }
         }
 
-        // Canonicalize paths so the main-worktree detection in
-        // `rank_by_activity` (which canonicalizes via commondir resolution
-        // when the first entry is a linked worktree) compares equal.
-        let main = main.canonicalize().unwrap();
-        let linked = linked.canonicalize().unwrap();
         let worktrees = vec![
             // Put linked first and give it an alphabetically-earlier name —
             // only the main-preference tiebreaker can put main ahead.

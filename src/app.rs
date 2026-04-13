@@ -3,7 +3,9 @@ use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result};
 use crossbeam_channel::Receiver;
-use crossterm::event::{self, Event as TermEvent, KeyCode, KeyModifiers};
+use crossterm::event::{
+    self, DisableFocusChange, EnableFocusChange, Event as TermEvent, KeyCode, KeyModifiers,
+};
 use crossterm::execute;
 use crossterm::terminal::{
     disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen,
@@ -124,7 +126,8 @@ struct TerminalGuard<'a> {
 impl<'a> TerminalGuard<'a> {
     fn suspend(terminal: &'a mut Terminal) -> Result<Self> {
         disable_raw_mode().context("disable_raw_mode")?;
-        execute!(std::io::stdout(), LeaveAlternateScreen).context("LeaveAlternateScreen")?;
+        execute!(std::io::stdout(), LeaveAlternateScreen, DisableFocusChange)
+            .context("LeaveAlternateScreen + DisableFocusChange")?;
         Ok(Self { terminal })
     }
 }
@@ -132,7 +135,7 @@ impl<'a> TerminalGuard<'a> {
 impl Drop for TerminalGuard<'_> {
     fn drop(&mut self) {
         let _ = enable_raw_mode();
-        let _ = execute!(std::io::stdout(), EnterAlternateScreen);
+        let _ = execute!(std::io::stdout(), EnterAlternateScreen, EnableFocusChange);
         let _ = self.terminal.clear();
     }
 }

@@ -1,6 +1,6 @@
 # git-rt
 
-A real-time terminal dashboard for git changes. Watch your working tree update live as you edit files, with inline diffs, PR status, and configurable actions.
+A real-time terminal dashboard for git changes. Watch your working tree update live as you edit files, with inline diffs and PR status.
 
 ![status: early development](https://img.shields.io/badge/status-early%20development-orange)
 
@@ -108,31 +108,6 @@ show_labels = false
 
 The GitHub token is discovered from the `GITHUB_TOKEN` environment variable or your `git config`. If no token is available the PR strip silently stays hidden.
 
-### `[actions.*]`
-
-Actions are user-defined shell commands bound to a key, triggered on the currently selected file. Each action is its own table.
-
-```toml
-[actions.edit]
-key = "e"
-command = "nvim {file}"
-
-[actions.blame]
-key = "b"
-command = "git blame {file} | less -R"
-
-[actions.diff]
-key = "d"
-command = "git diff -- {file} | delta"
-```
-
-Template variables:
-
-- `{file}` — path relative to the repo root
-- `{abs_file}` — absolute path
-
-Commands are executed via `sh -c`, so shell features (pipes, redirects, subshells) are available.
-
 ### Full example
 
 ```toml
@@ -151,14 +126,6 @@ enter = "overlay"
 [pr]
 enabled = true
 show_labels = false
-
-[actions.edit]
-key = "e"
-command = "nvim {file}"
-
-[actions.blame]
-key = "b"
-command = "git blame {file} | less -R"
 ```
 
 ## Themes

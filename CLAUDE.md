@@ -20,8 +20,6 @@ src/
 │   └── mod.rs        # FileEntry list, selection, expanded state, diff cache
 ├── ui/               # Rendering via ratatui
 │   └── mod.rs        # Layout, file list, diff panel, status line
-├── actions/          # Configurable external actions (open editor, diff viewer, etc.)
-│   └── mod.rs        # Template resolution, multiplexer detection, process spawning
 └── config/           # Configuration loading and defaults
     └── mod.rs        # TOML parsing, XDG paths, default keybindings
 ```
@@ -83,31 +81,12 @@ Using `gix` (gitoxide) for all git operations — no shelling out to `git`.
 - Debounce window: 200ms default, configurable
 - On debounce fire: full git status recomputation (fast with gix)
 
-### Action System (configurable, future phase)
-
-Actions are user-defined shell command templates triggered by keybindings on a selected file. No default actions are shipped — actions are purely user-configured.
-
-Config file location: `~/.config/git-rt/config.toml`
-
-```toml
-[actions.open_editor]
-key = "e"
-command = "nvim {file}"
-
-[actions.diff_view]
-key = "d"
-command = "git diff -- {file} | delta"
-```
-
-Template variables: `{file}` (relative path), `{abs_file}` (absolute path)
-
 ## Key Design Decisions
 
 - **No polling**: All updates are event-driven via filesystem notifications
 - **Single expanded file**: Accordion pattern keeps the UI predictable and avoids layout complexity
 - **Lazy diffs**: Only compute what's visible to stay responsive in large repos
-- **Zero-config useful**: Works immediately with sensible defaults, config only needed for actions/customization
-- **Environment-agnostic**: Works in any terminal, user configures their own action commands
+- **Zero-config useful**: Works immediately with sensible defaults
 - **Pure Rust git**: gitoxide over shelling out to git CLI for speed and reliability
 
 ## Build & Run
@@ -169,10 +148,9 @@ RUST_LOG=debug cargo run       # Run with debug logging
 - [x] Status bar (branch name, total changes, last update time)
 - [ ] Respect .gitignore for watch filtering
 
-### Phase 3 — Actions & Config
+### Phase 3 — Config
 
 - [ ] Config file loading (TOML, XDG paths)
-- [x] Action system with template resolution
 - [ ] Custom keybinding configuration
 
 ### Phase 4 — Advanced

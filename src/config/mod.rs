@@ -1,4 +1,3 @@
-use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result};
@@ -18,8 +17,6 @@ pub struct AppConfig {
     pub pr: PrConfig,
     /// Keybinding overrides
     pub keys: KeyConfig,
-    /// Named actions that can be triggered on files
-    pub actions: HashMap<String, ActionConfig>,
     /// Base branch for branch-scoped diff (e.g. "main", "develop").
     /// Auto-detected from remote if omitted.
     pub base_branch: Option<String>,
@@ -33,7 +30,6 @@ impl Default for AppConfig {
             display: DisplayConfig::default(),
             pr: PrConfig::default(),
             keys: KeyConfig::default(),
-            actions: HashMap::new(),
             base_branch: None,
         }
     }
@@ -113,15 +109,6 @@ impl Default for KeyConfig {
     }
 }
 
-/// A configurable action that can be triggered on a file
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ActionConfig {
-    /// Keybinding to trigger this action
-    pub key: String,
-    /// Command template to execute (supports {file} and {abs_file} placeholders)
-    pub command: String,
-}
-
 impl AppConfig {
     /// Load config from a file path, or from the default XDG location,
     /// falling back to built-in defaults if no config file exists.
@@ -157,23 +144,6 @@ impl AppConfig {
                 Ok(AppConfig::default())
             }
         }
-    }
-
-    /// Resolve the command for an action by substituting template variables.
-    pub fn resolve_action_command(
-        &self,
-        action_name: &str,
-        file_path: &str,
-        abs_file_path: &str,
-    ) -> Option<String> {
-        let action = self.actions.get(action_name)?;
-
-        Some(
-            action
-                .command
-                .replace("{file}", file_path)
-                .replace("{abs_file}", abs_file_path),
-        )
     }
 }
 
@@ -267,49 +237,6 @@ enter = "inline"
         assert_eq!(config.keys.enter, "overlay");
 
         std::fs::remove_dir_all(&dir).ok();
-    }
-
-    #[test]
-    fn test_resolve_action_command() {
-        let mut config = AppConfig::default();
-        config.actions.insert(
-            "open_editor".to_string(),
-            ActionConfig {
-                key: "e".to_string(),
-                command: "nvim {file}".to_string(),
-            },
-        );
-        let cmd = config.resolve_action_command(
-            "open_editor",
-            "src/main.rs",
-            "/home/user/repo/src/main.rs",
-        );
-        assert_eq!(cmd.unwrap(), "nvim src/main.rs");
-    }
-
-    #[test]
-    fn test_resolve_action_unknown() {
-        let config = AppConfig::default();
-        let cmd = config.resolve_action_command("nonexistent", "file.rs", "/abs/file.rs");
-        assert!(cmd.is_none());
-    }
-
-    #[test]
-    fn test_resolve_action_abs_file_template() {
-        let mut config = AppConfig::default();
-        config.actions.insert(
-            "test_action".to_string(),
-            ActionConfig {
-                key: "t".to_string(),
-                command: "open {abs_file}".to_string(),
-            },
-        );
-        let cmd = config.resolve_action_command(
-            "test_action",
-            "src/main.rs",
-            "/home/user/repo/src/main.rs",
-        );
-        assert_eq!(cmd.unwrap(), "open /home/user/repo/src/main.rs");
     }
 
     #[test]

@@ -2,7 +2,7 @@
 name = "git-rt"
 version = "0.7.0"
 edition = "2021"
-description = "A real-time terminal dashboard for git changes with configurable actions"
+description = "A real-time terminal dashboard for git changes"
 license = "MIT"
 repository = "https://github.com/delianides/git-rt"
 readme = "README.md"

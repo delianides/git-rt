@@ -123,6 +123,21 @@ pub fn resolve_common_git_dir(repo_path: &Path) -> Option<PathBuf> {
     }
 }
 
+/// Resolve the filesystem path of the main worktree for any repo path.
+///
+/// For a linked worktree, this is the parent of the common gitdir
+/// (the canonical repo checkout). For a standard repo, it is `repo_path`.
+/// Falls back to `repo_path` if the common gitdir has no parent (bare repo
+/// or unusual layout).
+pub fn main_worktree_path(repo_path: &Path) -> PathBuf {
+    let common_git_dir =
+        resolve_common_git_dir(repo_path).unwrap_or_else(|| repo_path.join(".git"));
+    common_git_dir
+        .parent()
+        .map(Path::to_path_buf)
+        .unwrap_or_else(|| repo_path.to_path_buf())
+}
+
 /// Git repository handle backed by gix (gitoxide).
 pub struct GitRepo {
     repo: gix::Repository,
@@ -1346,5 +1361,43 @@ mod tests {
                 assert!(result.is_ok());
             }
         }
+    }
+
+    #[test]
+    fn test_main_worktree_path_for_linked_worktree() {
+        let tmp = tempfile::tempdir().unwrap();
+        let main = tmp.path().join("main-repo");
+        let worktrees = main.join(".git").join("worktrees").join("feat");
+        let linked = tmp.path().join("linked-wt");
+        std::fs::create_dir_all(&worktrees).unwrap();
+        std::fs::create_dir_all(&linked).unwrap();
+
+        // .git file in the linked worktree points into main/.git/worktrees/feat
+        std::fs::write(
+            linked.join(".git"),
+            format!("gitdir: {}\n", worktrees.display()),
+        )
+        .unwrap();
+        // commondir file resolves back to the main gitdir
+        std::fs::write(worktrees.join("commondir"), "../..\n").unwrap();
+        std::fs::create_dir_all(main.join(".git")).unwrap();
+
+        let result = main_worktree_path(&linked);
+        // Canonicalize both sides since resolve_common_git_dir canonicalizes
+        // the result.
+        assert_eq!(
+            std::fs::canonicalize(result).unwrap(),
+            std::fs::canonicalize(&main).unwrap(),
+        );
+    }
+
+    #[test]
+    fn test_main_worktree_path_for_standard_repo() {
+        let tmp = tempfile::tempdir().unwrap();
+        let repo = tmp.path().join("repo");
+        std::fs::create_dir_all(repo.join(".git")).unwrap();
+
+        let result = main_worktree_path(&repo);
+        assert_eq!(result, repo);
     }
 }

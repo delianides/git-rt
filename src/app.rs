@@ -116,6 +116,29 @@ fn shell_single_quote(s: &str) -> String {
     out
 }
 
+/// Open a URL in the user's default browser (macOS `open`, Linux `xdg-open`,
+/// Windows `cmd /C start`). Detached: returns immediately, git-rt keeps running.
+/// Stdio is nulled so launcher noise doesn't corrupt the TUI.
+fn open_url(url: &str) -> Result<()> {
+    let (program, args): (&str, Vec<&str>) = if cfg!(target_os = "macos") {
+        ("open", vec![url])
+    } else if cfg!(target_os = "windows") {
+        // `start` treats its first quoted argument as the window title, so we
+        // pass an empty title before the URL.
+        ("cmd", vec!["/C", "start", "", url])
+    } else {
+        ("xdg-open", vec![url])
+    };
+    std::process::Command::new(program)
+        .args(&args)
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .spawn()
+        .with_context(|| format!("failed to launch browser via {program}"))?;
+    Ok(())
+}
+
 /// RAII guard around a foreground child process. Suspend() leaves raw mode and
 /// the alt screen; Drop restores them (and clears the screen) so ratatui redraws
 /// cleanly. Drop runs on panic, so the terminal is always restored.
@@ -387,6 +410,11 @@ impl App {
                         self.edit_selected_file(terminal)?;
                     }
 
+                    // Open detected PR in browser
+                    (_, KeyCode::Char('p')) => {
+                        self.open_pr()?;
+                    }
+
                     // Help popup
                     (_, KeyCode::Char('?')) => {
                         self.state.show_help();
@@ -523,6 +551,18 @@ impl App {
             tracing::info!(?status, "Editor exited non-zero");
         }
         Ok(())
+    }
+
+    /// Open the detected PR for the current branch in the default browser.
+    /// No-op when no PR is detected.
+    fn open_pr(&mut self) -> Result<()> {
+        let Some(info) = self.state.pr_state().info.as_ref() else {
+            tracing::debug!("no PR detected; skipping open_pr");
+            return Ok(());
+        };
+        let url = info.url.clone();
+        tracing::info!(%url, "Opening PR in browser");
+        open_url(&url)
     }
 
     /// Expand or show overlay diff for the currently selected file, depending on config

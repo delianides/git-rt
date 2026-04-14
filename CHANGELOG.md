@@ -1,5 +1,18 @@
 # Changelog
 
+## [1.0.0](https://github.com/delianides/git-rt/compare/v0.8.0...v1.0.0) (2026-04-14)
+
+
+### ⚠ BREAKING CHANGES
+
+* **app:** use git pager for `d` key instead of difftool ([#50](https://github.com/delianides/git-rt/issues/50))
+* **cli:** drop --worktree; --branch searches all worktrees ([#48](https://github.com/delianides/git-rt/issues/48))
+
+### Features
+
+* **app:** use git pager for `d` key instead of difftool ([#50](https://github.com/delianides/git-rt/issues/50)) ([af138ca](https://github.com/delianides/git-rt/commit/af138cac28b15924fd135ffa3cc0baab7edce361))
+* **cli:** drop --worktree; --branch searches all worktrees ([#48](https://github.com/delianides/git-rt/issues/48)) ([2021b60](https://github.com/delianides/git-rt/commit/2021b60c6f66212dcb8702cdbc4607edf1cfccd1))
+
 ## [0.8.0](https://github.com/delianides/git-rt/compare/v0.7.0...v0.8.0) (2026-04-13)
 
 

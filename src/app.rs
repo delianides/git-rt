@@ -116,6 +116,18 @@ fn shell_single_quote(s: &str) -> String {
     out
 }
 
+/// Build the shell command string for opening a file diff via git's configured
+/// pager. When `merge_base` is `Some`, produces a branch-scoped diff matching
+/// the in-app branch view (merge-base vs working tree). Otherwise produces a
+/// working-tree-vs-index diff. `quoted_path` MUST be pre-quoted via
+/// `shell_single_quote`.
+fn build_diff_command(merge_base: Option<&gix::ObjectId>, quoted_path: &str) -> String {
+    match merge_base {
+        Some(mb) => format!("git diff {} -- {}", mb.to_hex(), quoted_path),
+        None => format!("git diff -- {}", quoted_path),
+    }
+}
+
 /// Open a URL in the user's default browser (macOS `open`, Linux `xdg-open`,
 /// Windows `cmd /C start`). Detached: returns immediately, git-rt keeps running.
 /// Stdio is nulled so launcher noise doesn't corrupt the TUI.
@@ -973,5 +985,27 @@ mod editor_tests {
     #[test]
     fn quote_empty() {
         assert_eq!(shell_single_quote(""), "''");
+    }
+
+    #[test]
+    fn build_diff_command_working_tree() {
+        let cmd = build_diff_command(None, "'src/main.rs'");
+        assert_eq!(cmd, "git diff -- 'src/main.rs'");
+    }
+
+    #[test]
+    fn build_diff_command_branch_scoped() {
+        let mb = gix::ObjectId::null(gix::hash::Kind::Sha1);
+        let cmd = build_diff_command(Some(&mb), "'src/main.rs'");
+        assert_eq!(
+            cmd,
+            "git diff 0000000000000000000000000000000000000000 -- 'src/main.rs'"
+        );
+    }
+
+    #[test]
+    fn build_diff_command_quoted_path_with_space() {
+        let cmd = build_diff_command(None, "'my file.rs'");
+        assert_eq!(cmd, "git diff -- 'my file.rs'");
     }
 }

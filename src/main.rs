@@ -38,14 +38,9 @@ struct Cli {
     #[arg(long)]
     log: Option<String>,
 
-    /// Pin to a specific worktree (by name or path) as the starting worktree.
-    /// Does not disable auto-follow — use --no-follow for that.
-    #[arg(long, conflicts_with = "branch")]
-    worktree: Option<String>,
-
-    /// Pin to the worktree with this branch checked out as the starting worktree.
-    /// Does not disable auto-follow — use --no-follow for that.
-    #[arg(long, conflicts_with = "worktree")]
+    /// Pin to the worktree (main or linked) with this branch checked out as the
+    /// starting worktree. Does not disable auto-follow — use --no-follow for that.
+    #[arg(long)]
     branch: Option<String>,
 
     /// Disable automatic worktree following. When set, git-rt will stay on the
@@ -90,19 +85,10 @@ fn main() -> Result<()> {
 
     let config = config::AppConfig::load(cli.config.as_deref())?;
 
-    // Resolve worktree/branch pinning.
-    // Use resolve_common_git_dir to handle linked worktrees where .git is a file.
-    let common_git_dir =
-        git::resolve_common_git_dir(&repo_path).unwrap_or_else(|| repo_path.join(".git"));
-    let git_worktrees_dir = common_git_dir.join("worktrees");
-    let pinned_worktree = if let Some(ref wt_arg) = cli.worktree {
+    // Resolve branch pinning: search across main + all linked worktrees.
+    let pinned_worktree = if let Some(ref branch_arg) = cli.branch {
         Some(
-            watcher::worktree::resolve_worktree_arg(&git_worktrees_dir, wt_arg)
-                .with_context(|| format!("Failed to resolve --worktree '{wt_arg}'"))?,
-        )
-    } else if let Some(ref branch_arg) = cli.branch {
-        Some(
-            watcher::worktree::resolve_branch_arg(&git_worktrees_dir, branch_arg)
+            watcher::activity::resolve_branch_arg(&repo_path, branch_arg)
                 .with_context(|| format!("Failed to resolve --branch '{branch_arg}'"))?,
         )
     } else {
@@ -110,7 +96,7 @@ fn main() -> Result<()> {
     };
 
     // auto_follow is now controlled only by --no-follow.
-    // --worktree and --branch no longer disable auto-follow.
+    // --branch no longer disables auto-follow.
     let auto_follow = !cli.no_follow;
 
     let watch_path = match pinned_worktree {

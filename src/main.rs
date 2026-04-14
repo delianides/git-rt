@@ -22,7 +22,7 @@ use tracing_subscriber::EnvFilter;
     about = "Real-time terminal dashboard for git changes"
 )]
 struct Cli {
-    /// Path to git repository (defaults to current directory)
+    /// Path inside a git repository (defaults to current directory; repo root is discovered)
     #[arg(default_value = ".")]
     path: PathBuf,
 

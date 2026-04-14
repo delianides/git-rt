@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.0.1](https://github.com/delianides/git-rt/compare/v1.0.0...v1.0.1) (2026-04-14)
+
+
+### Bug Fixes
+
+* **cli:** discover repo root so git-rt works from any subdirectory ([#51](https://github.com/delianides/git-rt/issues/51)) ([815fda5](https://github.com/delianides/git-rt/commit/815fda5b9999912739e558040361cd88d751d0bf))
+
 ## [1.0.0](https://github.com/delianides/git-rt/compare/v0.8.0...v1.0.0) (2026-04-14)
 
 

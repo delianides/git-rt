@@ -116,6 +116,18 @@ fn shell_single_quote(s: &str) -> String {
     out
 }
 
+/// Build the shell command string for opening a file diff via git's configured
+/// pager. When `merge_base` is `Some`, produces a branch-scoped diff matching
+/// the in-app branch view (merge-base vs working tree). Otherwise produces a
+/// working-tree-vs-index diff. `quoted_path` MUST be pre-quoted via
+/// `shell_single_quote`.
+fn build_diff_command(merge_base: Option<&gix::ObjectId>, quoted_path: &str) -> String {
+    match merge_base {
+        Some(mb) => format!("git diff {} -- {}", mb.to_hex(), quoted_path),
+        None => format!("git diff -- {}", quoted_path),
+    }
+}
+
 /// Open a URL in the user's default browser (macOS `open`, Linux `xdg-open`,
 /// Windows `cmd /C start`). Detached: returns immediately, git-rt keeps running.
 /// Stdio is nulled so launcher noise doesn't corrupt the TUI.
@@ -420,9 +432,9 @@ impl App {
                         self.state.show_help();
                     }
 
-                    // Open external difftool for selected file
+                    // Open selected file in the configured git pager
                     (_, KeyCode::Char('d')) => {
-                        self.open_difftool(terminal)?;
+                        self.open_pager_diff(terminal)?;
                     }
 
                     _ => {}
@@ -553,21 +565,18 @@ impl App {
         Ok(())
     }
 
-    /// Open the currently selected file in the configured git difftool.
-    /// Uses the app's merge base when set (matching the branch-scoped in-app
-    /// view); otherwise falls back to working-tree vs index. No-op when no
-    /// file is selected.
-    fn open_difftool(&mut self, terminal: &mut Terminal) -> Result<()> {
+    /// Open the currently selected file in the configured git pager via
+    /// `git diff`. Uses the app's merge base when set (matching the branch-
+    /// scoped in-app view); otherwise runs a working-tree-vs-index diff.
+    /// No-op when no file is selected.
+    fn open_pager_diff(&mut self, terminal: &mut Terminal) -> Result<()> {
         let Some(path) = self.state.selected_path() else {
-            tracing::debug!("no file selected; skipping open_difftool");
+            tracing::debug!("no file selected; skipping open_pager_diff");
             return Ok(());
         };
         let quoted = shell_single_quote(&path);
-        let cmd = match self.state.merge_base() {
-            Some(mb) => format!("git difftool -y {} -- {}", mb.to_hex(), quoted),
-            None => format!("git difftool -y -- {}", quoted),
-        };
-        tracing::info!(%cmd, cwd = %self.watch_path.display(), "Launching difftool");
+        let cmd = build_diff_command(self.state.merge_base().as_ref(), &quoted);
+        tracing::info!(%cmd, cwd = %self.watch_path.display(), "Launching git diff");
 
         let _guard = TerminalGuard::suspend(terminal)?;
         let status = std::process::Command::new("sh")
@@ -575,10 +584,10 @@ impl App {
             .arg(&cmd)
             .current_dir(&self.watch_path)
             .status()
-            .with_context(|| format!("failed to launch difftool: {cmd}"))?;
+            .with_context(|| format!("failed to launch git diff: {cmd}"))?;
 
         if !status.success() {
-            tracing::info!(?status, "difftool exited non-zero");
+            tracing::info!(?status, "git diff exited non-zero");
         }
         Ok(())
     }
@@ -973,5 +982,27 @@ mod editor_tests {
     #[test]
     fn quote_empty() {
         assert_eq!(shell_single_quote(""), "''");
+    }
+
+    #[test]
+    fn build_diff_command_working_tree() {
+        let cmd = build_diff_command(None, "'src/main.rs'");
+        assert_eq!(cmd, "git diff -- 'src/main.rs'");
+    }
+
+    #[test]
+    fn build_diff_command_branch_scoped() {
+        let mb = gix::ObjectId::null(gix::hash::Kind::Sha1);
+        let cmd = build_diff_command(Some(&mb), "'src/main.rs'");
+        assert_eq!(
+            cmd,
+            "git diff 0000000000000000000000000000000000000000 -- 'src/main.rs'"
+        );
+    }
+
+    #[test]
+    fn build_diff_command_quoted_path_with_space() {
+        let cmd = build_diff_command(None, "'my file.rs'");
+        assert_eq!(cmd, "git diff -- 'my file.rs'");
     }
 }

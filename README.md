@@ -31,6 +31,8 @@ git-rt /path/to/repo
 git-rt --debounce 500
 ```
 
+git-rt can be launched from any directory inside a git working tree — the repository root is discovered automatically.
+
 ### CLI flags
 
 | Flag                      | Purpose                                                                 |

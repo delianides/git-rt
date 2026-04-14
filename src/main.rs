@@ -76,10 +76,12 @@ fn main() -> Result<()> {
             .init();
     }
 
-    let repo_path = cli
+    let launch_path = cli
         .path
         .canonicalize()
-        .context("Failed to resolve repository path")?;
+        .context("Failed to resolve launch path")?;
+    let repo_path = git::discover_worktree_root(&launch_path)
+        .with_context(|| format!("Launch path: {}", launch_path.display()))?;
 
     tracing::info!(?repo_path, "Starting git-rt");
 

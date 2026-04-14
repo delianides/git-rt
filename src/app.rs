@@ -432,9 +432,9 @@ impl App {
                         self.state.show_help();
                     }
 
-                    // Open external difftool for selected file
+                    // Open selected file in the configured git pager
                     (_, KeyCode::Char('d')) => {
-                        self.open_difftool(terminal)?;
+                        self.open_pager_diff(terminal)?;
                     }
 
                     _ => {}
@@ -565,21 +565,18 @@ impl App {
         Ok(())
     }
 
-    /// Open the currently selected file in the configured git difftool.
-    /// Uses the app's merge base when set (matching the branch-scoped in-app
-    /// view); otherwise falls back to working-tree vs index. No-op when no
-    /// file is selected.
-    fn open_difftool(&mut self, terminal: &mut Terminal) -> Result<()> {
+    /// Open the currently selected file in the configured git pager via
+    /// `git diff`. Uses the app's merge base when set (matching the branch-
+    /// scoped in-app view); otherwise runs a working-tree-vs-index diff.
+    /// No-op when no file is selected.
+    fn open_pager_diff(&mut self, terminal: &mut Terminal) -> Result<()> {
         let Some(path) = self.state.selected_path() else {
-            tracing::debug!("no file selected; skipping open_difftool");
+            tracing::debug!("no file selected; skipping open_pager_diff");
             return Ok(());
         };
         let quoted = shell_single_quote(&path);
-        let cmd = match self.state.merge_base() {
-            Some(mb) => format!("git difftool -y {} -- {}", mb.to_hex(), quoted),
-            None => format!("git difftool -y -- {}", quoted),
-        };
-        tracing::info!(%cmd, cwd = %self.watch_path.display(), "Launching difftool");
+        let cmd = build_diff_command(self.state.merge_base().as_ref(), &quoted);
+        tracing::info!(%cmd, cwd = %self.watch_path.display(), "Launching git diff");
 
         let _guard = TerminalGuard::suspend(terminal)?;
         let status = std::process::Command::new("sh")
@@ -587,10 +584,10 @@ impl App {
             .arg(&cmd)
             .current_dir(&self.watch_path)
             .status()
-            .with_context(|| format!("failed to launch difftool: {cmd}"))?;
+            .with_context(|| format!("failed to launch git diff: {cmd}"))?;
 
         if !status.success() {
-            tracing::info!(?status, "difftool exited non-zero");
+            tracing::info!(?status, "git diff exited non-zero");
         }
         Ok(())
     }

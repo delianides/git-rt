@@ -90,41 +90,6 @@ pub fn list_worktrees(git_worktrees_dir: &Path) -> Vec<WorktreeInfo> {
         .collect()
 }
 
-/// Resolve a `--worktree` argument: try name first, then canonicalized path match.
-///
-/// Name lookup only applies when `arg` contains no path separators (i.e., it is a
-/// bare name, not a relative or absolute path).
-pub fn resolve_worktree_arg(git_worktrees_dir: &Path, arg: &str) -> Result<WorktreeInfo> {
-    // Try by name first — only when arg is a bare name, not a path
-    if !arg.contains(std::path::MAIN_SEPARATOR) {
-        if let Some(info) = read_worktree_info(git_worktrees_dir, arg) {
-            return Ok(info);
-        }
-    }
-
-    // Try by path — canonicalize arg and compare against known worktree paths
-    let candidate =
-        std::fs::canonicalize(arg).with_context(|| format!("Cannot resolve path: {arg}"))?;
-
-    let worktrees = list_worktrees(git_worktrees_dir);
-    worktrees
-        .into_iter()
-        .find(|wt| {
-            std::fs::canonicalize(&wt.path)
-                .map(|p| p == candidate)
-                .unwrap_or(false)
-        })
-        .with_context(|| format!("No worktree found for argument: {arg}"))
-}
-
-/// Resolve a `--branch` argument: find the worktree that is checked out on `branch`.
-pub fn resolve_branch_arg(git_worktrees_dir: &Path, branch: &str) -> Result<WorktreeInfo> {
-    list_worktrees(git_worktrees_dir)
-        .into_iter()
-        .find(|wt| wt.branch.as_deref() == Some(branch))
-        .with_context(|| format!("No worktree found for branch: {branch}"))
-}
-
 /// Monitors .git/worktrees/ for structural changes and detects
 /// branch switches by watching HEAD files.
 pub struct WorktreeMonitor {
@@ -470,58 +435,6 @@ mod tests {
         let nonexistent = tmp.path().join("nope");
         let worktrees = list_worktrees(&nonexistent);
         assert!(worktrees.is_empty());
-    }
-
-    #[test]
-    fn test_resolve_worktree_arg_by_name() {
-        let tmp = tempdir().unwrap();
-        let worktree_path = tmp.path().join("my-wt");
-        fs::create_dir_all(&worktree_path).unwrap();
-        setup_fake_worktree(tmp.path(), "my-wt", &worktree_path, Some("feature"));
-
-        let info = resolve_worktree_arg(tmp.path(), "my-wt").unwrap();
-        assert_eq!(info.name, "my-wt");
-        assert_eq!(info.branch, Some("feature".to_string()));
-    }
-
-    #[test]
-    fn test_resolve_worktree_arg_by_path() {
-        let tmp = tempdir().unwrap();
-        let worktree_path = tmp.path().join("path-wt");
-        fs::create_dir_all(&worktree_path).unwrap();
-        setup_fake_worktree(tmp.path(), "path-wt", &worktree_path, Some("fix/bug"));
-
-        // Pass the actual filesystem path (as a string) instead of a name
-        let path_str = worktree_path.to_string_lossy().to_string();
-        let info = resolve_worktree_arg(tmp.path(), &path_str).unwrap();
-        assert_eq!(info.name, "path-wt");
-        assert_eq!(info.branch, Some("fix/bug".to_string()));
-    }
-
-    #[test]
-    fn test_resolve_worktree_arg_not_found() {
-        let tmp = tempdir().unwrap();
-        // Empty worktrees dir — neither name nor path will match
-        let result = resolve_worktree_arg(tmp.path(), "ghost");
-        assert!(result.is_err());
-    }
-
-    #[test]
-    fn test_resolve_branch_arg_found() {
-        let tmp = tempdir().unwrap();
-        let worktree_path = tmp.path().join("branch-wt");
-        fs::create_dir_all(&worktree_path).unwrap();
-        setup_fake_worktree(tmp.path(), "branch-wt", &worktree_path, Some("release/1.0"));
-
-        let info = resolve_branch_arg(tmp.path(), "release/1.0").unwrap();
-        assert_eq!(info.name, "branch-wt");
-    }
-
-    #[test]
-    fn test_resolve_branch_arg_not_found() {
-        let tmp = tempdir().unwrap();
-        let result = resolve_branch_arg(tmp.path(), "nonexistent-branch");
-        assert!(result.is_err());
     }
 
     #[test]

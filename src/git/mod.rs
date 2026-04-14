@@ -28,6 +28,29 @@ impl GitFailure {
     }
 }
 
+/// Errors from `discover_worktree_root`.
+#[derive(Debug, Error)]
+pub enum DiscoverError {
+    #[error("Not inside a git repository: {0}")]
+    NotInRepo(PathBuf),
+    #[error("Bare repositories have no working tree: {0}")]
+    BareRepo(PathBuf),
+}
+
+/// Discover the working-tree root for a path inside a git repository.
+///
+/// Walks upward from `start` to find the enclosing `.git` directory or file.
+/// For a path inside a linked worktree, returns that worktree's root (not the
+/// main worktree's). Returns `Err` if `start` is not inside a repo, or if the
+/// discovered repo is bare (no working tree).
+pub fn discover_worktree_root(start: &Path) -> Result<PathBuf, DiscoverError> {
+    let repo = gix::discover(start).map_err(|_| DiscoverError::NotInRepo(start.to_path_buf()))?;
+    match repo.workdir() {
+        Some(wd) => Ok(wd.to_path_buf()),
+        None => Err(DiscoverError::BareRepo(start.to_path_buf())),
+    }
+}
+
 /// Status of a file relative to the git index/HEAD
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum FileStatus {
@@ -1399,5 +1422,115 @@ mod tests {
 
         let result = main_worktree_path(&repo);
         assert_eq!(result, repo);
+    }
+
+    // --- discover_worktree_root tests ---
+
+    fn git(dir: &std::path::Path, args: &[&str]) {
+        let out = std::process::Command::new("git")
+            .args(args)
+            .current_dir(dir)
+            .output()
+            .expect("git command failed");
+        assert!(
+            out.status.success(),
+            "git {:?} failed in {:?}: stdout={} stderr={}",
+            args,
+            dir,
+            String::from_utf8_lossy(&out.stdout),
+            String::from_utf8_lossy(&out.stderr),
+        );
+    }
+
+    fn init_repo_for_discover(path: &std::path::Path) {
+        std::fs::create_dir_all(path).unwrap();
+        git(path, &["init", "-q", "-b", "main"]);
+        git(path, &["config", "user.email", "test@example.com"]);
+        git(path, &["config", "user.name", "Test"]);
+        git(path, &["config", "commit.gpgsign", "false"]);
+        git(path, &["commit", "--allow-empty", "-q", "-m", "init"]);
+    }
+
+    #[test]
+    fn discover_worktree_root_from_root() {
+        let tmp = tempfile::tempdir().unwrap();
+        let repo = tmp.path().join("repo");
+        init_repo_for_discover(&repo);
+
+        let result = discover_worktree_root(&repo).unwrap();
+        assert_eq!(result.canonicalize().unwrap(), repo.canonicalize().unwrap());
+    }
+
+    #[test]
+    fn discover_worktree_root_from_subdir() {
+        let tmp = tempfile::tempdir().unwrap();
+        let repo = tmp.path().join("repo");
+        init_repo_for_discover(&repo);
+        let nested = repo.join("src").join("nested");
+        std::fs::create_dir_all(&nested).unwrap();
+
+        let result = discover_worktree_root(&nested).unwrap();
+        assert_eq!(result.canonicalize().unwrap(), repo.canonicalize().unwrap());
+    }
+
+    #[test]
+    fn discover_worktree_root_not_in_repo() {
+        let tmp = tempfile::tempdir().unwrap();
+        let not_a_repo = tmp.path().join("empty");
+        std::fs::create_dir_all(&not_a_repo).unwrap();
+
+        let err = discover_worktree_root(&not_a_repo).unwrap_err();
+        match err {
+            DiscoverError::NotInRepo(p) => {
+                assert_eq!(
+                    p.canonicalize().unwrap(),
+                    not_a_repo.canonicalize().unwrap()
+                );
+            }
+            other => panic!("expected NotInRepo, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn discover_worktree_root_from_linked_worktree_subdir() {
+        let tmp = tempfile::tempdir().unwrap();
+        let main = tmp.path().join("repo");
+        init_repo_for_discover(&main);
+
+        let linked = main.join(".worktrees").join("feat");
+        git(
+            &main,
+            &[
+                "worktree",
+                "add",
+                "-q",
+                "-b",
+                "feat",
+                linked.to_str().unwrap(),
+            ],
+        );
+        let nested = linked.join("sub").join("dir");
+        std::fs::create_dir_all(&nested).unwrap();
+
+        let result = discover_worktree_root(&nested).unwrap();
+        assert_eq!(
+            result.canonicalize().unwrap(),
+            linked.canonicalize().unwrap(),
+            "should return the linked worktree's root, not the main worktree's"
+        );
+    }
+
+    #[test]
+    fn discover_worktree_root_bare_repo() {
+        let tmp = tempfile::tempdir().unwrap();
+        let bare = tmp.path().join("bare.git");
+        std::fs::create_dir_all(&bare).unwrap();
+        git(&bare, &["init", "-q", "--bare"]);
+
+        let err = discover_worktree_root(&bare).unwrap_err();
+        assert!(
+            matches!(err, DiscoverError::BareRepo(_)),
+            "expected BareRepo, got {err:?}"
+        );
     }
 }

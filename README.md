@@ -39,8 +39,7 @@ git-rt --debounce 500
 | `-c, --config <FILE>`     | Path to config file                                                     |
 | `-d, --debounce <MS>`     | Filesystem debounce in ms (default `200`)                               |
 | `--log <LEVEL>`           | Logging level: `trace`, `debug`, `info`, `warn`, `error`                |
-| `--worktree <NAME\|PATH>` | Pin worktree by name or path; auto-follow remains active                |
-| `--branch <BRANCH>`       | Pin to the worktree with this branch checked out; auto-follow active   |
+| `--branch <BRANCH>`       | Pin to the worktree (main or linked) with this branch checked out; auto-follow remains active |
 | `--no-follow`             | Disable auto-follow to other worktrees                                  |
 | `--theme <NAME\|PATH>`    | Theme override (built-in name or path to a `.toml` theme file)          |
 | `--base <BRANCH>`         | Base branch for the branch-scoped diff range                            |

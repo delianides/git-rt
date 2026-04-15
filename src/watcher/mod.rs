@@ -1,7 +1,8 @@
 pub mod activity;
 pub mod worktree;
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use anyhow::{Context, Result};
@@ -160,7 +161,16 @@ impl FsWatcher {
     pub fn new(repo_path: &Path, debounce: Duration) -> Result<(Receiver<FsWatcherEvent>, Self)> {
         let (tx, rx) = bounded::<FsWatcherEvent>(16);
 
+        // Open the gix repo once for the watcher's lifetime; used for
+        // per-batch gitignore checks. Failure here falls back to deny-list
+        // only — not a fatal error.
+        let gix_repo: Arc<Mutex<Option<gix::Repository>>> =
+            Arc::new(Mutex::new(gix::open(repo_path).ok()));
+        let repo_root: PathBuf = repo_path.to_path_buf();
+
         let sender = tx.clone();
+        let gix_repo_cb = Arc::clone(&gix_repo);
+        let repo_root_cb = repo_root.clone();
         let mut debouncer = new_debouncer(
             debounce,
             None,
@@ -168,8 +178,52 @@ impl FsWatcher {
                 Ok(events) => {
                     let mut has_fs = false;
                     let mut has_head = false;
+                    let mut dropped_paths: usize = 0;
+
+                    // Build the ignore stack ONCE per batch.
+                    // Locking the Mutex serializes batch processing, which is fine
+                    // — the debouncer invokes the callback serially.
+                    let repo_guard = gix_repo_cb.lock().ok();
+                    let mut stack = repo_guard
+                        .as_ref()
+                        .and_then(|g| g.as_ref())
+                        .and_then(|repo| {
+                            let index = repo.index_or_empty().ok()?;
+                            repo.excludes(
+                                &index,
+                                None,
+                                gix::worktree::stack::state::ignore::Source::WorktreeThenIdMappingIfNotSkipped,
+                            )
+                            .ok()
+                        });
+
                     for e in &events {
                         for p in &e.event.paths {
+                            // Fast path: deny-listed segments (no repo access).
+                            if is_deny_listed(p) {
+                                dropped_paths += 1;
+                                continue;
+                            }
+                            // .git/* paths must reach classify_path; never gitignore-filter them.
+                            let in_git_dir = p.to_string_lossy().contains("/.git/");
+                            // Gitignore check (per-batch stack, per-path navigation).
+                            if !in_git_dir {
+                                if let Some(ref mut s) = stack {
+                                    if let Ok(rel) = p.strip_prefix(&repo_root_cb) {
+                                        let mode = if p.is_dir() {
+                                            gix::index::entry::Mode::DIR
+                                        } else {
+                                            gix::index::entry::Mode::FILE
+                                        };
+                                        if let Ok(platform) = s.at_path(rel, Some(mode)) {
+                                            if platform.is_excluded() {
+                                                dropped_paths += 1;
+                                                continue;
+                                            }
+                                        }
+                                    }
+                                }
+                            }
                             match classify_path(p) {
                                 PathClass::FsChange => has_fs = true,
                                 PathClass::HeadChange => has_head = true,
@@ -177,10 +231,12 @@ impl FsWatcher {
                             }
                         }
                     }
+
                     tracing::debug!(
                         event_count = events.len(),
                         has_fs,
                         has_head,
+                        dropped_paths,
                         "Debouncer callback fired"
                     );
                     if has_head {

@@ -163,3 +163,132 @@ fn test_branch_diff_file_shows_full_diff() {
     assert!(additions >= 2, "should have additions");
     assert!(deletions >= 1, "should have deletions");
 }
+
+#[test]
+fn test_branch_status_only_committed_changes() {
+    let tmp = TempDir::new().unwrap();
+    let repo_path = tmp.path();
+    git_init(repo_path);
+    std::fs::write(repo_path.join("a.txt"), "a\n").unwrap();
+    git(repo_path, &["add", "a.txt"]);
+    git(repo_path, &["commit", "-m", "initial"]);
+
+    git(repo_path, &["checkout", "-b", "feature"]);
+    std::fs::write(repo_path.join("a.txt"), "a\nmodified\n").unwrap();
+    std::fs::write(repo_path.join("b.txt"), "b\n").unwrap();
+    git(repo_path, &["add", "."]);
+    git(repo_path, &["commit", "-m", "feature commit"]);
+
+    let git_repo = git_rt::git::GitRepo::new(repo_path).unwrap();
+    let mb = git_repo.merge_base("main").unwrap().expect("merge base");
+    let entries = git_repo.branch_status(mb).unwrap();
+
+    let paths: Vec<&str> = entries.iter().map(|e| e.path.as_str()).collect();
+    assert!(paths.contains(&"a.txt"), "a.txt (modified) must appear");
+    assert!(paths.contains(&"b.txt"), "b.txt (added) must appear");
+
+    let a = entries.iter().find(|e| e.path == "a.txt").unwrap();
+    assert!(matches!(a.status, git_rt::git::FileStatus::Modified));
+    assert!(a.insertions > 0, "modified file should have insertions");
+
+    let b = entries.iter().find(|e| e.path == "b.txt").unwrap();
+    assert!(matches!(b.status, git_rt::git::FileStatus::Added));
+    assert!(b.insertions > 0, "added file should have insertions");
+}
+
+#[test]
+fn test_branch_status_only_uncommitted_changes() {
+    let tmp = TempDir::new().unwrap();
+    let repo_path = tmp.path();
+    git_init(repo_path);
+    std::fs::write(repo_path.join("a.txt"), "a\n").unwrap();
+    git(repo_path, &["add", "a.txt"]);
+    git(repo_path, &["commit", "-m", "initial"]);
+
+    git(repo_path, &["checkout", "-b", "feature"]);
+    std::fs::write(repo_path.join("b.txt"), "b\n").unwrap();
+    git(repo_path, &["add", "b.txt"]);
+    git(repo_path, &["commit", "-m", "add b"]);
+
+    std::fs::write(repo_path.join("a.txt"), "a\nedited\n").unwrap();
+    std::fs::write(repo_path.join("untracked.txt"), "u\n").unwrap();
+
+    let git_repo = git_rt::git::GitRepo::new(repo_path).unwrap();
+    let mb = git_repo.merge_base("main").unwrap().expect("merge base");
+    let entries = git_repo.branch_status(mb).unwrap();
+    let paths: Vec<&str> = entries.iter().map(|e| e.path.as_str()).collect();
+
+    assert!(paths.contains(&"a.txt"), "edited tracked file must appear");
+    assert!(
+        paths.contains(&"untracked.txt"),
+        "untracked file must appear"
+    );
+
+    let untracked = entries.iter().find(|e| e.path == "untracked.txt").unwrap();
+    assert!(
+        matches!(untracked.status, git_rt::git::FileStatus::Untracked),
+        "untracked file must keep Untracked status, got {:?}",
+        untracked.status
+    );
+}
+
+#[test]
+fn test_branch_status_committed_then_further_edited() {
+    let tmp = TempDir::new().unwrap();
+    let repo_path = tmp.path();
+    git_init(repo_path);
+    std::fs::write(repo_path.join("a.txt"), "v0\n").unwrap();
+    git(repo_path, &["add", "a.txt"]);
+    git(repo_path, &["commit", "-m", "initial"]);
+
+    git(repo_path, &["checkout", "-b", "feature"]);
+    std::fs::write(repo_path.join("a.txt"), "v1\n").unwrap();
+    git(repo_path, &["add", "a.txt"]);
+    git(repo_path, &["commit", "-m", "edit a"]);
+
+    std::fs::write(repo_path.join("a.txt"), "v2\nextra\n").unwrap();
+
+    let git_repo = git_rt::git::GitRepo::new(repo_path).unwrap();
+    let mb = git_repo.merge_base("main").unwrap().expect("merge base");
+    let entries = git_repo.branch_status(mb).unwrap();
+
+    let a = entries
+        .iter()
+        .find(|e| e.path == "a.txt")
+        .expect("a.txt must appear");
+    assert!(
+        a.insertions >= 2,
+        "expected ≥2 insertions vs merge base; got {}",
+        a.insertions
+    );
+}
+
+#[test]
+fn test_branch_status_deleted_on_branch() {
+    let tmp = TempDir::new().unwrap();
+    let repo_path = tmp.path();
+    git_init(repo_path);
+    std::fs::write(repo_path.join("a.txt"), "line1\nline2\nline3\n").unwrap();
+    git(repo_path, &["add", "a.txt"]);
+    git(repo_path, &["commit", "-m", "initial"]);
+
+    git(repo_path, &["checkout", "-b", "feature"]);
+    std::fs::remove_file(repo_path.join("a.txt")).unwrap();
+    git(repo_path, &["add", "a.txt"]);
+    git(repo_path, &["commit", "-m", "delete a"]);
+
+    let git_repo = git_rt::git::GitRepo::new(repo_path).unwrap();
+    let mb = git_repo.merge_base("main").unwrap().expect("merge base");
+    let entries = git_repo.branch_status(mb).unwrap();
+
+    let a = entries
+        .iter()
+        .find(|e| e.path == "a.txt")
+        .expect("a.txt must appear as deleted");
+    assert!(matches!(a.status, git_rt::git::FileStatus::Deleted));
+    assert!(
+        a.deletions >= 3,
+        "deleted file should report deleted-line count; got {}",
+        a.deletions
+    );
+}

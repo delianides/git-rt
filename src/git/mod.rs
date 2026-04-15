@@ -697,7 +697,12 @@ impl GitRepo {
             };
 
             if worktree_path.exists() {
-                let wt_text = std::fs::read_to_string(&worktree_path).unwrap_or_default();
+                let wt_text = match std::fs::read_to_string(&worktree_path) {
+                    Ok(t) => t,
+                    // Binary or unreadable file: skip rather than report wrong numstat.
+                    // Matches pre-rewrite behavior.
+                    Err(_) => continue,
+                };
                 if mb_text != wt_text {
                     let (ins, del) = count_line_changes(&mb_text, &wt_text);
                     entries.insert(
@@ -733,7 +738,12 @@ impl GitRepo {
             if !worktree_path.exists() {
                 continue;
             }
-            let wt_text = std::fs::read_to_string(&worktree_path).unwrap_or_default();
+            let wt_text = match std::fs::read_to_string(&worktree_path) {
+                Ok(t) => t,
+                // Binary or unreadable file: skip rather than report 0 insertions.
+                // Matches pre-rewrite behavior.
+                Err(_) => continue,
+            };
             entries.insert(
                 path.clone(),
                 FileEntry {

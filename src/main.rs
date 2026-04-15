@@ -31,7 +31,7 @@ struct Cli {
     config: Option<PathBuf>,
 
     /// Debounce interval in milliseconds
-    #[arg(short, long, default_value_t = 200)]
+    #[arg(short, long, default_value_t = 500)]
     debounce: u64,
 
     /// Enable logging at the given level (trace, debug, info, warn, error)

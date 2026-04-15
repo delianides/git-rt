@@ -29,7 +29,7 @@ impl Default for AppConfig {
     fn default() -> Self {
         Self {
             theme: "catppuccin-mocha".to_string(),
-            debounce_ms: 200,
+            debounce_ms: 500,
             display: DisplayConfig::default(),
             pr: PrConfig::default(),
             keys: KeyConfig::default(),
@@ -159,7 +159,7 @@ mod tests {
     fn test_default_config() {
         let config = AppConfig::default();
         assert_eq!(config.theme, "catppuccin-mocha");
-        assert_eq!(config.debounce_ms, 200);
+        assert_eq!(config.debounce_ms, 500);
         assert_eq!(config.display.context_lines, 3);
         assert!(config.display.flash_on_change);
         assert_eq!(config.display.flash_duration_ms, 600);
@@ -190,7 +190,7 @@ mod tests {
         let config = AppConfig::load(Some(Path::new("/tmp/nonexistent-git-rt-config.toml")));
         assert!(config.is_ok());
         let config = config.unwrap();
-        assert_eq!(config.debounce_ms, 200);
+        assert_eq!(config.debounce_ms, 500);
         assert_eq!(config.theme, "catppuccin-mocha");
     }
 
@@ -233,7 +233,7 @@ enter = "inline"
         let config = AppConfig::load(Some(&path)).unwrap();
         assert_eq!(config.theme, "nord");
         // Unspecified fields use defaults
-        assert_eq!(config.debounce_ms, 200);
+        assert_eq!(config.debounce_ms, 500);
         assert_eq!(config.display.context_lines, 3);
         assert!(config.display.flash_on_change);
         assert!(config.pr.enabled);

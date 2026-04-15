@@ -37,6 +37,12 @@ const DEFAULT_DENY_SEGMENTS: &[&str] = &[
 /// outside the worktree). A false negative here is safe: the path flows
 /// through the normal `classify_path` path, which is the pre-existing
 /// behavior.
+///
+/// **Note:** the production debouncer callback in [`FsWatcher::new`] does not
+/// call this helper. It inlines the same gix calls so the `AttributeStack`
+/// can be built once per batch and reused across paths. This standalone
+/// helper is kept for unit-test coverage of the gitignore logic and as a
+/// drop-in for future callers that need a one-shot check.
 pub fn is_gitignored(repo: &gix::Repository, repo_root: &Path, abs_path: &Path) -> bool {
     let Ok(rel) = abs_path.strip_prefix(repo_root) else {
         return false;
@@ -158,6 +164,12 @@ impl FsWatcher {
     /// **and** an `FsChange` — if the batch contains both kinds of paths.
     /// `HeadChange` is sent first so the app can recompute the commits list
     /// before rescanning the working tree.
+    ///
+    /// Event paths are filtered before classification: segments matching the
+    /// hardcoded deny-list (`.venv`, `node_modules`, `target`, etc.) are
+    /// dropped, as are paths excluded by the repo's `.gitignore`. Filtering is
+    /// per-batch — the gix ignore stack is built once per debounce fire and
+    /// reused across all paths in the batch.
     pub fn new(repo_path: &Path, debounce: Duration) -> Result<(Receiver<FsWatcherEvent>, Self)> {
         let (tx, rx) = bounded::<FsWatcherEvent>(16);
 

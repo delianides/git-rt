@@ -766,6 +766,10 @@ impl App {
         loop {
             let now = std::time::Instant::now();
             if now >= deadline {
+                // 5s passed; bail. The error propagates to event_loop, which
+                // returns; run() then triggers the Shutdown sequence so the
+                // worker thread exits cleanly. App terminates rather than
+                // continuing in a split worker/state condition.
                 anyhow::bail!("worker did not ack SwitchRepo within 5s");
             }
             match self.worker_rx.recv_timeout(deadline - now) {
@@ -779,7 +783,10 @@ impl App {
                     tracing::debug!(?other, "discarding pre-switch worker response");
                     continue;
                 }
-                Err(_) => continue,
+                Err(crossbeam_channel::RecvTimeoutError::Timeout) => continue,
+                Err(crossbeam_channel::RecvTimeoutError::Disconnected) => {
+                    anyhow::bail!("worker thread disconnected during SwitchRepo");
+                }
             }
         }
 

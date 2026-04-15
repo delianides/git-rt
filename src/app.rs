@@ -61,7 +61,6 @@ pub struct App {
     /// Receiver for worker responses. Drained by the event loop in Task 5.
     worker_rx: Receiver<Response>,
     /// Join handle for the worker thread; stored so we can join on shutdown.
-    #[allow(dead_code)]
     worker_handle: Option<std::thread::JoinHandle<()>>,
 }
 
@@ -286,6 +285,12 @@ impl App {
         terminal.setup()?;
 
         let result = self.event_loop(&mut terminal);
+
+        // Shut the worker down cleanly so the thread exits before we drop App.
+        let _ = self.worker_tx.send(Request::Shutdown);
+        if let Some(handle) = self.worker_handle.take() {
+            let _ = handle.join();
+        }
 
         terminal.teardown()?;
         result
@@ -745,13 +750,65 @@ impl App {
         Ok(())
     }
 
-    // TODO(pr2-task7): Restore full switch_to_path behavior via worker SwitchRepo request.
-    // This stub drops the path switch so the build is green for Task 4.
     fn switch_to_path(&mut self, path: PathBuf) -> Result<()> {
         if path == self.watch_path {
             return Ok(());
         }
-        tracing::debug!(path = ?path, "switch_to_path: TODO route through worker (Task 7)");
+
+        // Rebuild the FS watcher synchronously (cheap; doesn't open git).
+        let debounce = Duration::from_millis(self.config.debounce_ms);
+        let (fs_rx, watcher) = FsWatcher::new(&path, debounce)?;
+
+        // Tell the worker to swap repos. Block briefly for the ack so we don't
+        // race a new Recompute against the old repo path.
+        self.worker_tx.send(Request::SwitchRepo(path.clone()))?;
+        let deadline = std::time::Instant::now() + Duration::from_secs(5);
+        loop {
+            let now = std::time::Instant::now();
+            if now >= deadline {
+                anyhow::bail!("worker did not ack SwitchRepo within 5s");
+            }
+            match self.worker_rx.recv_timeout(deadline - now) {
+                Ok(Response::SwitchAck(true)) => break,
+                Ok(Response::SwitchAck(false)) => {
+                    anyhow::bail!("worker failed to switch repo to {:?}", path)
+                }
+                Ok(other) => {
+                    // Drain non-ack responses — they're stale relative to the
+                    // upcoming switch and the next Recompute will refresh.
+                    tracing::debug!(?other, "discarding pre-switch worker response");
+                    continue;
+                }
+                Err(_) => continue,
+            }
+        }
+
+        // Worker is now on the new repo. Reset state and request a fresh load.
+        self.state
+            .reset_for_switch(Vec::new(), String::new(), String::new(), String::new());
+        self._watcher = watcher;
+        self.fs_rx = fs_rx;
+        self.watch_path = path;
+
+        // Restart the GitHub PR poller for the new branch.
+        self.gh_rx = if self.config.pr.enabled {
+            if let Some(token) = crate::github::resolve_auth_token() {
+                Some(crate::github::start_polling(
+                    &self.watch_path,
+                    self.state.branch(),
+                    &token,
+                ))
+            } else {
+                None
+            }
+        } else {
+            None
+        };
+
+        // Trigger an initial Recompute on the new repo.
+        let _ = self.worker_tx.try_send(Request::Recompute);
+        self.state.set_computing(true);
+
         Ok(())
     }
 

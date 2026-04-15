@@ -924,40 +924,6 @@ fn count_reachable_exclusive(
     Ok(count)
 }
 
-/// Recursively collect all blob entries from a gix tree into a path -> id map.
-#[allow(dead_code)]
-fn collect_tree_blobs(
-    repo: &gix::Repository,
-    tree: &gix::Tree<'_>,
-    prefix: &str,
-    out: &mut std::collections::HashMap<String, gix::ObjectId>,
-) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-    use gix::bstr::ByteSlice;
-    use gix::object::tree::EntryKind;
-
-    for entry_ref in tree.iter() {
-        let entry = entry_ref?;
-        let name = entry.filename().to_str().unwrap_or("").to_string();
-        let path = if prefix.is_empty() {
-            name.clone()
-        } else {
-            format!("{prefix}/{name}")
-        };
-
-        match entry.mode().kind() {
-            EntryKind::Blob | EntryKind::BlobExecutable => {
-                out.insert(path, entry.id().detach());
-            }
-            EntryKind::Tree => {
-                let subtree = repo.find_object(entry.id())?.try_into_tree()?;
-                collect_tree_blobs(repo, &subtree, &path, out)?;
-            }
-            _ => {}
-        }
-    }
-    Ok(())
-}
-
 /// Synthesize a FileDiff between two texts using a simple prefix/suffix trim.
 /// Emits a single hunk showing the changed region with 3 lines of context.
 /// Not a proper Myers diff but readable enough for the compact view.

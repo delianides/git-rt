@@ -50,7 +50,12 @@ pub fn is_gitignored(repo: &gix::Repository, repo_root: &Path, abs_path: &Path) 
     ) else {
         return false;
     };
-    let Ok(platform) = stack.at_path(rel, None) else {
+    let mode = if abs_path.is_dir() {
+        Some(gix::index::entry::Mode::DIR)
+    } else {
+        Some(gix::index::entry::Mode::FILE)
+    };
+    let Ok(platform) = stack.at_path(rel, mode) else {
         return false;
     };
     platform.is_excluded()
@@ -426,6 +431,17 @@ mod tests {
         assert!(
             !is_gitignored(&repo, repo_path, &repo_path.join("src.rs")),
             "src.rs should NOT be ignored"
+        );
+        assert!(
+            is_gitignored(&repo, repo_path, &repo_path.join(".venv")),
+            ".venv/ directory itself should be ignored"
+        );
+
+        fs::create_dir_all(repo_path.join("build")).unwrap();
+        fs::write(repo_path.join("build").join("artifact.txt"), "").unwrap();
+        assert!(
+            is_gitignored(&repo, repo_path, &repo_path.join("build/artifact.txt")),
+            "build/artifact.txt should be ignored by .gitignore"
         );
     }
 }

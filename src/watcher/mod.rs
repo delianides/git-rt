@@ -26,6 +26,36 @@ const DEFAULT_DENY_SEGMENTS: &[&str] = &[
     ".tox",
 ];
 
+/// Returns `true` if `abs_path` is ignored by the repo's `.gitignore` rules.
+///
+/// Opens a fresh ignore stack from `repo` on each call. `.gitignore` edits
+/// take effect on the next invocation automatically — no explicit cache
+/// invalidation needed in the caller.
+///
+/// Returns `false` on any error (missing index, unreadable stack, path
+/// outside the worktree). A false negative here is safe: the path flows
+/// through the normal `classify_path` path, which is the pre-existing
+/// behavior.
+pub fn is_gitignored(repo: &gix::Repository, repo_root: &Path, abs_path: &Path) -> bool {
+    let Ok(rel) = abs_path.strip_prefix(repo_root) else {
+        return false;
+    };
+    let Ok(index) = repo.index_or_empty() else {
+        return false;
+    };
+    let Ok(mut stack) = repo.excludes(
+        &index,
+        None,
+        gix::worktree::stack::state::ignore::Source::WorktreeThenIdMappingIfNotSkipped,
+    ) else {
+        return false;
+    };
+    let Ok(platform) = stack.at_path(rel, None) else {
+        return false;
+    };
+    platform.is_excluded()
+}
+
 /// Returns `true` if any component of `path` matches a deny-list segment
 /// (exact match) or ends with `.egg-info` (Python metadata convention).
 pub fn is_deny_listed(path: &Path) -> bool {
@@ -372,5 +402,30 @@ mod tests {
         assert!(!is_deny_listed(Path::new(
             "/repo/src/node_modules_utils.rs"
         )));
+    }
+
+    #[test]
+    fn test_is_gitignored_respects_gitignore_file() {
+        use std::fs;
+        let tmp = tempfile::tempdir().unwrap();
+        let repo_path = tmp.path();
+
+        // Init a bare-bones repo with a .gitignore
+        gix::init(repo_path).unwrap();
+        fs::write(repo_path.join(".gitignore"), ".venv/\nbuild/\n").unwrap();
+        fs::create_dir_all(repo_path.join(".venv").join("lib")).unwrap();
+        fs::write(repo_path.join(".venv").join("lib").join("foo.py"), "").unwrap();
+        fs::write(repo_path.join("src.rs"), "").unwrap();
+
+        let repo = gix::open(repo_path).unwrap();
+
+        assert!(
+            is_gitignored(&repo, repo_path, &repo_path.join(".venv/lib/foo.py")),
+            ".venv/lib/foo.py should be ignored by .gitignore"
+        );
+        assert!(
+            !is_gitignored(&repo, repo_path, &repo_path.join("src.rs")),
+            "src.rs should NOT be ignored"
+        );
     }
 }

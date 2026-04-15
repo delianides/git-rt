@@ -615,49 +615,91 @@ impl GitRepo {
     /// 3. Adds files that are new on this branch (not in the merge base).
     pub fn branch_status(&self, merge_base: gix::ObjectId) -> Result<Vec<FileEntry>, GitFailure> {
         use std::collections::HashMap;
+        use std::ops::ControlFlow;
 
         let work_dir = match self.repo.workdir() {
             Some(d) => d.to_path_buf(),
             None => return Ok(vec![]),
         };
 
-        // Load the merge base tree
-        let mb_commit = self
+        // Resolve mb tree.
+        let mb_tree = self
             .repo
             .find_object(merge_base)
             .map_err(|e| GitFailure::EnvChange(format!("branch_status find merge base: {e}")))?
             .try_into_commit()
-            .map_err(|e| GitFailure::EnvChange(format!("branch_status into commit: {e}")))?;
-        let mb_tree = mb_commit
+            .map_err(|e| GitFailure::EnvChange(format!("branch_status into commit: {e}")))?
             .tree()
-            .map_err(|e| GitFailure::EnvChange(format!("branch_status tree: {e}")))?;
+            .map_err(|e| GitFailure::EnvChange(format!("branch_status mb tree: {e}")))?;
 
-        // Collect all blobs from the merge base tree
+        // HEAD tree may be unavailable for unborn-branch repos. If so, fall
+        // back to status()-only via the let-some.
+        let head_tree = self.repo.head_commit().ok().and_then(|c| c.tree().ok());
+
+        // Single tree-diff pass populates BOTH:
+        // - mb_blobs: path -> mb blob id, for files that exist in mb (Deletion
+        //   or Modification entries — i.e., the mb-side blob is known).
+        // - added_on_branch: paths added in HEAD relative to mb (no mb blob).
         let mut mb_blobs: HashMap<String, gix::ObjectId> = HashMap::new();
-        collect_tree_blobs(&self.repo, &mb_tree, "", &mut mb_blobs)
-            .map_err(|e| GitFailure::EnvChange(format!("branch_status walk tree: {e}")))?;
+        let mut added_on_branch: Vec<String> = Vec::new();
 
-        // Current index-worktree status for untracked file detection
+        if let Some(ref head_tree) = head_tree {
+            let mut platform = mb_tree
+                .changes()
+                .map_err(|e| GitFailure::EnvChange(format!("branch_status changes: {e}")))?;
+            // Disable rename tracking so renames look like delete+add (matches
+            // pre-existing behavior of the old O(N) implementation).
+            platform.options(|opts| {
+                opts.track_rewrites(None);
+            });
+            platform
+                .for_each_to_obtain_tree(
+                    head_tree,
+                    |change| -> Result<_, std::convert::Infallible> {
+                        use gix::object::tree::diff::Change;
+                        match change {
+                            Change::Addition { location, .. } => {
+                                added_on_branch.push(location.to_string());
+                            }
+                            Change::Deletion { location, id, .. } => {
+                                mb_blobs.insert(location.to_string(), id.detach());
+                            }
+                            Change::Modification {
+                                location,
+                                previous_id,
+                                ..
+                            } => {
+                                mb_blobs.insert(location.to_string(), previous_id.detach());
+                            }
+                            Change::Rewrite { .. } => {
+                                // Rewrites are disabled above; reachable only if gix
+                                // ignores the option, in which case treat as no-op.
+                            }
+                        }
+                        Ok(ControlFlow::Continue(()))
+                    },
+                )
+                .map_err(|e| GitFailure::EnvChange(format!("branch_status for_each: {e}")))?;
+        }
+
+        // Worktree status (uncommitted + untracked).
         let wt_status = self.status().unwrap_or_default();
 
+        // Build entries.
         let mut entries: HashMap<String, FileEntry> = HashMap::new();
 
-        // Compare merge base blobs against worktree files
+        // 1) Paths in mb (Modified or Deletion in tree-diff).
         for (path, blob_id) in &mb_blobs {
             let worktree_path = work_dir.join(path);
-            if worktree_path.exists() {
-                let blob = match self.repo.find_object(*blob_id) {
-                    Ok(b) => b,
-                    Err(_) => continue,
-                };
-                let old_text = String::from_utf8_lossy(&blob.data);
-                let new_text = match std::fs::read_to_string(&worktree_path) {
-                    Ok(t) => t,
-                    Err(_) => continue,
-                };
+            let mb_text = match self.repo.find_object(*blob_id) {
+                Ok(b) => String::from_utf8_lossy(&b.data).into_owned(),
+                Err(_) => String::new(),
+            };
 
-                if old_text.as_ref() != new_text.as_str() {
-                    let (ins, del) = count_line_changes(&old_text, &new_text);
+            if worktree_path.exists() {
+                let wt_text = std::fs::read_to_string(&worktree_path).unwrap_or_default();
+                if mb_text != wt_text {
+                    let (ins, del) = count_line_changes(&mb_text, &wt_text);
                     entries.insert(
                         path.clone(),
                         FileEntry {
@@ -669,13 +711,7 @@ impl GitRepo {
                     );
                 }
             } else {
-                // File existed at merge base but is gone now
-                let blob = match self.repo.find_object(*blob_id) {
-                    Ok(b) => b,
-                    Err(_) => continue,
-                };
-                let old_text = String::from_utf8_lossy(&blob.data);
-                let del = old_text.lines().count();
+                let del = mb_text.lines().count();
                 entries.insert(
                     path.clone(),
                     FileEntry {
@@ -688,9 +724,33 @@ impl GitRepo {
             }
         }
 
-        // Add files that are in the worktree but not in the merge base (new on this branch)
+        // 2) Paths added on this branch (in HEAD, not in mb).
+        for path in &added_on_branch {
+            if entries.contains_key(path) {
+                continue;
+            }
+            let worktree_path = work_dir.join(path);
+            if !worktree_path.exists() {
+                continue;
+            }
+            let wt_text = std::fs::read_to_string(&worktree_path).unwrap_or_default();
+            entries.insert(
+                path.clone(),
+                FileEntry {
+                    path: path.clone(),
+                    status: FileStatus::Added,
+                    insertions: wt_text.lines().count(),
+                    deletions: 0,
+                },
+            );
+        }
+
+        // 3) Worktree-only entries (uncommitted, including untracked).
         for wt_entry in &wt_status {
-            if !mb_blobs.contains_key(&wt_entry.path) && !entries.contains_key(&wt_entry.path) {
+            if entries.contains_key(&wt_entry.path) {
+                continue;
+            }
+            if !mb_blobs.contains_key(&wt_entry.path) {
                 let mut entry = wt_entry.clone();
                 if entry.status != FileStatus::Untracked {
                     entry.status = FileStatus::Added;
@@ -701,37 +761,6 @@ impl GitRepo {
                     entry.deletions = 0;
                 }
                 entries.insert(entry.path.clone(), entry);
-            }
-        }
-
-        // Check HEAD tree for files that were added in commits on this branch
-        // but are now clean relative to the index (i.e., committed and unchanged
-        // in the worktree, so `self.status()` doesn't report them). These files
-        // still need to appear in the branch diff since they differ from the
-        // merge base.
-        if let Ok(head_commit) = self.repo.head_commit() {
-            if let Ok(head_tree) = head_commit.tree() {
-                let mut head_blobs: HashMap<String, gix::ObjectId> = HashMap::new();
-                let _ = collect_tree_blobs(&self.repo, &head_tree, "", &mut head_blobs);
-
-                for path in head_blobs.keys() {
-                    if !mb_blobs.contains_key(path) && !entries.contains_key(path) {
-                        let worktree_path = work_dir.join(path);
-                        if worktree_path.exists() {
-                            let new_text =
-                                std::fs::read_to_string(&worktree_path).unwrap_or_default();
-                            entries.insert(
-                                path.clone(),
-                                FileEntry {
-                                    path: path.clone(),
-                                    status: FileStatus::Added,
-                                    insertions: new_text.lines().count(),
-                                    deletions: 0,
-                                },
-                            );
-                        }
-                    }
-                }
             }
         }
 
@@ -886,6 +915,7 @@ fn count_reachable_exclusive(
 }
 
 /// Recursively collect all blob entries from a gix tree into a path -> id map.
+#[allow(dead_code)]
 fn collect_tree_blobs(
     repo: &gix::Repository,
     tree: &gix::Tree<'_>,

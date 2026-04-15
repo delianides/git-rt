@@ -1,5 +1,19 @@
 # Changelog
 
+## [1.0.2](https://github.com/delianides/git-rt/compare/v1.0.1...v1.0.2) (2026-04-15)
+
+
+### Bug Fixes
+
+* **ui:** force full clear on overlay dismissal to prevent stale cells ([#53](https://github.com/delianides/git-rt/issues/53)) ([815c080](https://github.com/delianides/git-rt/commit/815c08013ca3ba40586cbe7a09f5af93175caae5))
+
+
+### Performance Improvements
+
+* **app:** move git operations to a worker thread ([#56](https://github.com/delianides/git-rt/issues/56)) ([a0e6db3](https://github.com/delianides/git-rt/commit/a0e6db3af7e358d3d2bbd3db3b76ce8237f728b1))
+* **git:** branch_status via tree-diff (O(changed) not O(all)) ([#57](https://github.com/delianides/git-rt/issues/57)) ([65d71db](https://github.com/delianides/git-rt/commit/65d71db7da2928afd01678850959d72b363c78aa))
+* **watcher:** filter ignored dirs + raise debounce/tick defaults ([#55](https://github.com/delianides/git-rt/issues/55)) ([0106736](https://github.com/delianides/git-rt/commit/010673639a44f22a17a0581469852caa8a7d8faf))
+
 ## [1.0.1](https://github.com/delianides/git-rt/compare/v1.0.0...v1.0.1) (2026-04-14)
 
 

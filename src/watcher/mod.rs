@@ -9,6 +9,32 @@ use crossbeam_channel::{bounded, Receiver};
 use notify::{RecommendedWatcher, RecursiveMode};
 use notify_debouncer_full::{new_debouncer, DebouncedEvent, Debouncer, RecommendedCache};
 
+/// Directory-segment names that are always treated as noise, regardless of
+/// whether they appear in `.gitignore`. Covers the common build/cache dirs
+/// that churn heavily and would otherwise swamp the debouncer.
+const DEFAULT_DENY_SEGMENTS: &[&str] = &[
+    ".venv",
+    "venv",
+    "node_modules",
+    "target",
+    "dist",
+    "build",
+    ".next",
+    "__pycache__",
+    ".pytest_cache",
+    ".mypy_cache",
+    ".tox",
+];
+
+/// Returns `true` if any component of `path` matches a deny-list segment
+/// (exact match) or ends with `.egg-info` (Python metadata convention).
+pub fn is_deny_listed(path: &Path) -> bool {
+    path.components().any(|c| {
+        let s = c.as_os_str().to_string_lossy();
+        DEFAULT_DENY_SEGMENTS.contains(&s.as_ref()) || s.ends_with(".egg-info")
+    })
+}
+
 /// Classification of a filesystem path that fired a debounced event.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PathClass {
@@ -311,5 +337,40 @@ mod tests {
             classify_path(Path::new("/repo/.git/worktrees/feat/gitdir")),
             PathClass::Ignored
         );
+    }
+
+    #[test]
+    fn test_is_deny_listed_matches_segment() {
+        assert!(is_deny_listed(Path::new(
+            "/repo/.venv/lib/python3.11/site-packages/foo.py"
+        )));
+        assert!(is_deny_listed(Path::new(
+            "/repo/node_modules/react/index.js"
+        )));
+        assert!(is_deny_listed(Path::new("/repo/target/debug/build.rs")));
+        assert!(is_deny_listed(Path::new(
+            "/repo/src/__pycache__/main.cpython-311.pyc"
+        )));
+    }
+
+    #[test]
+    fn test_is_deny_listed_matches_egg_info_suffix() {
+        assert!(is_deny_listed(Path::new("/repo/mypkg.egg-info/PKG-INFO")));
+    }
+
+    #[test]
+    fn test_is_deny_listed_does_not_match_normal_paths() {
+        assert!(!is_deny_listed(Path::new("/repo/src/main.rs")));
+        assert!(!is_deny_listed(Path::new("/repo/README.md")));
+        assert!(!is_deny_listed(Path::new("/repo/.git/HEAD")));
+    }
+
+    #[test]
+    fn test_is_deny_listed_does_not_match_segment_prefix() {
+        // A file literally named "target.rs" is fine — only exact segment matches count.
+        assert!(!is_deny_listed(Path::new("/repo/src/target.rs")));
+        assert!(!is_deny_listed(Path::new(
+            "/repo/src/node_modules_utils.rs"
+        )));
     }
 }

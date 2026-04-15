@@ -73,24 +73,24 @@ pub struct StatusBundle {
 /// preserved in FIFO order. Pure function — no I/O, no thread access.
 ///
 /// Behavior:
-/// - Multiple `Recompute` → one `Recompute` at the position of the LAST one.
-/// - All other variants → preserved in original order.
+/// - Multiple `Recompute` → exactly one `Recompute`, positioned at the
+///   end of the output queue.
+/// - All other variants → preserved in original FIFO order.
 /// - Empty input → empty output.
 pub fn coalesce(input: VecDeque<Request>) -> VecDeque<Request> {
-    let mut last_recompute_idx: Option<usize> = None;
+    let mut has_recompute = false;
     let mut output: VecDeque<Request> = VecDeque::with_capacity(input.len());
 
     for req in input {
         if matches!(req, Request::Recompute) {
-            last_recompute_idx = Some(output.len());
+            has_recompute = true;
         } else {
             output.push_back(req);
         }
     }
 
-    if let Some(idx) = last_recompute_idx {
-        let pos = idx.min(output.len());
-        output.insert(pos, Request::Recompute);
+    if has_recompute {
+        output.push_back(Request::Recompute);
     }
 
     output
@@ -157,11 +157,8 @@ mod tests {
         input.push_back(Request::Recompute);
         input.push_back(diff_req(2));
         input.push_back(Request::Recompute);
-        let out = collect(coalesce(input));
-        let r_count = out.iter().filter(|s| **s == "R").count();
-        let d_count = out.iter().filter(|s| **s == "D").count();
-        assert_eq!(r_count, 1, "exactly one Recompute should remain: {:?}", out);
-        assert_eq!(d_count, 2, "both Diffs should remain: {:?}", out);
+        // Diffs preserved in order; the one Recompute lands at the end.
+        assert_eq!(collect(coalesce(input)), vec!["D", "D", "R"]);
     }
 
     #[test]
@@ -174,5 +171,38 @@ mod tests {
         assert!(out.contains(&"S"));
         let r_count = out.iter().filter(|s| **s == "R").count();
         assert_eq!(r_count, 1);
+    }
+
+    #[test]
+    fn coalesce_recompute_then_diff_orders_diff_first() {
+        // Bug repro: [R, R, D] must produce [D, R] (Diff first, then the one Recompute).
+        let mut input = VecDeque::new();
+        input.push_back(Request::Recompute);
+        input.push_back(Request::Recompute);
+        input.push_back(diff_req(1));
+        assert_eq!(collect(coalesce(input)), vec!["D", "R"]);
+    }
+
+    #[test]
+    fn coalesce_three_recomputes_then_two_diffs() {
+        // [R, R, R, D, D] must produce [D, D, R].
+        let mut input = VecDeque::new();
+        input.push_back(Request::Recompute);
+        input.push_back(Request::Recompute);
+        input.push_back(Request::Recompute);
+        input.push_back(diff_req(1));
+        input.push_back(diff_req(2));
+        assert_eq!(collect(coalesce(input)), vec!["D", "D", "R"]);
+    }
+
+    #[test]
+    fn coalesce_diff_recompute_recompute_switchrepo() {
+        // Heterogeneous batch: [D, R, R, S] -> [D, S, R].
+        let mut input = VecDeque::new();
+        input.push_back(diff_req(1));
+        input.push_back(Request::Recompute);
+        input.push_back(Request::Recompute);
+        input.push_back(Request::SwitchRepo(PathBuf::from("/tmp/repo")));
+        assert_eq!(collect(coalesce(input)), vec!["D", "S", "R"]);
     }
 }

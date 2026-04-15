@@ -476,6 +476,15 @@ impl AppState {
         }
     }
 
+    /// Expand the file at `path` with the given diff, regardless of the
+    /// current selection. Used by the async worker pipeline so a stale diff
+    /// (selection moved between request and response) doesn't bind the diff
+    /// to the wrong file.
+    pub fn expand_selected_with_path(&mut self, path: String, diff: FileDiff) {
+        self.diff_cache.insert(path.clone(), diff);
+        self.expanded = Some(path);
+    }
+
     /// Collapse the currently expanded file
     pub fn collapse_selected(&mut self) {
         self.expanded = None;
@@ -1139,5 +1148,32 @@ mod tests {
         assert!(s.is_computing());
         s.set_computing(false);
         assert!(!s.is_computing());
+    }
+
+    #[test]
+    fn expand_selected_with_path_stores_diff_independent_of_selection() {
+        use crate::git::FileDiff;
+        let files = vec![
+            FileEntry {
+                path: "a.rs".to_string(),
+                status: FileStatus::Modified,
+                insertions: 0,
+                deletions: 0,
+            },
+            FileEntry {
+                path: "b.rs".to_string(),
+                status: FileStatus::Modified,
+                insertions: 0,
+                deletions: 0,
+            },
+        ];
+        let mut s = AppState::new(files, Duration::from_millis(600), "main".to_string());
+
+        // Selection is a.rs (index 0); deliver a diff for b.rs.
+        assert_eq!(s.selected_index(), 0);
+        s.expand_selected_with_path("b.rs".to_string(), FileDiff::default());
+
+        assert_eq!(s.expanded_path(), Some("b.rs"));
+        assert!(s.expanded_diff().is_some());
     }
 }

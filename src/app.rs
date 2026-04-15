@@ -59,7 +59,6 @@ pub struct App {
     /// since FS-driven recomputes are idempotent.
     worker_tx: Sender<Request>,
     /// Receiver for worker responses. Drained by the event loop in Task 5.
-    #[allow(dead_code)]
     worker_rx: Receiver<Response>,
     /// Join handle for the worker thread; stored so we can join on shutdown.
     #[allow(dead_code)]
@@ -328,6 +327,31 @@ impl App {
                 }
             }
 
+            // Drain worker responses
+            while let Ok(resp) = self.worker_rx.try_recv() {
+                match resp {
+                    Response::Status(bundle) => self.apply_status(bundle),
+                    Response::Diff { path, token, diff } => {
+                        if token == self.state.pending_diff_token() {
+                            self.state.expand_selected_with_path(path, diff);
+                        } else {
+                            tracing::debug!(
+                                token,
+                                current = self.state.pending_diff_token(),
+                                "Discarding stale diff response"
+                            );
+                        }
+                    }
+                    Response::SwitchAck(_) => {
+                        // Handled inline by the SwitchRepo caller in Task 7.
+                    }
+                    Response::Error(msg) => {
+                        tracing::warn!(error = %msg, "Worker error");
+                        self.state.set_computing(false);
+                    }
+                }
+            }
+
             // Handle worktree events — drain into a vec first to release the borrow on self.wt_rx
             let wt_events: Vec<_> = self
                 .wt_rx
@@ -531,7 +555,6 @@ impl App {
     }
 
     /// Apply a worker `StatusBundle` to `AppState`.
-    #[allow(dead_code)]
     fn apply_status(&mut self, bundle: StatusBundle) {
         self.state.update_files(bundle.files);
         self.state

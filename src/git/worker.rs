@@ -76,9 +76,10 @@ pub struct StatusBundle {
 /// preserved in FIFO order. Pure function — no I/O, no thread access.
 ///
 /// Behavior:
-/// - Multiple `Recompute` → exactly one `Recompute`, positioned at the
-///   end of the output queue.
-/// - All other variants → preserved in original FIFO order.
+/// - Multiple `Recompute` → exactly one `Recompute`, **always appended at
+///   the end** of the output queue. All `Diff` and `SwitchRepo` requests
+///   are therefore processed before the next status sweep.
+/// - Other variants → preserved in original FIFO order.
 /// - Empty input → empty output.
 pub fn coalesce(input: VecDeque<Request>) -> VecDeque<Request> {
     let mut has_recompute = false;
@@ -122,11 +123,8 @@ impl Worker {
             .expect("failed to spawn git-worker thread")
     }
 
-    // `repo_path` is kept in sync with `git` across `SwitchRepo` — the
-    // compiler can't see it's read by the next `GitRepo::new` call.
-    #[allow(unused_assignments)]
     fn run(
-        mut repo_path: PathBuf,
+        repo_path: PathBuf,
         base_override: Option<String>,
         config_base: Option<String>,
         req_rx: Receiver<Request>,
@@ -184,7 +182,6 @@ impl Worker {
                     Request::SwitchRepo(new_path) => match GitRepo::new(&new_path) {
                         Ok(new_git) => {
                             git = new_git;
-                            repo_path = new_path; // kept in sync with `git` for bookkeeping
                             let _ = resp_tx.send(Response::SwitchAck(true));
                         }
                         Err(e) => {

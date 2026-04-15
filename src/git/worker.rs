@@ -8,8 +8,11 @@
 
 use std::collections::VecDeque;
 use std::path::PathBuf;
+use std::thread::{self, JoinHandle};
 
-use crate::git::{FileDiff, FileEntry};
+use crossbeam_channel::{Receiver, Sender};
+
+use crate::git::{FileDiff, FileEntry, GitRepo};
 
 /// Token used to discard stale diff results — `handle_expand` increments
 /// the next-token counter and stamps each `Request::Diff`. When the worker
@@ -94,6 +97,155 @@ pub fn coalesce(input: VecDeque<Request>) -> VecDeque<Request> {
     }
 
     output
+}
+
+/// The worker thread harness. Owns a `GitRepo`, processes `Request`s, and
+/// sends `Response`s back. Created via [`Worker::spawn`].
+pub struct Worker;
+
+impl Worker {
+    /// Spawn the worker thread. Returns its `JoinHandle`. The thread runs
+    /// until a `Shutdown` request is received OR the request channel is
+    /// dropped.
+    pub fn spawn(
+        repo_path: PathBuf,
+        base_override: Option<String>,
+        config_base: Option<String>,
+        req_rx: Receiver<Request>,
+        resp_tx: Sender<Response>,
+    ) -> JoinHandle<()> {
+        thread::Builder::new()
+            .name("git-worker".to_string())
+            .spawn(move || {
+                Self::run(repo_path, base_override, config_base, req_rx, resp_tx);
+            })
+            .expect("failed to spawn git-worker thread")
+    }
+
+    // `repo_path` is kept in sync with `git` across `SwitchRepo` — the
+    // compiler can't see it's read by the next `GitRepo::new` call.
+    #[allow(unused_assignments)]
+    fn run(
+        mut repo_path: PathBuf,
+        base_override: Option<String>,
+        config_base: Option<String>,
+        req_rx: Receiver<Request>,
+        resp_tx: Sender<Response>,
+    ) {
+        // Open the repo. If it fails, send Error and exit.
+        let mut git = match GitRepo::new(&repo_path) {
+            Ok(g) => g,
+            Err(e) => {
+                let _ = resp_tx.send(Response::Error(format!("worker open: {e}")));
+                return;
+            }
+        };
+
+        loop {
+            // Block on the next request.
+            let first = match req_rx.recv() {
+                Ok(r) => r,
+                Err(_) => return, // channel closed
+            };
+
+            // Drain backlog into a queue, prepending `first`.
+            let mut queue: VecDeque<Request> = VecDeque::new();
+            queue.push_back(first);
+            while let Ok(more) = req_rx.try_recv() {
+                queue.push_back(more);
+            }
+
+            // Coalesce.
+            let queue = coalesce(queue);
+
+            // Process in order.
+            for req in queue {
+                match req {
+                    Request::Recompute => {
+                        let bundle =
+                            compute_status(&git, base_override.as_deref(), config_base.as_deref());
+                        let _ = resp_tx.send(Response::Status(bundle));
+                    }
+                    Request::Diff { path, token } => {
+                        match compute_diff(
+                            &git,
+                            &path,
+                            base_override.as_deref(),
+                            config_base.as_deref(),
+                        ) {
+                            Ok(diff) => {
+                                let _ = resp_tx.send(Response::Diff { path, token, diff });
+                            }
+                            Err(e) => {
+                                let _ = resp_tx.send(Response::Error(format!("diff {path}: {e}")));
+                            }
+                        }
+                    }
+                    Request::SwitchRepo(new_path) => match GitRepo::new(&new_path) {
+                        Ok(new_git) => {
+                            git = new_git;
+                            repo_path = new_path; // kept in sync with `git` for bookkeeping
+                            let _ = resp_tx.send(Response::SwitchAck(true));
+                        }
+                        Err(e) => {
+                            let _ = resp_tx.send(Response::Error(format!("switch: {e}")));
+                            let _ = resp_tx.send(Response::SwitchAck(false));
+                        }
+                    },
+                    Request::Shutdown => return,
+                }
+            }
+        }
+    }
+}
+
+/// Compute the same status bundle the old synchronous `handle_fs_change`
+/// produced. Errors degrade to an empty / default field rather than failing
+/// the whole bundle — mirrors current "best-effort" semantics.
+fn compute_status(
+    git: &GitRepo,
+    base_override: Option<&str>,
+    config_base: Option<&str>,
+) -> StatusBundle {
+    let resolved_base = git.resolve_base_branch(base_override.or(config_base));
+    let (merge_base, files) = match resolved_base.as_deref() {
+        Some(base_name) => match git.merge_base(base_name) {
+            Ok(Some(mb)) => match git.branch_status(mb) {
+                Ok(f) => (Some(mb), f),
+                Err(_) => (None, git.status().unwrap_or_default()),
+            },
+            _ => (None, git.status().unwrap_or_default()),
+        },
+        None => (None, git.status().unwrap_or_default()),
+    };
+
+    StatusBundle {
+        files,
+        merge_base,
+        base_branch: resolved_base.unwrap_or_default(),
+        branch: git.branch_name().unwrap_or_else(|_| "HEAD".to_string()),
+        head: git.head_info().ok(),
+        stash_count: git.stash_count().unwrap_or(0),
+        ahead_behind: git.ahead_behind().unwrap_or(None),
+        repo_state: git.repo_state(),
+    }
+}
+
+/// Compute a single-file diff. Uses branch diff if a merge base is available,
+/// otherwise falls back to working-tree diff.
+fn compute_diff(
+    git: &GitRepo,
+    path: &str,
+    base_override: Option<&str>,
+    config_base: Option<&str>,
+) -> Result<FileDiff, crate::git::GitFailure> {
+    let resolved_base = git.resolve_base_branch(base_override.or(config_base));
+    if let Some(base_name) = resolved_base {
+        if let Ok(Some(mb)) = git.merge_base(&base_name) {
+            return git.branch_diff_file(path, mb);
+        }
+    }
+    git.diff_file(path)
 }
 
 #[cfg(test)]
@@ -204,5 +356,48 @@ mod tests {
         input.push_back(Request::Recompute);
         input.push_back(Request::SwitchRepo(PathBuf::from("/tmp/repo")));
         assert_eq!(collect(coalesce(input)), vec!["D", "S", "R"]);
+    }
+
+    #[test]
+    fn worker_recompute_returns_status() {
+        use crossbeam_channel::bounded;
+        use std::time::Duration;
+
+        let tmp = tempfile::tempdir().unwrap();
+        let repo_path = tmp.path().to_path_buf();
+
+        // Init a real git repo so GitRepo::new succeeds.
+        std::process::Command::new("git")
+            .args(["init", "-q", "-b", "main"])
+            .current_dir(&repo_path)
+            .status()
+            .unwrap();
+        std::process::Command::new("git")
+            .args(["commit", "--allow-empty", "-q", "-m", "init"])
+            .current_dir(&repo_path)
+            .env("GIT_AUTHOR_NAME", "t")
+            .env("GIT_AUTHOR_EMAIL", "t@t")
+            .env("GIT_COMMITTER_NAME", "t")
+            .env("GIT_COMMITTER_EMAIL", "t@t")
+            .status()
+            .unwrap();
+
+        let (req_tx, req_rx) = bounded::<Request>(8);
+        let (resp_tx, resp_rx) = bounded::<Response>(8);
+
+        let handle = Worker::spawn(repo_path.clone(), None, None, req_rx, resp_tx);
+
+        req_tx.send(Request::Recompute).unwrap();
+        let resp = resp_rx
+            .recv_timeout(Duration::from_secs(5))
+            .expect("worker did not respond");
+
+        match resp {
+            Response::Status(_) => {} // success
+            other => panic!("expected Status, got {:?}", other),
+        }
+
+        req_tx.send(Request::Shutdown).unwrap();
+        handle.join().unwrap();
     }
 }

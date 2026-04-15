@@ -633,11 +633,43 @@ impl App {
         open_url(&url)
     }
 
-    /// Diff requests are routed through the worker — see Task 6.
-    /// Temporarily a no-op while Task 4's worker spawn lands; Task 6 restores
-    /// the keybinding behavior via `Request::Diff` + `Response::Diff`.
+    /// Send a Diff request to the worker for the currently selected file.
+    /// The result is applied later when `worker_rx` is drained.
     fn handle_expand(&mut self) -> Result<()> {
-        tracing::debug!("handle_expand: TODO route through worker (Task 6)");
+        let Some(path) = self.state.selected_path() else {
+            return Ok(());
+        };
+
+        if self.config.keys.enter == "inline" {
+            // Inline mode: toggle. If currently expanded, collapse — no diff
+            // request needed. The next expand triggers a fresh worker request.
+            if self.state.is_expanded(&path) {
+                self.state.collapse_selected();
+                return Ok(());
+            }
+        }
+
+        let token = self.state.next_diff_token();
+        match self.worker_tx.try_send(Request::Diff {
+            path: path.clone(),
+            token,
+        }) {
+            Ok(()) => {}
+            Err(crossbeam_channel::TrySendError::Full(_)) => {
+                tracing::debug!(token, "Diff request dropped (channel full)");
+            }
+            Err(crossbeam_channel::TrySendError::Disconnected(_)) => {
+                tracing::warn!("git worker has exited; diff dropped");
+            }
+        }
+
+        // For overlay mode, surface the overlay immediately so the user sees
+        // visible feedback. The diff content fills in when the worker replies
+        // (handled in the event loop's worker_rx drain).
+        if self.config.keys.enter != "inline" {
+            self.state.show_overlay();
+        }
+
         Ok(())
     }
 

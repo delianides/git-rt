@@ -571,6 +571,8 @@ impl App {
         self.state.set_stash_count(bundle.stash_count);
         self.state.set_ahead_behind(bundle.ahead_behind);
         self.state.set_repo_state(bundle.repo_state);
+        self.state.set_repo_name(bundle.repo_name);
+        self.state.set_worktree_name(bundle.worktree_name);
         self.state.set_computing(false);
     }
 

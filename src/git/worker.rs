@@ -69,6 +69,8 @@ pub struct StatusBundle {
     pub stash_count: usize,
     pub ahead_behind: Option<(usize, usize)>,
     pub repo_state: Option<String>,
+    pub repo_name: String,
+    pub worktree_name: String,
 }
 
 /// Coalesce a batch of pending requests so redundant `Recompute` messages
@@ -225,6 +227,8 @@ fn compute_status(
         stash_count: git.stash_count().unwrap_or(0),
         ahead_behind: git.ahead_behind().unwrap_or(None),
         repo_state: git.repo_state(),
+        repo_name: git.repo_name(),
+        worktree_name: git.worktree_name(),
     }
 }
 

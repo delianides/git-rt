@@ -483,6 +483,7 @@ impl AppState {
     pub fn expand_selected_with_path(&mut self, path: String, diff: FileDiff) {
         self.diff_cache.insert(path.clone(), diff);
         self.expanded = Some(path);
+        self.diff_scroll = 0;
     }
 
     /// Collapse the currently expanded file
@@ -1175,5 +1176,30 @@ mod tests {
 
         assert_eq!(s.expanded_path(), Some("b.rs"));
         assert!(s.expanded_diff().is_some());
+    }
+
+    #[test]
+    fn expand_selected_with_path_resets_diff_scroll() {
+        use crate::git::FileDiff;
+        let files = vec![FileEntry {
+            path: "a.rs".to_string(),
+            status: FileStatus::Modified,
+            insertions: 0,
+            deletions: 0,
+        }];
+        let mut s = AppState::new(files, Duration::from_millis(600), "main".to_string());
+        s.scroll_diff_down();
+        s.scroll_diff_down();
+        s.scroll_diff_down();
+        assert!(
+            s.diff_scroll() > 0,
+            "diff_scroll should be non-zero after scrolling"
+        );
+        s.expand_selected_with_path("a.rs".to_string(), FileDiff::default());
+        assert_eq!(
+            s.diff_scroll(),
+            0,
+            "expand_selected_with_path must reset diff_scroll"
+        );
     }
 }

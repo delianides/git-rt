@@ -1,13 +1,81 @@
 pub mod activity;
 pub mod worktree;
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use anyhow::{Context, Result};
 use crossbeam_channel::{bounded, Receiver};
 use notify::{RecommendedWatcher, RecursiveMode};
 use notify_debouncer_full::{new_debouncer, DebouncedEvent, Debouncer, RecommendedCache};
+
+/// Directory-segment names that are always treated as noise, regardless of
+/// whether they appear in `.gitignore`. Covers the common build/cache dirs
+/// that churn heavily and would otherwise swamp the debouncer.
+const DEFAULT_DENY_SEGMENTS: &[&str] = &[
+    ".venv",
+    "venv",
+    "node_modules",
+    "target",
+    "dist",
+    "build",
+    ".next",
+    "__pycache__",
+    ".pytest_cache",
+    ".mypy_cache",
+    ".tox",
+];
+
+/// Returns `true` if `abs_path` is ignored by the repo's `.gitignore` rules.
+///
+/// Opens a fresh ignore stack from `repo` on each call. `.gitignore` edits
+/// take effect on the next invocation automatically — no explicit cache
+/// invalidation needed in the caller.
+///
+/// Returns `false` on any error (missing index, unreadable stack, path
+/// outside the worktree). A false negative here is safe: the path flows
+/// through the normal `classify_path` path, which is the pre-existing
+/// behavior.
+///
+/// **Note:** the production debouncer callback in [`FsWatcher::new`] does not
+/// call this helper. It inlines the same gix calls so the `AttributeStack`
+/// can be built once per batch and reused across paths. This standalone
+/// helper is kept for unit-test coverage of the gitignore logic and as a
+/// drop-in for future callers that need a one-shot check.
+pub fn is_gitignored(repo: &gix::Repository, repo_root: &Path, abs_path: &Path) -> bool {
+    let Ok(rel) = abs_path.strip_prefix(repo_root) else {
+        return false;
+    };
+    let Ok(index) = repo.index_or_empty() else {
+        return false;
+    };
+    let Ok(mut stack) = repo.excludes(
+        &index,
+        None,
+        gix::worktree::stack::state::ignore::Source::WorktreeThenIdMappingIfNotSkipped,
+    ) else {
+        return false;
+    };
+    let mode = if abs_path.is_dir() {
+        Some(gix::index::entry::Mode::DIR)
+    } else {
+        Some(gix::index::entry::Mode::FILE)
+    };
+    let Ok(platform) = stack.at_path(rel, mode) else {
+        return false;
+    };
+    platform.is_excluded()
+}
+
+/// Returns `true` if any component of `path` matches a deny-list segment
+/// (exact match) or ends with `.egg-info` (Python metadata convention).
+pub fn is_deny_listed(path: &Path) -> bool {
+    path.components().any(|c| {
+        let s = c.as_os_str().to_string_lossy();
+        DEFAULT_DENY_SEGMENTS.contains(&s.as_ref()) || s.ends_with(".egg-info")
+    })
+}
 
 /// Classification of a filesystem path that fired a debounced event.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -96,10 +164,25 @@ impl FsWatcher {
     /// **and** an `FsChange` — if the batch contains both kinds of paths.
     /// `HeadChange` is sent first so the app can recompute the commits list
     /// before rescanning the working tree.
+    ///
+    /// Event paths are filtered before classification: segments matching the
+    /// hardcoded deny-list (`.venv`, `node_modules`, `target`, etc.) are
+    /// dropped, as are paths excluded by the repo's `.gitignore`. Filtering is
+    /// per-batch — the gix ignore stack is built once per debounce fire and
+    /// reused across all paths in the batch.
     pub fn new(repo_path: &Path, debounce: Duration) -> Result<(Receiver<FsWatcherEvent>, Self)> {
         let (tx, rx) = bounded::<FsWatcherEvent>(16);
 
+        // Open the gix repo once for the watcher's lifetime; used for
+        // per-batch gitignore checks. Failure here falls back to deny-list
+        // only — not a fatal error.
+        let gix_repo: Arc<Mutex<Option<gix::Repository>>> =
+            Arc::new(Mutex::new(gix::open(repo_path).ok()));
+        let repo_root: PathBuf = repo_path.to_path_buf();
+
         let sender = tx.clone();
+        let gix_repo_cb = Arc::clone(&gix_repo);
+        let repo_root_cb = repo_root.clone();
         let mut debouncer = new_debouncer(
             debounce,
             None,
@@ -107,8 +190,52 @@ impl FsWatcher {
                 Ok(events) => {
                     let mut has_fs = false;
                     let mut has_head = false;
+                    let mut dropped_paths: usize = 0;
+
+                    // Build the ignore stack ONCE per batch.
+                    // Locking the Mutex serializes batch processing, which is fine
+                    // — the debouncer invokes the callback serially.
+                    let repo_guard = gix_repo_cb.lock().ok();
+                    let mut stack = repo_guard
+                        .as_ref()
+                        .and_then(|g| g.as_ref())
+                        .and_then(|repo| {
+                            let index = repo.index_or_empty().ok()?;
+                            repo.excludes(
+                                &index,
+                                None,
+                                gix::worktree::stack::state::ignore::Source::WorktreeThenIdMappingIfNotSkipped,
+                            )
+                            .ok()
+                        });
+
                     for e in &events {
                         for p in &e.event.paths {
+                            // Fast path: deny-listed segments (no repo access).
+                            if is_deny_listed(p) {
+                                dropped_paths += 1;
+                                continue;
+                            }
+                            // .git/* paths must reach classify_path; never gitignore-filter them.
+                            let in_git_dir = p.to_string_lossy().contains("/.git/");
+                            // Gitignore check (per-batch stack, per-path navigation).
+                            if !in_git_dir {
+                                if let Some(ref mut s) = stack {
+                                    if let Ok(rel) = p.strip_prefix(&repo_root_cb) {
+                                        let mode = if p.is_dir() {
+                                            gix::index::entry::Mode::DIR
+                                        } else {
+                                            gix::index::entry::Mode::FILE
+                                        };
+                                        if let Ok(platform) = s.at_path(rel, Some(mode)) {
+                                            if platform.is_excluded() {
+                                                dropped_paths += 1;
+                                                continue;
+                                            }
+                                        }
+                                    }
+                                }
+                            }
                             match classify_path(p) {
                                 PathClass::FsChange => has_fs = true,
                                 PathClass::HeadChange => has_head = true,
@@ -116,10 +243,12 @@ impl FsWatcher {
                             }
                         }
                     }
+
                     tracing::debug!(
                         event_count = events.len(),
                         has_fs,
                         has_head,
+                        dropped_paths,
                         "Debouncer callback fired"
                     );
                     if has_head {
@@ -310,6 +439,77 @@ mod tests {
         assert_eq!(
             classify_path(Path::new("/repo/.git/worktrees/feat/gitdir")),
             PathClass::Ignored
+        );
+    }
+
+    #[test]
+    fn test_is_deny_listed_matches_segment() {
+        assert!(is_deny_listed(Path::new(
+            "/repo/.venv/lib/python3.11/site-packages/foo.py"
+        )));
+        assert!(is_deny_listed(Path::new(
+            "/repo/node_modules/react/index.js"
+        )));
+        assert!(is_deny_listed(Path::new("/repo/target/debug/build.rs")));
+        assert!(is_deny_listed(Path::new(
+            "/repo/src/__pycache__/main.cpython-311.pyc"
+        )));
+    }
+
+    #[test]
+    fn test_is_deny_listed_matches_egg_info_suffix() {
+        assert!(is_deny_listed(Path::new("/repo/mypkg.egg-info/PKG-INFO")));
+    }
+
+    #[test]
+    fn test_is_deny_listed_does_not_match_normal_paths() {
+        assert!(!is_deny_listed(Path::new("/repo/src/main.rs")));
+        assert!(!is_deny_listed(Path::new("/repo/README.md")));
+        assert!(!is_deny_listed(Path::new("/repo/.git/HEAD")));
+    }
+
+    #[test]
+    fn test_is_deny_listed_does_not_match_segment_prefix() {
+        // A file literally named "target.rs" is fine — only exact segment matches count.
+        assert!(!is_deny_listed(Path::new("/repo/src/target.rs")));
+        assert!(!is_deny_listed(Path::new(
+            "/repo/src/node_modules_utils.rs"
+        )));
+    }
+
+    #[test]
+    fn test_is_gitignored_respects_gitignore_file() {
+        use std::fs;
+        let tmp = tempfile::tempdir().unwrap();
+        let repo_path = tmp.path();
+
+        // Init a bare-bones repo with a .gitignore
+        gix::init(repo_path).unwrap();
+        fs::write(repo_path.join(".gitignore"), ".venv/\nbuild/\n").unwrap();
+        fs::create_dir_all(repo_path.join(".venv").join("lib")).unwrap();
+        fs::write(repo_path.join(".venv").join("lib").join("foo.py"), "").unwrap();
+        fs::write(repo_path.join("src.rs"), "").unwrap();
+
+        let repo = gix::open(repo_path).unwrap();
+
+        assert!(
+            is_gitignored(&repo, repo_path, &repo_path.join(".venv/lib/foo.py")),
+            ".venv/lib/foo.py should be ignored by .gitignore"
+        );
+        assert!(
+            !is_gitignored(&repo, repo_path, &repo_path.join("src.rs")),
+            "src.rs should NOT be ignored"
+        );
+        assert!(
+            is_gitignored(&repo, repo_path, &repo_path.join(".venv")),
+            ".venv/ directory itself should be ignored"
+        );
+
+        fs::create_dir_all(repo_path.join("build")).unwrap();
+        fs::write(repo_path.join("build").join("artifact.txt"), "").unwrap();
+        assert!(
+            is_gitignored(&repo, repo_path, &repo_path.join("build/artifact.txt")),
+            "build/artifact.txt should be ignored by .gitignore"
         );
     }
 }

@@ -17,6 +17,18 @@ use crate::state::AppState;
 use crate::ui::Terminal;
 use crate::watcher::{FsWatcher, FsWatcherEvent};
 
+/// How often the event loop performs periodic work (flash-fade update,
+/// watched-path-missing fallback). The loop also renders and drains channels
+/// on every iteration regardless of this interval.
+const TICK_RATE: Duration = Duration::from_millis(1000);
+
+/// Maximum time `event::poll` waits for a terminal event before returning
+/// control to the loop to drain the other (fs, worker, github) channels.
+/// Does NOT affect keystroke latency: `event::poll` returns immediately
+/// when a key arrives. This ceiling only bounds how stale non-keyboard
+/// events can be when the user is idle.
+const EVENT_POLL_MAX: Duration = Duration::from_millis(200);
+
 /// Events that drive the application
 pub enum AppEvent {
     /// A filesystem change was detected (debounced)
@@ -246,7 +258,7 @@ impl App {
             fs_rx,
             config,
             theme,
-            tick_rate: Duration::from_millis(250),
+            tick_rate: TICK_RATE,
             repo_path,
             watch_path,
             main_worktree_path,
@@ -283,7 +295,7 @@ impl App {
 
             // Multiplex event sources
             // Check for terminal events with timeout
-            if event::poll(timeout.min(Duration::from_millis(50)))? {
+            if event::poll(timeout.min(EVENT_POLL_MAX))? {
                 let term_event = event::read()?;
                 if self.handle_terminal_event(term_event, terminal)? {
                     return Ok(());

@@ -135,6 +135,11 @@ pub struct AppState {
     overlay_visible: bool,
     /// Whether the help popup is currently shown
     help_visible: bool,
+    /// When true, the next draw must start with a full terminal clear.
+    /// Set on overlay dismissal to defeat residual cells that ratatui's
+    /// cell-level diff can leave behind on some terminals (e.g. Ghostty)
+    /// when a large styled region is replaced by reset cells.
+    needs_clear: bool,
     /// PR widget state
     pr_state: PrState,
     /// When set, the pane border should flash until this instant.
@@ -171,6 +176,7 @@ impl AppState {
             flash_message: None,
             overlay_visible: false,
             help_visible: false,
+            needs_clear: false,
             pr_state: PrState::default(),
             border_flash_until: None,
             merge_base: None,
@@ -352,6 +358,7 @@ impl AppState {
     pub fn hide_overlay(&mut self) {
         self.overlay_visible = false;
         self.diff_scroll = 0;
+        self.needs_clear = true;
     }
 
     // -- Help overlay --
@@ -372,6 +379,14 @@ impl AppState {
     /// Hide the help popup
     pub fn hide_help(&mut self) {
         self.help_visible = false;
+        self.needs_clear = true;
+    }
+
+    /// Consume the "needs clear" flag, returning its prior value. The
+    /// render loop calls this before drawing and performs a full terminal
+    /// clear when it returns `true`.
+    pub fn take_needs_clear(&mut self) -> bool {
+        std::mem::replace(&mut self.needs_clear, false)
     }
 
     // -- PR state --
@@ -871,6 +886,34 @@ mod tests {
         assert!(s.is_help_visible());
         s.hide_help();
         assert!(!s.is_help_visible());
+    }
+
+    #[test]
+    fn test_hide_overlay_sets_needs_clear() {
+        let mut s = AppState::new(vec![], Duration::from_millis(600), "main".to_string());
+        s.show_overlay();
+        assert!(
+            !s.take_needs_clear(),
+            "opening the overlay must not request a clear"
+        );
+        s.hide_overlay();
+        assert!(
+            s.take_needs_clear(),
+            "dismissing the overlay must request one full clear"
+        );
+        assert!(
+            !s.take_needs_clear(),
+            "take_needs_clear must reset the flag"
+        );
+    }
+
+    #[test]
+    fn test_hide_help_sets_needs_clear() {
+        let mut s = AppState::new(vec![], Duration::from_millis(600), "main".to_string());
+        s.show_help();
+        let _ = s.take_needs_clear();
+        s.hide_help();
+        assert!(s.take_needs_clear());
     }
 
     #[test]

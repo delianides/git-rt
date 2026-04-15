@@ -61,7 +61,15 @@ impl Terminal {
     }
 
     /// Draw one frame using the new config/theme API.
-    pub fn draw(&mut self, state: &AppState, config: &AppConfig, theme: &Theme) -> Result<()> {
+    ///
+    /// Consumes `state.take_needs_clear()` first: when set, issues a full
+    /// terminal clear before rendering so overlay dismissals don't leave
+    /// residual cells on terminals where ratatui's cell-level diff under-
+    /// reports changes across large styled regions.
+    pub fn draw(&mut self, state: &mut AppState, config: &AppConfig, theme: &Theme) -> Result<()> {
+        if state.take_needs_clear() {
+            self.terminal.clear()?;
+        }
         self.terminal.draw(|frame| {
             render(frame, state, config, theme);
         })?;

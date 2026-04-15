@@ -515,10 +515,16 @@ impl App {
     /// is applied later when the event loop drains `worker_rx` (Task 5).
     fn handle_fs_change(&mut self) -> Result<()> {
         tracing::debug!("Filesystem change detected; sending Recompute to worker");
-        if let Err(e) = self.worker_tx.try_send(Request::Recompute) {
-            tracing::debug!(error = %e, "Recompute send dropped (channel full)");
-            // Channel full means a Recompute is already pending — safe to drop.
-            return Ok(());
+        match self.worker_tx.try_send(Request::Recompute) {
+            Ok(()) => {}
+            Err(crossbeam_channel::TrySendError::Full(_)) => {
+                tracing::debug!("Recompute dropped (channel full — already pending)");
+                return Ok(());
+            }
+            Err(crossbeam_channel::TrySendError::Disconnected(_)) => {
+                tracing::warn!("git worker has exited; recompute dropped");
+                return Ok(());
+            }
         }
         self.state.set_computing(true);
         Ok(())

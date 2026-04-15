@@ -2,7 +2,7 @@ use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result};
-use crossbeam_channel::Receiver;
+use crossbeam_channel::{bounded, Receiver, Sender};
 use crossterm::event::{
     self, DisableFocusChange, EnableFocusChange, Event as TermEvent, KeyCode, KeyModifiers,
 };
@@ -12,6 +12,7 @@ use crossterm::terminal::{
 };
 
 use crate::config::AppConfig;
+use crate::git::worker::{Request, Response, StatusBundle, Worker};
 use crate::git::GitRepo;
 use crate::state::AppState;
 use crate::ui::Terminal;
@@ -41,7 +42,6 @@ pub enum AppEvent {
 
 pub struct App {
     state: AppState,
-    git: GitRepo,
     _watcher: FsWatcher,
     fs_rx: Receiver<FsWatcherEvent>,
     config: AppConfig,
@@ -67,6 +67,13 @@ pub struct App {
     gh_rx: Option<Receiver<crate::github::GitHubEvent>>,
     /// CLI override for base branch
     base_override: Option<String>,
+    /// Sender for worker requests. Bounded; drops on overflow are safe
+    /// since FS-driven recomputes are idempotent.
+    worker_tx: Sender<Request>,
+    /// Receiver for worker responses. Drained by the event loop in Task 5.
+    worker_rx: Receiver<Response>,
+    /// Join handle for the worker thread; stored so we can join on shutdown.
+    worker_handle: Option<std::thread::JoinHandle<()>>,
 }
 
 /// The action the tick-level existence check or `Removed` handler should take.
@@ -251,9 +258,21 @@ impl App {
 
         let main_worktree_path = crate::git::main_worktree_path(&repo_path);
 
+        // Spawn the git worker thread. The synchronous initial load above
+        // populated the first frame; from this point on the worker handles
+        // all git work.
+        let (worker_tx, worker_req_rx) = bounded::<Request>(8);
+        let (worker_resp_tx, worker_rx) = bounded::<Response>(8);
+        let worker_handle = Worker::spawn(
+            watch_path.clone(),
+            base_override.clone(),
+            config.base_branch.clone(),
+            worker_req_rx,
+            worker_resp_tx,
+        );
+
         Ok(Self {
             state,
-            git,
             _watcher: watcher,
             fs_rx,
             config,
@@ -267,6 +286,9 @@ impl App {
             wt_rx,
             gh_rx,
             base_override,
+            worker_tx,
+            worker_rx,
+            worker_handle: Some(worker_handle),
         })
     }
 
@@ -275,6 +297,12 @@ impl App {
         terminal.setup()?;
 
         let result = self.event_loop(&mut terminal);
+
+        // Shut the worker down cleanly so the thread exits before we drop App.
+        let _ = self.worker_tx.send(Request::Shutdown);
+        if let Some(handle) = self.worker_handle.take() {
+            let _ = handle.join();
+        }
 
         terminal.teardown()?;
         result
@@ -312,6 +340,31 @@ impl App {
                 match event {
                     FsWatcherEvent::FsChange | FsWatcherEvent::HeadChange => {
                         self.handle_fs_change()?;
+                    }
+                }
+            }
+
+            // Drain worker responses
+            while let Ok(resp) = self.worker_rx.try_recv() {
+                match resp {
+                    Response::Status(bundle) => self.apply_status(bundle),
+                    Response::Diff { path, token, diff } => {
+                        if token == self.state.pending_diff_token() {
+                            self.state.expand_selected_with_path(path, diff);
+                        } else {
+                            tracing::debug!(
+                                token,
+                                current = self.state.pending_diff_token(),
+                                "Discarding stale diff response"
+                            );
+                        }
+                    }
+                    Response::SwitchAck(_) => {
+                        // Handled inline by the SwitchRepo caller in Task 7.
+                    }
+                    Response::Error(msg) => {
+                        tracing::warn!(error = %msg, "Worker error");
+                        self.state.set_computing(false);
                     }
                 }
             }
@@ -499,57 +552,40 @@ impl App {
         Ok((merge_base, resolved_base.unwrap_or_default(), files))
     }
 
-    /// Recompute git status on filesystem change
+    /// Send a Recompute request to the worker. Non-blocking. The response
+    /// is applied later when the event loop drains `worker_rx` (Task 5).
     fn handle_fs_change(&mut self) -> Result<()> {
-        tracing::debug!("Filesystem change detected, recomputing status");
-
-        let base_ref = self
-            .base_override
-            .as_deref()
-            .or(self.config.base_branch.as_deref());
-        let resolved_base = self.git.resolve_base_branch(base_ref);
-        let (merge_base, files_result) = match &resolved_base {
-            Some(base_name) => match self.git.merge_base(base_name) {
-                Ok(Some(mb)) => (Some(mb), self.git.branch_status(mb)),
-                Ok(None) => (None, self.git.status()),
-                Err(e) if e.is_env_change() => {
-                    tracing::debug!(error = %e, "merge_base env change, holding state");
-                    return Ok(());
-                }
-                Err(e) => return Err(e.into()),
-            },
-            None => (None, self.git.status()),
-        };
-
-        match files_result {
-            Ok(files) => {
-                tracing::debug!(file_count = files.len(), "Status returned");
-                self.state.update_files(files);
-                self.state
-                    .set_merge_base(merge_base, resolved_base.unwrap_or_default());
-            }
-            Err(e) if e.is_env_change() => {
-                tracing::debug!(error = %e, "git env changed during status, holding state");
+        tracing::debug!("Filesystem change detected; sending Recompute to worker");
+        match self.worker_tx.try_send(Request::Recompute) {
+            Ok(()) => {}
+            Err(crossbeam_channel::TrySendError::Full(_)) => {
+                tracing::debug!("Recompute dropped (channel full — already pending)");
                 return Ok(());
             }
-            Err(e) => return Err(e.into()),
+            Err(crossbeam_channel::TrySendError::Disconnected(_)) => {
+                tracing::warn!("git worker has exited; recompute dropped");
+                return Ok(());
+            }
         }
+        self.state.set_computing(true);
+        Ok(())
+    }
 
-        if let Ok(branch) = self.git.branch_name() {
-            self.state.set_branch(branch);
-        }
-        if let Ok((sha, msg)) = self.git.head_info() {
+    /// Apply a worker `StatusBundle` to `AppState`.
+    fn apply_status(&mut self, bundle: StatusBundle) {
+        self.state.update_files(bundle.files);
+        self.state
+            .set_merge_base(bundle.merge_base, bundle.base_branch);
+        self.state.set_branch(bundle.branch);
+        if let Some((sha, msg)) = bundle.head {
             self.state.set_head_info(sha, msg);
         }
-        if let Ok(count) = self.git.stash_count() {
-            self.state.set_stash_count(count);
-        }
-        if let Ok(ab) = self.git.ahead_behind() {
-            self.state.set_ahead_behind(ab);
-        }
-        self.state.set_repo_state(self.git.repo_state());
-
-        Ok(())
+        self.state.set_stash_count(bundle.stash_count);
+        self.state.set_ahead_behind(bundle.ahead_behind);
+        self.state.set_repo_state(bundle.repo_state);
+        self.state.set_repo_name(bundle.repo_name);
+        self.state.set_worktree_name(bundle.worktree_name);
+        self.state.set_computing(false);
     }
 
     /// Open the currently selected file in an editor. No-op when no file is selected.
@@ -616,40 +652,43 @@ impl App {
         open_url(&url)
     }
 
-    /// Expand or show overlay diff for the currently selected file, depending on config
+    /// Send a Diff request to the worker for the currently selected file.
+    /// The result is applied later when `worker_rx` is drained.
     fn handle_expand(&mut self) -> Result<()> {
-        if let Some(path) = self.state.selected_path() {
-            let diff_result = if let Some(mb) = self.state.merge_base() {
-                self.git.branch_diff_file(&path, mb)
-            } else {
-                self.git.diff_file(&path)
-            };
+        let Some(path) = self.state.selected_path() else {
+            return Ok(());
+        };
 
-            if self.config.keys.enter == "inline" {
-                if self.state.is_expanded(&path) {
-                    self.state.collapse_selected();
-                } else {
-                    match diff_result {
-                        Ok(diff) => self.state.expand_selected(diff),
-                        Err(e) if e.is_env_change() => {
-                            tracing::debug!(error = %e, "git env changed during diff, skipping expand");
-                        }
-                        Err(e) => return Err(e.into()),
-                    }
-                }
-            } else {
-                match diff_result {
-                    Ok(diff) => {
-                        self.state.expand_selected(diff);
-                        self.state.show_overlay();
-                    }
-                    Err(e) if e.is_env_change() => {
-                        tracing::debug!(error = %e, "git env changed during diff, skipping expand");
-                    }
-                    Err(e) => return Err(e.into()),
-                }
+        if self.config.keys.enter == "inline" {
+            // Inline mode: toggle. If currently expanded, collapse — no diff
+            // request needed. The next expand triggers a fresh worker request.
+            if self.state.is_expanded(&path) {
+                self.state.collapse_selected();
+                return Ok(());
             }
         }
+
+        let token = self.state.next_diff_token();
+        match self.worker_tx.try_send(Request::Diff {
+            path: path.clone(),
+            token,
+        }) {
+            Ok(()) => {}
+            Err(crossbeam_channel::TrySendError::Full(_)) => {
+                tracing::debug!(token, "Diff request dropped (channel full)");
+            }
+            Err(crossbeam_channel::TrySendError::Disconnected(_)) => {
+                tracing::warn!("git worker has exited; diff dropped");
+            }
+        }
+
+        // For overlay mode, surface the overlay immediately so the user sees
+        // visible feedback. The diff content fills in when the worker replies
+        // (handled in the event loop's worker_rx drain).
+        if self.config.keys.enter != "inline" {
+            self.state.show_overlay();
+        }
+
         Ok(())
     }
 
@@ -729,46 +768,50 @@ impl App {
         if path == self.watch_path {
             return Ok(());
         }
-        let git = GitRepo::new(&path).context("Failed to open git repository at new path")?;
 
+        // Rebuild the FS watcher synchronously (cheap; doesn't open git).
         let debounce = Duration::from_millis(self.config.debounce_ms);
         let (fs_rx, watcher) = FsWatcher::new(&path, debounce)?;
 
-        let (merge_base, resolved_base, files) = Self::compute_branch_files(
-            &git,
-            self.base_override.as_deref(),
-            self.config.base_branch.as_deref(),
-        )?;
-
-        let branch = git.branch_name().unwrap_or_else(|_| "HEAD".to_string());
-        let repo_name = git.repo_name();
-        let worktree_name = git.worktree_name();
-
-        self.state
-            .reset_for_switch(files, branch, repo_name, worktree_name);
-        self.state.set_merge_base(merge_base, resolved_base);
-
-        if let Ok((sha, msg)) = git.head_info() {
-            self.state.set_head_info(sha, msg);
+        // Tell the worker to swap repos. Block briefly for the ack so we don't
+        // race a new Recompute against the old repo path.
+        self.worker_tx.send(Request::SwitchRepo(path.clone()))?;
+        let deadline = std::time::Instant::now() + Duration::from_secs(5);
+        loop {
+            let now = std::time::Instant::now();
+            if now >= deadline {
+                // 5s passed; bail. The error propagates to event_loop, which
+                // returns; run() then triggers the Shutdown sequence so the
+                // worker thread exits cleanly. App terminates rather than
+                // continuing in a split worker/state condition.
+                anyhow::bail!("worker did not ack SwitchRepo within 5s");
+            }
+            match self.worker_rx.recv_timeout(deadline - now) {
+                Ok(Response::SwitchAck(true)) => break,
+                Ok(Response::SwitchAck(false)) => {
+                    anyhow::bail!("worker failed to switch repo to {:?}", path)
+                }
+                Ok(other) => {
+                    // Drain non-ack responses — they're stale relative to the
+                    // upcoming switch and the next Recompute will refresh.
+                    tracing::debug!(?other, "discarding pre-switch worker response");
+                    continue;
+                }
+                Err(crossbeam_channel::RecvTimeoutError::Timeout) => continue,
+                Err(crossbeam_channel::RecvTimeoutError::Disconnected) => {
+                    anyhow::bail!("worker thread disconnected during SwitchRepo");
+                }
+            }
         }
-        self.state.set_stash_count(git.stash_count().unwrap_or(0));
-        self.state
-            .set_ahead_behind(git.ahead_behind().unwrap_or(None));
-        self.state.set_repo_state(git.repo_state());
 
-        self.git = git;
+        // Worker is now on the new repo. Reset state and request a fresh load.
+        self.state
+            .reset_for_switch(Vec::new(), String::new(), String::new(), String::new());
         self._watcher = watcher;
         self.fs_rx = fs_rx;
         self.watch_path = path;
 
-        // Restart the GitHub PR poller for the new branch. Without this,
-        // the old poller thread keeps running against the old branch and
-        // re-populates `pr_state` after `reset_for_switch` clears it,
-        // making the PR tab reappear for the wrong branch.
-        //
-        // Dropping the current `gh_rx` causes the old poller thread to
-        // exit on its next send attempt (poller.rs:100 breaks the loop
-        // when `send()` returns `Err` because the receiver is dropped).
+        // Restart the GitHub PR poller for the new branch.
         self.gh_rx = if self.config.pr.enabled {
             if let Some(token) = crate::github::resolve_auth_token() {
                 Some(crate::github::start_polling(
@@ -782,6 +825,10 @@ impl App {
         } else {
             None
         };
+
+        // Trigger an initial Recompute on the new repo.
+        let _ = self.worker_tx.try_send(Request::Recompute);
+        self.state.set_computing(true);
 
         Ok(())
     }

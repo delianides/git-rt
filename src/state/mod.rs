@@ -140,6 +140,14 @@ pub struct AppState {
     /// cell-level diff can leave behind on some terminals (e.g. Ghostty)
     /// when a large styled region is replaced by reset cells.
     needs_clear: bool,
+    /// Monotonic token bumped each time the user requests a diff. Lets the
+    /// app drop stale `Response::Diff` messages whose token doesn't match
+    /// the current pending request.
+    pending_diff_token: u64,
+    /// True when a worker `Recompute` request has been sent and no
+    /// `Status` response has come back yet. Lets the UI surface a subtle
+    /// indicator without blocking input.
+    is_computing: bool,
     /// PR widget state
     pr_state: PrState,
     /// When set, the pane border should flash until this instant.
@@ -177,6 +185,8 @@ impl AppState {
             overlay_visible: false,
             help_visible: false,
             needs_clear: false,
+            pending_diff_token: 0,
+            is_computing: false,
             pr_state: PrState::default(),
             border_flash_until: None,
             merge_base: None,
@@ -389,6 +399,30 @@ impl AppState {
         std::mem::replace(&mut self.needs_clear, false)
     }
 
+    /// Bump and return the next diff token. Call this when sending a new
+    /// `Request::Diff` so stale responses can be filtered out.
+    pub fn next_diff_token(&mut self) -> u64 {
+        self.pending_diff_token = self.pending_diff_token.wrapping_add(1);
+        self.pending_diff_token
+    }
+
+    /// Current pending diff token. `Response::Diff` results with a different
+    /// token must be discarded.
+    pub fn pending_diff_token(&self) -> u64 {
+        self.pending_diff_token
+    }
+
+    /// True when a recompute is in flight.
+    pub fn is_computing(&self) -> bool {
+        self.is_computing
+    }
+
+    /// Set the in-flight indicator. The event loop sets this true when sending
+    /// `Request::Recompute` and clears it on `Response::Status` / `Error`.
+    pub fn set_computing(&mut self, value: bool) {
+        self.is_computing = value;
+    }
+
     // -- PR state --
 
     /// Get a reference to the current PR state
@@ -442,6 +476,16 @@ impl AppState {
         }
     }
 
+    /// Expand the file at `path` with the given diff, regardless of the
+    /// current selection. Used by the async worker pipeline so a stale diff
+    /// (selection moved between request and response) doesn't bind the diff
+    /// to the wrong file.
+    pub fn expand_selected_with_path(&mut self, path: String, diff: FileDiff) {
+        self.diff_cache.insert(path.clone(), diff);
+        self.expanded = Some(path);
+        self.diff_scroll = 0;
+    }
+
     /// Collapse the currently expanded file
     pub fn collapse_selected(&mut self) {
         self.expanded = None;
@@ -487,6 +531,8 @@ impl AppState {
         self.ahead_behind = None;
         self.repo_state = None;
         self.overlay_visible = false;
+        self.pending_diff_token = 0;
+        self.is_computing = false;
         self.pr_state = PrState::default();
         // Activate border flash for visual feedback on switch
         self.border_flash_until = Some(Instant::now() + self.flash_duration);
@@ -1080,5 +1126,80 @@ mod tests {
         assert_eq!(state.repo_name(), "new-repo");
         assert_eq!(state.worktree_name(), "new-wt");
         assert_eq!(state.refresh_count(), 0);
+    }
+
+    #[test]
+    fn diff_token_is_monotonic() {
+        let mut s = AppState::new(vec![], Duration::from_millis(600), "main".to_string());
+        assert_eq!(s.pending_diff_token(), 0);
+        let t1 = s.next_diff_token();
+        let t2 = s.next_diff_token();
+        let t3 = s.next_diff_token();
+        assert_eq!(t1, 1);
+        assert_eq!(t2, 2);
+        assert_eq!(t3, 3);
+        assert_eq!(s.pending_diff_token(), 3);
+    }
+
+    #[test]
+    fn is_computing_defaults_false_and_is_set_clear() {
+        let mut s = AppState::new(vec![], Duration::from_millis(600), "main".to_string());
+        assert!(!s.is_computing());
+        s.set_computing(true);
+        assert!(s.is_computing());
+        s.set_computing(false);
+        assert!(!s.is_computing());
+    }
+
+    #[test]
+    fn expand_selected_with_path_stores_diff_independent_of_selection() {
+        use crate::git::FileDiff;
+        let files = vec![
+            FileEntry {
+                path: "a.rs".to_string(),
+                status: FileStatus::Modified,
+                insertions: 0,
+                deletions: 0,
+            },
+            FileEntry {
+                path: "b.rs".to_string(),
+                status: FileStatus::Modified,
+                insertions: 0,
+                deletions: 0,
+            },
+        ];
+        let mut s = AppState::new(files, Duration::from_millis(600), "main".to_string());
+
+        // Selection is a.rs (index 0); deliver a diff for b.rs.
+        assert_eq!(s.selected_index(), 0);
+        s.expand_selected_with_path("b.rs".to_string(), FileDiff::default());
+
+        assert_eq!(s.expanded_path(), Some("b.rs"));
+        assert!(s.expanded_diff().is_some());
+    }
+
+    #[test]
+    fn expand_selected_with_path_resets_diff_scroll() {
+        use crate::git::FileDiff;
+        let files = vec![FileEntry {
+            path: "a.rs".to_string(),
+            status: FileStatus::Modified,
+            insertions: 0,
+            deletions: 0,
+        }];
+        let mut s = AppState::new(files, Duration::from_millis(600), "main".to_string());
+        s.scroll_diff_down();
+        s.scroll_diff_down();
+        s.scroll_diff_down();
+        assert!(
+            s.diff_scroll() > 0,
+            "diff_scroll should be non-zero after scrolling"
+        );
+        s.expand_selected_with_path("a.rs".to_string(), FileDiff::default());
+        assert_eq!(
+            s.diff_scroll(),
+            0,
+            "expand_selected_with_path must reset diff_scroll"
+        );
     }
 }

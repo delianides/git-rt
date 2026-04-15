@@ -273,7 +273,7 @@ impl App {
 
         loop {
             // Render current state
-            terminal.draw(&self.state, &self.config, &self.theme)?;
+            terminal.draw(&mut self.state, &self.config, &self.theme)?;
 
             // Calculate timeout until next tick
             let timeout = self

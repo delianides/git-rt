@@ -76,18 +76,37 @@ fn main() -> Result<()> {
             .init();
     }
 
+    let startup_t0 = std::time::Instant::now();
+
+    let t = std::time::Instant::now();
     let launch_path = cli
         .path
         .canonicalize()
         .context("Failed to resolve launch path")?;
+    tracing::debug!(
+        elapsed_ms = t.elapsed().as_millis() as u64,
+        "startup: canonicalize launch path"
+    );
+
+    let t = std::time::Instant::now();
     let repo_path = git::discover_worktree_root(&launch_path)
         .with_context(|| format!("Launch path: {}", launch_path.display()))?;
+    tracing::debug!(
+        elapsed_ms = t.elapsed().as_millis() as u64,
+        "startup: discover_worktree_root"
+    );
 
     tracing::info!(?repo_path, "Starting git-rt");
 
+    let t = std::time::Instant::now();
     let config = config::AppConfig::load(cli.config.as_deref())?;
+    tracing::debug!(
+        elapsed_ms = t.elapsed().as_millis() as u64,
+        "startup: config load"
+    );
 
     // Resolve branch pinning: search across main + all linked worktrees.
+    let t = std::time::Instant::now();
     let pinned_worktree = if let Some(ref branch_arg) = cli.branch {
         Some(
             watcher::activity::resolve_branch_arg(&repo_path, branch_arg)
@@ -96,11 +115,16 @@ fn main() -> Result<()> {
     } else {
         None
     };
+    tracing::debug!(
+        elapsed_ms = t.elapsed().as_millis() as u64,
+        "startup: resolve --branch"
+    );
 
     // auto_follow is now controlled only by --no-follow.
     // --branch no longer disables auto-follow.
     let auto_follow = !cli.no_follow;
 
+    let t = std::time::Instant::now();
     let watch_path = match pinned_worktree {
         Some(ref wt) => {
             tracing::info!(worktree = %wt.name, path = ?wt.path, "Pinned to worktree");
@@ -115,7 +139,12 @@ fn main() -> Result<()> {
             }
         }
     };
+    tracing::debug!(
+        elapsed_ms = t.elapsed().as_millis() as u64,
+        "startup: cold_start_pick"
+    );
 
+    let t = std::time::Instant::now();
     let mut app = app::App::new(
         watch_path,
         repo_path,
@@ -125,6 +154,14 @@ fn main() -> Result<()> {
         cli.theme,
         cli.base,
     )?;
+    tracing::debug!(
+        elapsed_ms = t.elapsed().as_millis() as u64,
+        "startup: App::new"
+    );
+    tracing::info!(
+        elapsed_ms = startup_t0.elapsed().as_millis() as u64,
+        "startup: total before run()"
+    );
     app.run()
 }
 

@@ -4,8 +4,6 @@ A real-time terminal dashboard for git changes. Watch your working tree update l
 
 ![status: early development](https://img.shields.io/badge/status-early%20development-orange)
 
-![git-rt screenshot](assets/screenshot.png)
-
 ## Overview
 
 Run `git-rt` in a terminal pane alongside your editor. It shows a live-updating list of changed files with insertion/deletion counts and — when the current branch has a PR open on GitHub — a compact PR status strip with review, check, and mergeability state. Press Enter on a file to open the full diff in your configured git pager. Updates are event-driven via filesystem watches; there is no polling of the working tree.

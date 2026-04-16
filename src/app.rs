@@ -59,10 +59,8 @@ pub struct App {
     /// flash message every 250 ms when both the watched path and the main
     /// worktree are gone.
     main_missing_warned: bool,
-    /// Worktree monitor (None if auto-follow is disabled)
-    worktree_monitor: Option<crate::watcher::worktree::WorktreeMonitor>,
-    /// Receiver for worktree events
-    wt_rx: Option<Receiver<crate::watcher::worktree::WorktreeEvent>>,
+    /// Whether to auto-follow the most recently active worktree
+    auto_follow: bool,
     /// Receiver for GitHub PR events
     gh_rx: Option<Receiver<crate::github::GitHubEvent>>,
     /// CLI override for base branch
@@ -223,15 +221,6 @@ impl App {
         let debounce = Duration::from_millis(debounce_ms);
         let (fs_rx, watcher) = FsWatcher::new(&watch_path, debounce)?;
 
-        let (wt_rx, worktree_monitor) = if auto_follow {
-            let (rx, mut monitor) =
-                crate::watcher::worktree::WorktreeMonitor::new(&repo_path, debounce)?;
-            monitor.set_current_target(None);
-            (Some(rx), Some(monitor))
-        } else {
-            (None, None)
-        };
-
         let gh_rx = if config.pr.enabled {
             if let Some(token) = crate::github::resolve_auth_token() {
                 Some(crate::github::start_polling(&watch_path, &branch, &token))
@@ -274,8 +263,7 @@ impl App {
             watch_path,
             main_worktree_path,
             main_missing_warned: false,
-            worktree_monitor,
-            wt_rx,
+            auto_follow,
             gh_rx,
             base_override,
             worker_tx,
@@ -350,16 +338,6 @@ impl App {
                 }
             }
 
-            // Handle worktree events — drain into a vec first to release the borrow on self.wt_rx
-            let wt_events: Vec<_> = self
-                .wt_rx
-                .as_ref()
-                .map(|rx| std::iter::from_fn(|| rx.try_recv().ok()).collect())
-                .unwrap_or_default();
-            for wt_event in wt_events {
-                self.handle_worktree_event(wt_event)?;
-            }
-
             // Handle GitHub PR events
             if let Some(ref gh_rx) = self.gh_rx {
                 while let Ok(event) = gh_rx.try_recv() {
@@ -395,6 +373,7 @@ impl App {
                 ) {
                     self.fallback_to_main()?;
                 }
+                self.check_worktree_activity()?;
             }
         }
     }
@@ -576,78 +555,6 @@ impl App {
         open_url(&url)
     }
 
-    fn handle_worktree_event(
-        &mut self,
-        event: crate::watcher::worktree::WorktreeEvent,
-    ) -> Result<()> {
-        use crate::watcher::worktree::WorktreeEvent;
-
-        match event {
-            WorktreeEvent::Added(info) => {
-                tracing::info!(worktree = %info.name, "New worktree detected, switching");
-                self.switch_to_worktree(info)?;
-            }
-            WorktreeEvent::Removed { name, path } => {
-                tracing::info!(worktree = %name, path = ?path, "Worktree removed");
-                let is_current_by_path = self.watch_path == path;
-                let is_current_by_name = self
-                    .worktree_monitor
-                    .as_ref()
-                    .and_then(|m| m.current_target())
-                    .map(|t| t == name)
-                    .unwrap_or(false);
-                if is_current_by_path || is_current_by_name {
-                    self.fallback_to_main()?;
-                }
-            }
-            WorktreeEvent::BranchChanged { worktree, branch } => {
-                tracing::debug!(worktree = %worktree, branch = %branch, "Branch change event");
-                let is_current = self
-                    .worktree_monitor
-                    .as_ref()
-                    .and_then(|m| m.current_target())
-                    .map(|t| t == worktree)
-                    .unwrap_or(false);
-
-                if is_current {
-                    // Current target — FsWatcher handles refresh; just record the branch
-                    if let Some(ref mut monitor) = self.worktree_monitor {
-                        monitor.record_branch(&worktree, &branch);
-                    }
-                } else if let Some(ref mut monitor) = self.worktree_monitor {
-                    if monitor.is_branch_change(&worktree, &branch) {
-                        monitor.record_branch(&worktree, &branch);
-                        if let Some(info) = monitor.worktree_info(&worktree).cloned() {
-                            self.switch_to_worktree(info)?;
-                        }
-                    } else {
-                        // Same branch (e.g. ref update from commit) — record but don't switch
-                        monitor.record_branch(&worktree, &branch);
-                    }
-                }
-            }
-            WorktreeEvent::StructureChanged => {
-                if let Some(ref mut monitor) = self.worktree_monitor {
-                    monitor.scan_and_reconcile();
-                }
-            }
-        }
-
-        Ok(())
-    }
-
-    fn switch_to_worktree(&mut self, info: crate::watcher::worktree::WorktreeInfo) -> Result<()> {
-        tracing::info!(worktree = %info.name, path = ?info.path, "Switching to worktree");
-        let name = info.name.clone();
-        self.switch_to_path(info.path)?;
-        self.state
-            .set_flash_message(format!("Switched to worktree: {name}"));
-        if let Some(ref mut monitor) = self.worktree_monitor {
-            monitor.set_current_target(Some(name));
-        }
-        Ok(())
-    }
-
     fn switch_to_path(&mut self, path: PathBuf) -> Result<()> {
         if path == self.watch_path {
             return Ok(());
@@ -717,6 +624,40 @@ impl App {
         Ok(())
     }
 
+    /// On every tick, check which worktree was most recently active (by HEAD +
+    /// index mtime) and switch to it if it differs from the current watch path.
+    fn check_worktree_activity(&mut self) -> Result<()> {
+        if !self.auto_follow {
+            return Ok(());
+        }
+        let worktrees = crate::watcher::activity::list_all_worktrees(&self.repo_path);
+        if worktrees.len() <= 1 {
+            return Ok(());
+        }
+        let newest = worktrees
+            .iter()
+            .filter_map(|wt| {
+                let activity = crate::watcher::activity::worktree_last_activity(&wt.path)?;
+                Some((wt, activity))
+            })
+            .max_by_key(|(_, mtime)| *mtime);
+
+        if let Some((wt, _)) = newest {
+            if wt.path != self.watch_path {
+                tracing::info!(
+                    worktree = %wt.name,
+                    path = ?wt.path,
+                    "Switching to most recently active worktree"
+                );
+                let name = wt.name.clone();
+                self.switch_to_path(wt.path.clone())?;
+                self.state
+                    .set_flash_message(format!("Switched to worktree: {name}"));
+            }
+        }
+        Ok(())
+    }
+
     /// Fall back to the main worktree when the watched worktree is gone.
     ///
     /// Uses `fallback_decision` to choose among switching, flashing a
@@ -738,9 +679,6 @@ impl App {
                 self.switch_to_path(main)?;
                 self.state
                     .set_flash_message("Worktree removed — switched to main".to_string());
-                if let Some(ref mut monitor) = self.worktree_monitor {
-                    monitor.set_current_target(None);
-                }
                 self.main_missing_warned = false;
                 Ok(())
             }

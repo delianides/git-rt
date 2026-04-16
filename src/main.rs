@@ -130,23 +130,29 @@ fn main() -> Result<()> {
 
 /// Scan all worktrees (main + linked) and return the path of the one with
 /// the most recent activity. Falls back to `repo_path` if no worktrees are
-/// found or ranking fails.
+/// found or activity cannot be determined.
 fn cold_start_pick(repo_path: &std::path::Path) -> PathBuf {
     let worktrees = watcher::activity::list_all_worktrees(repo_path);
     if worktrees.is_empty() {
         return repo_path.to_path_buf();
     }
 
-    let ranked = watcher::activity::rank_by_activity(&worktrees);
-    match ranked.first() {
-        Some(winner) => {
+    let winner = worktrees
+        .iter()
+        .filter_map(|wt| {
+            let activity = watcher::activity::worktree_last_activity(&wt.path)?;
+            Some((wt, activity))
+        })
+        .max_by_key(|(_, mtime)| *mtime);
+
+    match winner {
+        Some((wt, _)) => {
             tracing::info!(
-                worktree = %winner.info.name,
-                path = ?winner.info.path,
-                last_activity = ?winner.last_activity,
+                worktree = %wt.name,
+                path = ?wt.path,
                 "Cold-start auto-switched to most active worktree"
             );
-            winner.info.path.clone()
+            wt.path.clone()
         }
         None => repo_path.to_path_buf(),
     }

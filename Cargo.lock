@@ -623,7 +623,6 @@ dependencies = [
  "crossbeam-channel",
  "crossterm",
  "dirs",
- "filetime",
  "gix",
  "notify",
  "notify-debouncer-full",

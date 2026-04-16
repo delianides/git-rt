@@ -15,11 +15,11 @@ src/
 ├── watcher/          # Filesystem watching via notify crate
 │   └── mod.rs        # Debounced FS events → channel messages
 ├── git/              # Git operations via gitoxide (gix)
-│   └── mod.rs        # Diff computation, file status, numstat
+│   └── mod.rs        # Status, numstat, CLI shell-out helpers
 ├── state/            # Application state / view model
-│   └── mod.rs        # FileEntry list, selection, expanded state, diff cache
+│   └── mod.rs        # FileEntry list, selection, flash state
 ├── ui/               # Rendering via ratatui
-│   └── mod.rs        # Layout, file list, diff panel, status line
+│   └── mod.rs        # Layout, file list, status line, help overlay
 └── config/           # Configuration loading and defaults
     └── mod.rs        # TOML parsing, XDG paths, default keybindings
 ```
@@ -31,17 +31,13 @@ src/
 ```
  src/main.rs          -3  +12
  src/watcher.rs       -0  +45
-▼ src/config.rs       -10  +2
-│  @@ -14,10 +14,2 @@
-│  -  let old_config = parse(raw);
-│  +  let config = Config::from_toml(raw);
+ src/config.rs        -10  +2
  tests/integration.rs -1  +1
 ```
 
 - Each line shows a changed file path with red deletion count and green addition count
 - Navigation via `j/k` or arrow keys
-- `Enter` or `l` expands inline diff for the selected file (accordion — only one open at a time)
-- `h` or `Enter` on expanded file collapses it
+- `Enter`, `l`, `Right`, `Space`, or `d` opens the selected file's diff in `git`'s configured pager
 - `q` quits
 
 ### Event Loop
@@ -49,45 +45,39 @@ src/
 The main loop multiplexes three event sources via crossbeam channels:
 
 1. **Terminal events** (key presses, mouse, resize) from crossterm
-2. **Filesystem events** from notify (debounced ~200ms)
-3. **Tick events** for periodic UI refresh (~250ms)
+2. **Filesystem events** from notify (debounced ~500ms by default)
+3. **Tick events** for periodic work (~1s)
 
 When a filesystem event fires:
 
-1. Watcher sends `Event::FsChange` to the app
-2. App triggers git status recomputation
-3. State updates the file list and invalidates stale diff caches
-4. UI re-renders on the next tick
+1. Watcher sends `FsChange` to the app
+2. App enqueues a `Recompute` request on the worker thread
+3. Worker runs `git status --porcelain=v2` + `git diff --numstat`, returns a `StatusBundle`
+4. State updates the file list
+5. UI re-renders on the next iteration
 
 ### Git Integration
 
-Using `gix` (gitoxide) for all git operations — no shelling out to `git`.
+`git-rt` uses `git` (the CLI) for the hot-path status walk and `gix` (gitoxide) for cheap reads.
 
-- **File status**: Equivalent to `git status --porcelain` — untracked, modified, staged, deleted, renamed, conflicted
-- **Diff numstat**: Insertions/deletions per file for the compact view
-- **Diff hunks**: Full unified diff for the expanded view, computed lazily and cached by file content hash
-
-### Diff Caching Strategy
-
-- Diffs are computed lazily — only when a file is expanded
-- Cache key is `(file_path, content_hash)` where content_hash is a fast hash of the working tree version
-- Cache is invalidated when a new FS event touches that file path
-- This keeps large repos responsive since we only compute diffs for visible content
+- **File status**: `git status --porcelain=v2 -z` parsed natively — much faster than gix's walk on large repos thanks to git's untracked cache + fsmonitor.
+- **Diff numstat**: `git diff --numstat -z <merge-base>` for branch view, `git diff --numstat -z` for the working-tree view.
+- **Cheap reads**: branch name, HEAD commit, merge-base, stash count, ahead/behind still use `gix` — sub-millisecond.
+- **Diff content**: delegated to the user's pager via `git diff ... | $PAGER`; no in-app rendering.
 
 ### Filesystem Watching
 
 - Uses `notify` with `notify-debouncer-full` for cross-platform support (inotify/FSEvents/kqueue)
 - Watches the entire working tree, filters out `.git/` directory changes (except `.git/index` for staged changes)
-- Debounce window: 200ms default, configurable
-- On debounce fire: full git status recomputation (fast with gix)
+- Debounce window: 500ms default, configurable
+- On debounce fire: full git status recomputation via worker thread
 
 ## Key Design Decisions
 
 - **No polling**: All updates are event-driven via filesystem notifications
-- **Single expanded file**: Accordion pattern keeps the UI predictable and avoids layout complexity
-- **Lazy diffs**: Only compute what's visible to stay responsive in large repos
+- **Off-thread git**: all status work runs on a dedicated worker thread
 - **Zero-config useful**: Works immediately with sensible defaults
-- **Pure Rust git**: gitoxide over shelling out to git CLI for speed and reliability
+- **Hybrid git**: `git` CLI for the hot status path, `gix` for cheap reads — pragmatic over purity
 
 ## Build & Run
 
@@ -98,7 +88,7 @@ cd /path/to/your/repo
 git-rt
 ```
 
-## CLI Flags (planned)
+## CLI Flags
 
 ```
 git-rt [OPTIONS] [PATH]
@@ -108,9 +98,12 @@ Arguments:
 
 Options:
   -c, --config <FILE>     Path to config file
-  -d, --debounce <MS>     Debounce interval in milliseconds [default: 200]
-      --no-color          Disable colored output
+  -d, --debounce <MS>     Debounce interval in milliseconds [default: 500]
       --log <LEVEL>       Enable logging (trace, debug, info, warn, error)
+      --branch <BRANCH>   Pin to the worktree with this branch checked out
+      --no-follow         Disable auto-follow to other worktrees
+      --theme <NAME|PATH> Theme override (built-in name or path to .toml theme file)
+      --base <BRANCH>     Base branch for the branch-scoped diff range
   -h, --help              Print help
   -V, --version           Print version
 ```
@@ -126,38 +119,16 @@ cargo fmt                      # Format
 RUST_LOG=debug cargo run       # Run with debug logging
 ```
 
-## Implementation Priority
+## Current Status
 
-### Phase 1 — MVP (current)
+Core feature set is complete: live file-list with numstat, PR status strip, pager-based diff, filesystem watching, config file + keybindings, themes, multi-worktree support, and branch-scoped diff range.
 
-- [x] Project scaffold and module structure
-- [x] Git status computation via gix (file list with status)
-- [x] Diff numstat computation (insertions/deletions per file)
-- [x] Basic ratatui rendering (file list with diff stats)
-- [x] Keyboard navigation (j/k, arrows, q to quit)
-- [x] Expand/collapse single file diff (Enter/l/h)
-- [x] Filesystem watching with debounce
-- [x] Wire up event loop (terminal + fs + tick)
+Remaining open items:
 
-### Phase 2 — Polish
-
-- [x] Syntax-colored diff output (red/green/cyan)
-- [ ] Scrollable diff within expanded region
 - [ ] Handle edge cases (index.lock, mid-rebase, empty repo)
-- [ ] Mouse support (click to select/expand)
-- [x] Status bar (branch name, total changes, last update time)
-- [ ] Respect .gitignore for watch filtering
-
-### Phase 3 — Config
-
-- [ ] Config file loading (TOML, XDG paths)
-- [ ] Custom keybinding configuration
-
-### Phase 4 — Advanced
-
+- [ ] Mouse support (click to select)
 - [ ] Tree view mode (directory structure)
 - [ ] Staged vs unstaged split view
-- [ ] Multiple display modes (compact, expanded, tree)
 - [ ] Virtual scrolling for large repos
 - [ ] Watch multiple repos
 

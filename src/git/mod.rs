@@ -1,5 +1,4 @@
 use std::path::{Path, PathBuf};
-use std::process::Command;
 
 use anyhow::Result;
 use thiserror::Error;
@@ -199,102 +198,11 @@ impl GitRepo {
         }
     }
 
-    /// Compute the current status of all changed files with numstat.
-    ///
-    /// Uses gix's index-worktree iterator to discover unstaged/untracked
-    /// changes, and shells out to `git diff --cached --numstat` for staged
-    /// changes (tree-vs-index). Any failure from either source is reported
-    /// as [`GitFailure::EnvChange`] so callers can hold the previous state
-    /// rather than crashing during a transient git env change (worktree
-    /// being cleaned up, index.lock, mid-rebase, etc.).
+    /// Compute the current status of all changed files with numstat,
+    /// relative to HEAD (no base branch). Delegates to `git status --porcelain=v2`
+    /// + `git diff --numstat` via [`crate::git::cli::compute_status_files`].
     pub fn status(&self) -> Result<Vec<FileEntry>, GitFailure> {
-        use std::collections::HashMap;
-
-        // Map of path -> (insertions, deletions) merged across all sources.
-        let mut stats: HashMap<String, (usize, usize)> = HashMap::new();
-        // Map of path -> FileStatus. Staged entries recorded first, then
-        // unstaged worktree changes can override (or augment) them.
-        let mut statuses: HashMap<String, FileStatus> = HashMap::new();
-
-        // --- 1. Staged changes: tree vs index (via shell-out, wrapped). ---
-        // gix 0.68 does not ship a tree-to-index iterator, so we retain a
-        // minimal shell-out here but wrap errors as EnvChange.
-        let cached_numstat_output = Command::new("git")
-            .args(["diff", "--cached", "--numstat"])
-            .current_dir(&self.repo_path)
-            .output()
-            .map_err(|e| GitFailure::EnvChange(format!("git diff --cached --numstat: {e}")))?;
-
-        if cached_numstat_output.status.success() {
-            let cached = String::from_utf8_lossy(&cached_numstat_output.stdout);
-            for line in cached.lines() {
-                let parts: Vec<&str> = line.split('\t').collect();
-                if parts.len() >= 3 {
-                    let ins = parts[0].parse::<usize>().unwrap_or(0);
-                    let del = parts[1].parse::<usize>().unwrap_or(0);
-                    let path = parts[2].to_string();
-                    let entry = stats.entry(path.clone()).or_insert((0, 0));
-                    entry.0 += ins;
-                    entry.1 += del;
-                    statuses.entry(path).or_insert(FileStatus::Staged);
-                }
-            }
-        }
-        // Non-success exit (e.g. mid-rebase): treat as no staged changes
-        // rather than failing the whole status call.
-
-        // --- 2. Unstaged changes: index vs worktree (via gix). ---
-        let platform = self
-            .repo
-            .status(gix::progress::Discard)
-            .map_err(|e| GitFailure::EnvChange(format!("status platform: {e}")))?;
-
-        let iter = platform
-            .into_index_worktree_iter(Vec::<gix::bstr::BString>::new())
-            .map_err(|e| GitFailure::EnvChange(format!("status iter: {e}")))?;
-
-        for item_res in iter {
-            let item = match item_res {
-                Ok(item) => item,
-                Err(e) => return Err(GitFailure::EnvChange(format!("status item: {e}"))),
-            };
-
-            let (path, file_status) = match classify_status_item(&item) {
-                Some(pair) => pair,
-                None => continue,
-            };
-
-            // Compute line counts (best-effort).
-            let (insertions, deletions) =
-                compute_line_counts(&self.repo, &path, &self.repo_path).unwrap_or((0, 0));
-
-            // Merge into maps. Worktree-level status generally wins over a
-            // previous "Staged" record (e.g., a file that is both staged and
-            // further modified should display as Modified).
-            statuses.insert(path.clone(), file_status);
-            let stats_entry = stats.entry(path).or_insert((0, 0));
-            stats_entry.0 += insertions;
-            stats_entry.1 += deletions;
-        }
-
-        // --- 3. Build FileEntry list. ---
-        let mut entries: Vec<FileEntry> = statuses
-            .into_iter()
-            .map(|(path, status)| {
-                let (insertions, deletions) = stats.get(&path).copied().unwrap_or((0, 0));
-                FileEntry {
-                    path,
-                    status,
-                    insertions,
-                    deletions,
-                }
-            })
-            .collect();
-
-        entries.sort_by(|a, b| a.path.cmp(&b.path));
-        entries.dedup_by(|a, b| a.path == b.path);
-
-        Ok(entries)
+        crate::git::cli::compute_status_files(&self.repo_path, None)
     }
 
     /// Compute the unified diff for a single file.
@@ -1031,69 +939,6 @@ fn synthesize_deletion_diff(old: &str) -> FileDiff {
             lines,
         }],
     }
-}
-
-/// Classify a gix index-worktree status item into our (path, FileStatus).
-/// Returns `None` for items we don't want to show (e.g., NeedsUpdate
-/// bookkeeping items or tracked directory entries).
-fn classify_status_item(item: &gix::status::index_worktree::Item) -> Option<(String, FileStatus)> {
-    use gix::bstr::ByteSlice;
-    use gix::status::index_worktree::Item;
-    use gix::status::plumbing::index_as_worktree::{Change, EntryStatus};
-
-    let path = item.rela_path().to_str().ok()?.to_string();
-
-    let status = match item {
-        Item::Modification { status, .. } => match status {
-            EntryStatus::Conflict { .. } => FileStatus::Conflicted,
-            EntryStatus::Change(change) => match change {
-                Change::Removed => FileStatus::Deleted,
-                Change::Type { .. } => FileStatus::Modified,
-                Change::Modification { .. } => FileStatus::Modified,
-                Change::SubmoduleModification(_) => FileStatus::Modified,
-            },
-            // NeedsUpdate is internal bookkeeping only — skip.
-            EntryStatus::NeedsUpdate(_) => return None,
-            EntryStatus::IntentToAdd => FileStatus::Added,
-        },
-        Item::DirectoryContents { entry, .. } => {
-            // Only surface untracked directory-walk entries.
-            if matches!(entry.status, gix::dir::entry::Status::Untracked) {
-                FileStatus::Untracked
-            } else {
-                return None;
-            }
-        }
-        Item::Rewrite { .. } => FileStatus::Renamed,
-    };
-
-    Some((path, status))
-}
-
-/// Compute a best-effort (insertions, deletions) count for a single path by
-/// comparing the index blob to the on-disk worktree file. Returns `None` if
-/// the path is not in the index or files can't be read.
-///
-/// This is intentionally simple — it's a line-count approximation used only
-/// for display, not an exact match for `git diff --numstat` in all cases
-/// (e.g., it won't match on files with many identical lines), but it's fast
-/// and gets the common case right.
-fn compute_line_counts(
-    repo: &gix::Repository,
-    path: &str,
-    repo_path: &std::path::Path,
-) -> Option<(usize, usize)> {
-    let index = repo.index_or_empty().ok()?;
-    let path_bstr: &gix::bstr::BStr = path.as_bytes().into();
-    let entry = index.entry_by_path(path_bstr)?;
-
-    let blob = repo.find_object(entry.id).ok()?;
-    let index_text = std::str::from_utf8(&blob.data).ok()?;
-
-    let worktree_path = repo_path.join(path);
-    let worktree_text = std::fs::read_to_string(&worktree_path).ok()?;
-
-    Some(count_line_changes(index_text, &worktree_text))
 }
 
 /// Approximate line-change count: counts extra lines in `new` as insertions

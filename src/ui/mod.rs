@@ -6,7 +6,6 @@
 //! main pane only when a PR exists against the current branch; otherwise
 //! the main pane takes the full frame.
 
-pub mod diff_overlay;
 pub mod header;
 pub mod help_overlay;
 pub mod pr_line;
@@ -20,7 +19,7 @@ use crossterm::{
 use ratatui::{
     backend::CrosstermBackend,
     layout::{Constraint, Direction, Layout, Rect},
-    style::{Modifier, Style},
+    style::Style,
     text::{Line, Span},
     widgets::{Block, BorderType, Borders, List, ListItem, ListState, Paragraph},
     Frame,
@@ -28,7 +27,7 @@ use ratatui::{
 use std::io;
 
 use crate::config::AppConfig;
-use crate::git::{DiffLineKind, FileStatus};
+use crate::git::FileStatus;
 use crate::state::AppState;
 use crate::theme::Theme;
 
@@ -61,15 +60,7 @@ impl Terminal {
     }
 
     /// Draw one frame using the new config/theme API.
-    ///
-    /// Consumes `state.take_needs_clear()` first: when set, issues a full
-    /// terminal clear before rendering so overlay dismissals don't leave
-    /// residual cells on terminals where ratatui's cell-level diff under-
-    /// reports changes across large styled regions.
     pub fn draw(&mut self, state: &mut AppState, config: &AppConfig, theme: &Theme) -> Result<()> {
-        if state.take_needs_clear() {
-            self.terminal.clear()?;
-        }
         self.terminal.draw(|frame| {
             render(frame, state, config, theme);
         })?;
@@ -131,30 +122,9 @@ fn render(frame: &mut Frame, state: &AppState, config: &AppConfig, theme: &Theme
         pr_line::render_pr_line(frame, state, theme, bottom);
     }
 
-    // 3. Help overlay takes priority over diff overlay — they are mutually
-    //    exclusive per show_help / show_overlay, but rendering both would
-    //    cause the help popup to layer under the diff.
+    // 3. Help overlay.
     if state.is_help_visible() {
         help_overlay::render_help_overlay(frame, theme);
-    } else if state.is_overlay_visible() {
-        if let Some(diff) = state.expanded_diff() {
-            let path = state.expanded_path().unwrap_or("");
-            let (ins, del) = state
-                .files()
-                .iter()
-                .find(|f| f.path == path)
-                .map(|f| (f.insertions, f.deletions))
-                .unwrap_or((0, 0));
-            diff_overlay::render_diff_overlay(
-                frame,
-                diff,
-                path,
-                ins,
-                del,
-                state.diff_scroll(),
-                theme,
-            );
-        }
     }
 }
 
@@ -210,14 +180,10 @@ fn render_file_list(
         return;
     }
 
-    let use_inline = config.keys.enter == "inline";
-
     let mut items: Vec<ListItem> = Vec::new();
     let mut list_index_to_file_index: Vec<Option<usize>> = Vec::new();
 
     for (i, file) in files.iter().enumerate() {
-        let is_expanded = state.is_expanded(&file.path);
-
         // Status character
         let status_char = match file.status {
             FileStatus::Modified => "M",
@@ -262,17 +228,6 @@ fn render_file_list(
         }
         items.push(item);
         list_index_to_file_index.push(Some(i));
-
-        // Inline diff (only when enter mode is "inline")
-        if use_inline && is_expanded {
-            if let Some(diff) = state.expanded_diff() {
-                let inline_lines = build_inline_diff_lines(diff, theme);
-                for il in inline_lines {
-                    items.push(ListItem::new(il));
-                    list_index_to_file_index.push(None);
-                }
-            }
-        }
     }
 
     let selected_list_index = list_index_to_file_index
@@ -296,60 +251,4 @@ fn render_file_list(
     list_state.select(Some(selected_list_index));
 
     frame.render_stateful_widget(list, area, &mut list_state);
-}
-
-/// Build the lines for an inline diff display.
-///
-/// Uses thick side borders (┃) and thin top/bottom (─) to create a nested
-/// bordered appearance.
-fn build_inline_diff_lines<'a>(diff: &crate::git::FileDiff, theme: &Theme) -> Vec<Line<'a>> {
-    let mut lines: Vec<Line<'a>> = Vec::new();
-    let border_style = Style::default().fg(theme.diff_border);
-
-    // Top border
-    lines.push(Line::from(Span::styled(
-        "  ┌────────────────────────────────────────────────────────",
-        border_style,
-    )));
-
-    for hunk in &diff.hunks {
-        // Hunk header
-        lines.push(Line::from(vec![
-            Span::styled("  ┃ ", border_style),
-            Span::styled(
-                hunk.header.clone(),
-                Style::default()
-                    .fg(theme.diff_hunk_header)
-                    .add_modifier(Modifier::BOLD),
-            ),
-        ]));
-
-        for diff_line in &hunk.lines {
-            let (prefix, style) = match diff_line.kind {
-                DiffLineKind::Addition => (
-                    "+",
-                    Style::default().fg(theme.diff_add_fg).bg(theme.diff_add_bg),
-                ),
-                DiffLineKind::Deletion => (
-                    "-",
-                    Style::default().fg(theme.diff_del_fg).bg(theme.diff_del_bg),
-                ),
-                DiffLineKind::Context => (" ", Style::default().fg(theme.diff_context)),
-                DiffLineKind::HunkHeader => ("@", Style::default().fg(theme.diff_hunk_header)),
-            };
-
-            lines.push(Line::from(vec![
-                Span::styled("  ┃ ", border_style),
-                Span::styled(format!("{prefix} {}", diff_line.content), style),
-            ]));
-        }
-    }
-
-    // Bottom border
-    lines.push(Line::from(Span::styled(
-        "  └────────────────────────────────────────────────────────",
-        border_style,
-    )));
-
-    lines
 }

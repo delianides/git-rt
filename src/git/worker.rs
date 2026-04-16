@@ -12,14 +12,7 @@ use std::thread::{self, JoinHandle};
 
 use crossbeam_channel::{Receiver, Sender};
 
-use crate::git::{FileDiff, FileEntry, GitRepo};
-
-/// Token used to discard stale diff results — `handle_expand` increments
-/// the next-token counter and stamps each `Request::Diff`. When the worker
-/// echoes the token back in `Response::Diff`, the main thread compares
-/// against the current pending token and drops any result that doesn't
-/// match (user moved selection, closed overlay, switched worktrees).
-pub type DiffToken = u64;
+use crate::git::{FileEntry, GitRepo};
 
 /// Requests the main thread sends to the worker.
 #[derive(Debug)]
@@ -27,9 +20,6 @@ pub enum Request {
     /// Recompute status + branch metadata. Coalesced — only the most recent
     /// pending Recompute is kept when the worker drains its channel.
     Recompute,
-    /// Compute the diff for a single file. `token` lets the receiver
-    /// discard stale results.
-    Diff { path: String, token: DiffToken },
     /// Re-open the worker's `GitRepo` against a new path.
     /// Worker replies with `Response::SwitchAck` once the new repo is open.
     SwitchRepo(PathBuf),
@@ -41,13 +31,7 @@ pub enum Request {
 #[derive(Debug)]
 pub enum Response {
     /// Result of a `Recompute` request.
-    Status(StatusBundle),
-    /// Result of a `Diff` request. `token` echoes the request's token.
-    Diff {
-        path: String,
-        token: DiffToken,
-        diff: FileDiff,
-    },
+    Status(Box<StatusBundle>),
     /// Sent after a `SwitchRepo` request finishes (success or failure).
     /// The bool is `true` on success, `false` on failure (worker keeps
     /// the previous repo so the app stays usable).
@@ -164,22 +148,7 @@ impl Worker {
                     Request::Recompute => {
                         let bundle =
                             compute_status(&git, base_override.as_deref(), config_base.as_deref());
-                        let _ = resp_tx.send(Response::Status(bundle));
-                    }
-                    Request::Diff { path, token } => {
-                        match compute_diff(
-                            &git,
-                            &path,
-                            base_override.as_deref(),
-                            config_base.as_deref(),
-                        ) {
-                            Ok(diff) => {
-                                let _ = resp_tx.send(Response::Diff { path, token, diff });
-                            }
-                            Err(e) => {
-                                let _ = resp_tx.send(Response::Error(format!("diff {path}: {e}")));
-                            }
-                        }
+                        let _ = resp_tx.send(Response::Status(Box::new(bundle)));
                     }
                     Request::SwitchRepo(new_path) => match GitRepo::new(&new_path) {
                         Ok(new_git) => {
@@ -232,23 +201,6 @@ fn compute_status(
     }
 }
 
-/// Compute a single-file diff. Uses branch diff if a merge base is available,
-/// otherwise falls back to working-tree diff.
-fn compute_diff(
-    git: &GitRepo,
-    path: &str,
-    base_override: Option<&str>,
-    config_base: Option<&str>,
-) -> Result<FileDiff, crate::git::GitFailure> {
-    let resolved_base = git.resolve_base_branch(base_override.or(config_base));
-    if let Some(base_name) = resolved_base {
-        if let Ok(Some(mb)) = git.merge_base(&base_name) {
-            return git.branch_diff_file(path, mb);
-        }
-    }
-    git.diff_file(path)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -257,18 +209,10 @@ mod tests {
         q.into_iter()
             .map(|r| match r {
                 Request::Recompute => "R",
-                Request::Diff { .. } => "D",
                 Request::SwitchRepo(_) => "S",
                 Request::Shutdown => "X",
             })
             .collect()
-    }
-
-    fn diff_req(token: u64) -> Request {
-        Request::Diff {
-            path: format!("p{}", token),
-            token,
-        }
     }
 
     #[test]
@@ -294,24 +238,12 @@ mod tests {
     }
 
     #[test]
-    fn coalesce_preserves_diff_and_shutdown_in_order() {
+    fn coalesce_preserves_shutdown_after_recompute() {
         let mut input = VecDeque::new();
-        input.push_back(diff_req(1));
+        input.push_back(Request::Recompute);
         input.push_back(Request::Shutdown);
         let out = coalesce(input);
-        assert_eq!(collect(out), vec!["D", "X"]);
-    }
-
-    #[test]
-    fn coalesce_keeps_diff_when_recompute_collapses() {
-        let mut input = VecDeque::new();
-        input.push_back(Request::Recompute);
-        input.push_back(diff_req(1));
-        input.push_back(Request::Recompute);
-        input.push_back(diff_req(2));
-        input.push_back(Request::Recompute);
-        // Diffs preserved in order; the one Recompute lands at the end.
-        assert_eq!(collect(coalesce(input)), vec!["D", "D", "R"]);
+        assert_eq!(collect(out), vec!["X", "R"]);
     }
 
     #[test]
@@ -324,39 +256,6 @@ mod tests {
         assert!(out.contains(&"S"));
         let r_count = out.iter().filter(|s| **s == "R").count();
         assert_eq!(r_count, 1);
-    }
-
-    #[test]
-    fn coalesce_recompute_then_diff_orders_diff_first() {
-        // Bug repro: [R, R, D] must produce [D, R] (Diff first, then the one Recompute).
-        let mut input = VecDeque::new();
-        input.push_back(Request::Recompute);
-        input.push_back(Request::Recompute);
-        input.push_back(diff_req(1));
-        assert_eq!(collect(coalesce(input)), vec!["D", "R"]);
-    }
-
-    #[test]
-    fn coalesce_three_recomputes_then_two_diffs() {
-        // [R, R, R, D, D] must produce [D, D, R].
-        let mut input = VecDeque::new();
-        input.push_back(Request::Recompute);
-        input.push_back(Request::Recompute);
-        input.push_back(Request::Recompute);
-        input.push_back(diff_req(1));
-        input.push_back(diff_req(2));
-        assert_eq!(collect(coalesce(input)), vec!["D", "D", "R"]);
-    }
-
-    #[test]
-    fn coalesce_diff_recompute_recompute_switchrepo() {
-        // Heterogeneous batch: [D, R, R, S] -> [D, S, R].
-        let mut input = VecDeque::new();
-        input.push_back(diff_req(1));
-        input.push_back(Request::Recompute);
-        input.push_back(Request::Recompute);
-        input.push_back(Request::SwitchRepo(PathBuf::from("/tmp/repo")));
-        assert_eq!(collect(coalesce(input)), vec!["D", "S", "R"]);
     }
 
     #[test]

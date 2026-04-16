@@ -95,8 +95,6 @@ pub struct KeyConfig {
     pub expand: String,
     pub collapse: String,
     pub refresh: String,
-    /// How Enter behaves: "overlay" or "inline"
-    pub enter: String,
 }
 
 impl Default for KeyConfig {
@@ -108,7 +106,6 @@ impl Default for KeyConfig {
             expand: "l".to_string(),
             collapse: "h".to_string(),
             refresh: "r".to_string(),
-            enter: "overlay".to_string(),
         }
     }
 }
@@ -182,7 +179,6 @@ mod tests {
         assert_eq!(keys.expand, "l");
         assert_eq!(keys.collapse, "h");
         assert_eq!(keys.refresh, "r");
-        assert_eq!(keys.enter, "overlay");
     }
 
     #[test]
@@ -207,9 +203,6 @@ theme = "dracula"
 [pr]
 enabled = false
 layout = "right"
-
-[keys]
-enter = "inline"
 "#,
         )
         .unwrap();
@@ -218,7 +211,6 @@ enter = "inline"
         assert_eq!(config.theme, "dracula");
         assert!(!config.pr.enabled);
         assert_eq!(config.pr.layout.as_deref(), Some("right"));
-        assert_eq!(config.keys.enter, "inline");
 
         std::fs::remove_dir_all(&dir).ok();
     }
@@ -238,7 +230,6 @@ enter = "inline"
         assert!(config.display.flash_on_change);
         assert!(config.pr.enabled);
         assert!(config.pr.layout.is_none());
-        assert_eq!(config.keys.enter, "overlay");
 
         std::fs::remove_dir_all(&dir).ok();
     }

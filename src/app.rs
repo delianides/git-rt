@@ -339,18 +339,7 @@ impl App {
             // Drain worker responses
             while let Ok(resp) = self.worker_rx.try_recv() {
                 match resp {
-                    Response::Status(bundle) => self.apply_status(bundle),
-                    Response::Diff { path, token, diff } => {
-                        if token == self.state.pending_diff_token() {
-                            self.state.expand_selected_with_path(path, diff);
-                        } else {
-                            tracing::debug!(
-                                token,
-                                current = self.state.pending_diff_token(),
-                                "Discarding stale diff response"
-                            );
-                        }
-                    }
+                    Response::Status(bundle) => self.apply_status(*bundle),
                     Response::SwitchAck(_) => {
                         // Handled inline by the SwitchRepo caller in Task 7.
                     }
@@ -427,24 +416,6 @@ impl App {
                     return Ok(false);
                 }
 
-                // Diff overlay mode: intercept keys before normal handling.
-                if self.state.is_overlay_visible() {
-                    match (key.modifiers, key.code) {
-                        (KeyModifiers::CONTROL, KeyCode::Char('c')) => return Ok(true),
-                        (_, KeyCode::Esc)
-                        | (_, KeyCode::Char('q'))
-                        | (_, KeyCode::Char('h'))
-                        | (_, KeyCode::Char(' '))
-                        | (_, KeyCode::Left) => self.state.hide_overlay(),
-                        (_, KeyCode::Char('j')) | (_, KeyCode::Down) => {
-                            self.state.scroll_diff_down()
-                        }
-                        (_, KeyCode::Char('k')) | (_, KeyCode::Up) => self.state.scroll_diff_up(),
-                        _ => {}
-                    }
-                    return Ok(false);
-                }
-
                 match (key.modifiers, key.code) {
                     // Quit
                     (_, KeyCode::Char('q')) => return Ok(true),
@@ -458,15 +429,13 @@ impl App {
                         self.state.select_previous();
                     }
 
-                    // Expand / open diff (Enter, l, Right, Space)
+                    // Expand / open diff (Enter, l, Right, Space, d)
                     (_, KeyCode::Enter)
                     | (_, KeyCode::Char('l'))
                     | (_, KeyCode::Right)
-                    | (_, KeyCode::Char(' ')) => {
-                        self.handle_expand()?;
-                    }
-                    (_, KeyCode::Char('h')) | (_, KeyCode::Left) => {
-                        self.state.collapse_selected();
+                    | (_, KeyCode::Char(' '))
+                    | (_, KeyCode::Char('d')) => {
+                        self.open_pager_diff(terminal)?;
                     }
 
                     // Refresh manually
@@ -487,11 +456,6 @@ impl App {
                     // Help popup
                     (_, KeyCode::Char('?')) => {
                         self.state.show_help();
-                    }
-
-                    // Open selected file in the configured git pager
-                    (_, KeyCode::Char('d')) => {
-                        self.open_pager_diff(terminal)?;
                     }
 
                     _ => {}
@@ -610,46 +574,6 @@ impl App {
         let url = info.url.clone();
         tracing::info!(%url, "Opening PR in browser");
         open_url(&url)
-    }
-
-    /// Send a Diff request to the worker for the currently selected file.
-    /// The result is applied later when `worker_rx` is drained.
-    fn handle_expand(&mut self) -> Result<()> {
-        let Some(path) = self.state.selected_path() else {
-            return Ok(());
-        };
-
-        if self.config.keys.enter == "inline" {
-            // Inline mode: toggle. If currently expanded, collapse — no diff
-            // request needed. The next expand triggers a fresh worker request.
-            if self.state.is_expanded(&path) {
-                self.state.collapse_selected();
-                return Ok(());
-            }
-        }
-
-        let token = self.state.next_diff_token();
-        match self.worker_tx.try_send(Request::Diff {
-            path: path.clone(),
-            token,
-        }) {
-            Ok(()) => {}
-            Err(crossbeam_channel::TrySendError::Full(_)) => {
-                tracing::debug!(token, "Diff request dropped (channel full)");
-            }
-            Err(crossbeam_channel::TrySendError::Disconnected(_)) => {
-                tracing::warn!("git worker has exited; diff dropped");
-            }
-        }
-
-        // For overlay mode, surface the overlay immediately so the user sees
-        // visible feedback. The diff content fills in when the worker replies
-        // (handled in the event loop's worker_rx drain).
-        if self.config.keys.enter != "inline" {
-            self.state.show_overlay();
-        }
-
-        Ok(())
     }
 
     fn handle_worktree_event(

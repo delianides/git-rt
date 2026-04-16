@@ -94,4 +94,22 @@ fn compute_status_files_with_base_includes_committed_changes() {
     );
     assert!(paths.contains(&"base.txt"), "uncommitted edit must appear");
     assert!(paths.contains(&"untracked.txt"), "untracked must appear");
+
+    // Bug-fix assertion: committed.txt is committed-only on the branch (clean
+    // in worktree). It MUST NOT default to Modified — the name-status path
+    // should classify it as Added.
+    let committed = entries.iter().find(|e| e.path == "committed.txt").unwrap();
+    assert!(
+        matches!(committed.status, FileStatus::Added),
+        "committed-only-on-branch file must be classified Added (got {:?})",
+        committed.status
+    );
+
+    // base.txt has an uncommitted edit to a tracked file — must be Modified.
+    let base = entries.iter().find(|e| e.path == "base.txt").unwrap();
+    assert!(
+        matches!(base.status, FileStatus::Modified),
+        "uncommitted edit to tracked file must be Modified (got {:?})",
+        base.status
+    );
 }

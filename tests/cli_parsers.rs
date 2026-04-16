@@ -1,4 +1,6 @@
-use git_rt::git::cli::{merge_status_and_numstat, parse_numstat, parse_porcelain_v2};
+use git_rt::git::cli::{
+    merge_status_and_numstat, parse_name_status, parse_numstat, parse_porcelain_v2,
+};
 use git_rt::git::{FileEntry, FileStatus};
 
 #[test]
@@ -255,4 +257,103 @@ fn merge_untracked_unreadable_file_reports_zero() {
     assert_eq!(result.len(), 1);
     assert_eq!(result[0].insertions, 0);
     assert_eq!(result[0].deletions, 0);
+}
+
+// --- parse_name_status unit tests ---
+
+#[test]
+fn parse_name_status_single_added() {
+    // Format: `A\0<path>\0`
+    let input = b"A\0new.rs\0";
+    let result = parse_name_status(input);
+    assert_eq!(result, vec![("new.rs".to_string(), FileStatus::Added)]);
+}
+
+#[test]
+fn parse_name_status_single_deleted() {
+    let input = b"D\0gone.rs\0";
+    let result = parse_name_status(input);
+    assert_eq!(result, vec![("gone.rs".to_string(), FileStatus::Deleted)]);
+}
+
+#[test]
+fn parse_name_status_single_modified() {
+    let input = b"M\0changed.rs\0";
+    let result = parse_name_status(input);
+    assert_eq!(
+        result,
+        vec![("changed.rs".to_string(), FileStatus::Modified)]
+    );
+}
+
+#[test]
+fn parse_name_status_rename_r100_uses_destination_path() {
+    // Format for rename: `R100\0<old-path>\0<new-path>\0`
+    // Only the destination path should appear; old path must NOT be duplicated.
+    let input = b"R100\0old.rs\0renamed.rs\0";
+    let result = parse_name_status(input);
+    assert_eq!(
+        result,
+        vec![("renamed.rs".to_string(), FileStatus::Renamed)]
+    );
+    // Ensure old path did not sneak in.
+    assert!(
+        result.iter().all(|(p, _)| p != "old.rs"),
+        "source path must not appear in output"
+    );
+}
+
+#[test]
+fn parse_name_status_copy_uses_destination_path() {
+    // Format for copy: `C100\0<original>\0<copy>\0`
+    let input = b"C100\0original.rs\0copy.rs\0";
+    let result = parse_name_status(input);
+    assert_eq!(result, vec![("copy.rs".to_string(), FileStatus::Renamed)]);
+    assert!(
+        result.iter().all(|(p, _)| p != "original.rs"),
+        "copy source must not appear in output"
+    );
+}
+
+#[test]
+fn parse_name_status_mixed_entries() {
+    // A mix: Added, Modified, Deleted, and a rename — verify all are classified correctly.
+    let input = b"A\0added.rs\0M\0modified.rs\0D\0deleted.rs\0R100\0old.rs\0new.rs\0";
+    let result = parse_name_status(input);
+    assert_eq!(result.len(), 4);
+
+    let added = result.iter().find(|(p, _)| p == "added.rs").unwrap();
+    assert!(matches!(added.1, FileStatus::Added));
+
+    let modified = result.iter().find(|(p, _)| p == "modified.rs").unwrap();
+    assert!(matches!(modified.1, FileStatus::Modified));
+
+    let deleted = result.iter().find(|(p, _)| p == "deleted.rs").unwrap();
+    assert!(matches!(deleted.1, FileStatus::Deleted));
+
+    let renamed = result.iter().find(|(p, _)| p == "new.rs").unwrap();
+    assert!(matches!(renamed.1, FileStatus::Renamed));
+
+    // Source path of rename must be absent.
+    assert!(
+        result.iter().all(|(p, _)| p != "old.rs"),
+        "rename source must not appear in output"
+    );
+}
+
+#[test]
+fn parse_name_status_unknown_code_maps_to_modified() {
+    // T (type-change) and X (unknown) fall through to Modified.
+    let input = b"T\0typechange.rs\0";
+    let result = parse_name_status(input);
+    assert_eq!(
+        result,
+        vec![("typechange.rs".to_string(), FileStatus::Modified)]
+    );
+}
+
+#[test]
+fn parse_name_status_empty_input() {
+    let result = parse_name_status(b"");
+    assert!(result.is_empty());
 }

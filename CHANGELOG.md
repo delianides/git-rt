@@ -1,5 +1,17 @@
 # Changelog
 
+## [1.0.5](https://github.com/delianides/git-rt/compare/v1.0.4...v1.0.5) (2026-04-16)
+
+
+### Bug Fixes
+
+* **app:** pager flashes and closes on short diffs ([#66](https://github.com/delianides/git-rt/issues/66)) ([932b755](https://github.com/delianides/git-rt/commit/932b755e7a62194a356d2f49543724441a45649b))
+
+
+### Performance Improvements
+
+* **app:** async FsWatcher init + startup phase tracing ([#64](https://github.com/delianides/git-rt/issues/64)) ([f1fb0a9](https://github.com/delianides/git-rt/commit/f1fb0a93e96e7588304f28b51d2abb1294555bc6))
+
 ## [1.0.4](https://github.com/delianides/git-rt/compare/v1.0.3...v1.0.4) (2026-04-16)
 
 

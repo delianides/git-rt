@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.0.4](https://github.com/delianides/git-rt/compare/v1.0.3...v1.0.4) (2026-04-16)
+
+
+### Bug Fixes
+
+* **docs:** remove references to removed in-app diff overlay and inline accordion ([#62](https://github.com/delianides/git-rt/issues/62)) ([42b17df](https://github.com/delianides/git-rt/commit/42b17dfcff243a45e0964502e941cfbcdaea34b7))
+
 ## [1.0.3](https://github.com/delianides/git-rt/compare/v1.0.2...v1.0.3) (2026-04-16)
 
 

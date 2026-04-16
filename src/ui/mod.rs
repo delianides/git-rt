@@ -144,7 +144,7 @@ fn pr_border_color_from_state(state: &AppState, theme: &Theme) -> ratatui::style
 
 // ── File list ────────────────────────────────────────────────────────────────
 
-/// Render the file list with optional inline diffs.
+/// Render the file list.
 fn render_file_list(
     frame: &mut Frame,
     state: &AppState,

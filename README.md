@@ -1,6 +1,6 @@
 # git-rt
 
-A real-time terminal dashboard for git changes. Watch your working tree update live as you edit files, with inline diffs and PR status.
+A real-time terminal dashboard for git changes. Watch your working tree update live as you edit files, with PR status and a one-keystroke jump to your git pager.
 
 ![status: early development](https://img.shields.io/badge/status-early%20development-orange)
 
@@ -8,7 +8,7 @@ A real-time terminal dashboard for git changes. Watch your working tree update l
 
 ## Overview
 
-Run `git-rt` in a terminal pane alongside your editor. It shows a live-updating list of changed files with insertion/deletion counts, expandable inline diffs, and — when the current branch has a PR open on GitHub — a compact PR status strip with review, check, and mergeability state. Updates are event-driven via filesystem watches; there is no polling of the working tree.
+Run `git-rt` in a terminal pane alongside your editor. It shows a live-updating list of changed files with insertion/deletion counts and — when the current branch has a PR open on GitHub — a compact PR status strip with review, check, and mergeability state. Press Enter on a file to open the full diff in your configured git pager. Updates are event-driven via filesystem watches; there is no polling of the working tree.
 
 ## Install
 
@@ -52,14 +52,12 @@ git-rt can be launched from any directory inside a git working tree — the repo
 | --------------------- | ----------------------------------------------------- |
 | `j` / `↓`             | Select next file                                      |
 | `k` / `↑`             | Select previous file                                  |
-| `Enter` / `l` / `→`   | Expand the selected file's diff                       |
-| `Space`               | Toggle expand/collapse of the selected file           |
-| `h` / `←`             | Collapse the diff (or close the overlay)              |
+| `Enter` / `l` / `→` / `Space` / `d` | Open the selected file's diff in `git`'s pager |
 | `r`                   | Refresh                                               |
 | `?`                   | Show the help popup                                   |
 | `q` / `Ctrl+C`        | Quit                                                  |
 
-Diff display is either an **overlay** (default) or **inline** expansion, selectable via `[keys].enter` in the config. Inside the diff overlay, `j`/`k` scroll and `Esc`, `q`, `Space`, `h`, or `←` close it.
+Pressing a diff key suspends the TUI and runs `git diff` through your configured pager (`less`, `delta`, etc.). When the pager exits, the TUI resumes cleanly.
 
 ## Configuration
 
@@ -84,7 +82,7 @@ flash_duration_ms = 600      # flash duration
 
 ### `[keys]`
 
-Rebindable single-character keys plus the diff display mode.
+Rebindable single-character keys.
 
 ```toml
 [keys]
@@ -94,7 +92,6 @@ down = "j"
 expand = "l"
 collapse = "h"
 refresh = "r"
-enter = "overlay"            # "overlay" (default) or "inline"
 ```
 
 ### `[pr]`
@@ -120,9 +117,6 @@ base_branch = "main"
 context_lines = 3
 flash_on_change = true
 flash_duration_ms = 600
-
-[keys]
-enter = "overlay"
 
 [pr]
 enabled = true

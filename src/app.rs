@@ -40,10 +40,50 @@ pub enum AppEvent {
     Tick,
 }
 
+/// Payload sent from the background watcher-init thread once
+/// `FsWatcher::new` finishes its recursive walk.
+type WatcherReady = (FsWatcher, Receiver<FsWatcherEvent>);
+
+/// Spawn a background thread that builds the `FsWatcher` for `watch_path`
+/// and delivers the handle + receiver through the returned channel.
+///
+/// Used so `App::new` doesn't block on `FsWatcher::new`, which can take
+/// multiple seconds on large monorepos while `notify-debouncer-full` seeds
+/// its recursive cache. If construction fails the channel simply never
+/// fires and live FS updates are disabled; a `tracing::error!` is emitted.
+fn spawn_watcher_init(watch_path: PathBuf, debounce: Duration) -> Receiver<WatcherReady> {
+    let (ready_tx, ready_rx) = bounded::<WatcherReady>(1);
+    std::thread::spawn(move || {
+        let t = Instant::now();
+        match FsWatcher::new(&watch_path, debounce) {
+            Ok((fs_rx, watcher)) => {
+                tracing::debug!(
+                    elapsed_ms = t.elapsed().as_millis() as u64,
+                    "background: FsWatcher::new"
+                );
+                let _ = ready_tx.send((watcher, fs_rx));
+            }
+            Err(e) => {
+                tracing::error!(
+                    error = %e,
+                    "background: FsWatcher::new failed; live updates disabled"
+                );
+            }
+        }
+    });
+    ready_rx
+}
+
 pub struct App {
     state: AppState,
-    _watcher: FsWatcher,
-    fs_rx: Receiver<FsWatcherEvent>,
+    /// `None` until the background watcher-init thread finishes; live FS
+    /// updates are disabled during that window.
+    _watcher: Option<FsWatcher>,
+    /// `None` until the background watcher-init thread finishes.
+    fs_rx: Option<Receiver<FsWatcherEvent>>,
+    /// Receives the watcher handle + receiver once the background init
+    /// completes. Cleared after installation.
+    watcher_pending_rx: Option<Receiver<WatcherReady>>,
     config: AppConfig,
     theme: crate::theme::Theme,
     tick_rate: Duration,
@@ -228,12 +268,17 @@ impl App {
             "App::new: theme load"
         );
 
+        // FsWatcher::new does a recursive walk of the working tree to seed
+        // notify-debouncer-full's cache. On large monorepos that can take
+        // multiple seconds; run it on a background thread so App::new (and
+        // the first draw) returns immediately. Live FS updates are disabled
+        // until the watcher is installed; a catch-up Recompute fires then.
         let t = Instant::now();
         let debounce = Duration::from_millis(debounce_ms);
-        let (fs_rx, watcher) = FsWatcher::new(&watch_path, debounce)?;
+        let watcher_pending_rx = spawn_watcher_init(watch_path.clone(), debounce);
         tracing::debug!(
             elapsed_ms = t.elapsed().as_millis() as u64,
-            "App::new: FsWatcher::new"
+            "App::new: spawn FsWatcher thread"
         );
 
         let t = Instant::now();
@@ -284,8 +329,9 @@ impl App {
 
         Ok(Self {
             state,
-            _watcher: watcher,
-            fs_rx,
+            _watcher: None,
+            fs_rx: None,
+            watcher_pending_rx: Some(watcher_pending_rx),
             config,
             theme,
             tick_rate: TICK_RATE,
@@ -349,13 +395,42 @@ impl App {
                 }
             }
 
+            // Install the background-built FsWatcher if it's ready. Fires
+            // a catch-up Recompute so any changes during setup are caught.
+            if self._watcher.is_none() {
+                let install = self
+                    .watcher_pending_rx
+                    .as_ref()
+                    .and_then(|rx| rx.try_recv().ok());
+                if let Some((watcher, fs_rx)) = install {
+                    self._watcher = Some(watcher);
+                    self.fs_rx = Some(fs_rx);
+                    self.watcher_pending_rx = None;
+                    tracing::info!("FsWatcher installed; issuing catch-up Recompute");
+                    if let Err(e) = self.worker_tx.try_send(Request::Recompute) {
+                        tracing::warn!(error = %e, "catch-up Recompute send failed");
+                    }
+                }
+            }
+
             // Check for filesystem events (non-blocking).
             //
             // Both `FsChange` and `HeadChange` currently trigger a git
             // status recompute. Keeping the variants distinct at the
             // watcher level lets future work (e.g. commit list refresh)
             // differentiate without re-architecting the watcher.
-            while let Ok(event) = self.fs_rx.try_recv() {
+            //
+            // Loop is structured so the immutable borrow of `self.fs_rx`
+            // is dropped before the mutable `self.handle_fs_change` call.
+            #[allow(clippy::while_let_loop)]
+            loop {
+                let event = match self.fs_rx.as_ref() {
+                    Some(rx) => match rx.try_recv() {
+                        Ok(e) => e,
+                        Err(_) => break,
+                    },
+                    None => break,
+                };
                 match event {
                     FsWatcherEvent::FsChange | FsWatcherEvent::HeadChange => {
                         self.handle_fs_change()?;
@@ -645,8 +720,9 @@ impl App {
         // Worker is now on the new repo. Reset state and request a fresh load.
         self.state
             .reset_for_switch(Vec::new(), String::new(), String::new(), String::new());
-        self._watcher = watcher;
-        self.fs_rx = fs_rx;
+        self._watcher = Some(watcher);
+        self.fs_rx = Some(fs_rx);
+        self.watcher_pending_rx = None;
         self.watch_path = path;
 
         // Restart the GitHub PR poller for the new branch.
@@ -795,6 +871,36 @@ mod fallback_tests {
             fallback_decision(&watch, &main),
             FallbackAction::MainMissing,
         );
+    }
+}
+
+#[cfg(test)]
+mod watcher_init_tests {
+    use super::*;
+    use tempfile::tempdir;
+
+    /// `spawn_watcher_init` must deliver a ready `FsWatcher` via the returned
+    /// channel without blocking the caller. Returning immediately is the whole
+    /// reason this helper exists — a regression that reintroduced a synchronous
+    /// `FsWatcher::new` call would be invisible unless checked here.
+    #[test]
+    fn test_spawn_watcher_init_delivers_asynchronously() {
+        let tmp = tempdir().unwrap();
+        gix::init(tmp.path()).unwrap();
+
+        let start = Instant::now();
+        let rx = spawn_watcher_init(tmp.path().to_path_buf(), Duration::from_millis(100));
+        // Returning the channel must not block on FsWatcher::new.
+        assert!(
+            start.elapsed() < Duration::from_millis(200),
+            "spawn_watcher_init blocked the caller for {:?}",
+            start.elapsed()
+        );
+
+        // The watcher should arrive within a reasonable window on a tiny repo.
+        let (_watcher, _fs_rx) = rx
+            .recv_timeout(Duration::from_secs(5))
+            .expect("watcher never delivered");
     }
 }
 

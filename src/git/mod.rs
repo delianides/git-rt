@@ -518,176 +518,14 @@ impl GitRepo {
         None
     }
 
-    /// Compute file status for all changes between a merge base commit and the
-    /// current working tree (committed + uncommitted on this branch).
+    /// Compute the file list for the branch view: union of committed changes
+    /// (vs `merge_base`) and uncommitted changes (vs HEAD), with untracked
+    /// files included.
     ///
-    /// 1. Loads the merge base commit tree and collects all blobs into a map.
-    /// 2. Compares each blob against the current worktree file.
-    /// 3. Adds files that are new on this branch (not in the merge base).
+    /// Delegates to `git diff --numstat <merge_base>` + `git status --porcelain=v2`
+    /// via [`crate::git::cli::compute_status_files`].
     pub fn branch_status(&self, merge_base: gix::ObjectId) -> Result<Vec<FileEntry>, GitFailure> {
-        use std::collections::HashMap;
-        use std::ops::ControlFlow;
-
-        let work_dir = match self.repo.workdir() {
-            Some(d) => d.to_path_buf(),
-            None => return Ok(vec![]),
-        };
-
-        // Resolve mb tree.
-        let mb_tree = self
-            .repo
-            .find_object(merge_base)
-            .map_err(|e| GitFailure::EnvChange(format!("branch_status find merge base: {e}")))?
-            .try_into_commit()
-            .map_err(|e| GitFailure::EnvChange(format!("branch_status into commit: {e}")))?
-            .tree()
-            .map_err(|e| GitFailure::EnvChange(format!("branch_status mb tree: {e}")))?;
-
-        // HEAD tree may be unavailable for unborn-branch repos. If so, fall
-        // back to status()-only via the let-some.
-        let head_tree = self.repo.head_commit().ok().and_then(|c| c.tree().ok());
-
-        // Single tree-diff pass populates BOTH:
-        // - mb_blobs: path -> mb blob id, for files that exist in mb (Deletion
-        //   or Modification entries — i.e., the mb-side blob is known).
-        // - added_on_branch: paths added in HEAD relative to mb (no mb blob).
-        let mut mb_blobs: HashMap<String, gix::ObjectId> = HashMap::new();
-        let mut added_on_branch: Vec<String> = Vec::new();
-
-        if let Some(ref head_tree) = head_tree {
-            let mut platform = mb_tree
-                .changes()
-                .map_err(|e| GitFailure::EnvChange(format!("branch_status changes: {e}")))?;
-            // Disable rename tracking so renames look like delete+add (matches
-            // pre-existing behavior of the old O(N) implementation).
-            platform.options(|opts| {
-                opts.track_rewrites(None);
-            });
-            platform
-                .for_each_to_obtain_tree(
-                    head_tree,
-                    |change| -> Result<_, std::convert::Infallible> {
-                        use gix::object::tree::diff::Change;
-                        match change {
-                            Change::Addition { location, .. } => {
-                                added_on_branch.push(location.to_string());
-                            }
-                            Change::Deletion { location, id, .. } => {
-                                mb_blobs.insert(location.to_string(), id.detach());
-                            }
-                            Change::Modification {
-                                location,
-                                previous_id,
-                                ..
-                            } => {
-                                mb_blobs.insert(location.to_string(), previous_id.detach());
-                            }
-                            Change::Rewrite { .. } => {
-                                // Rewrites are disabled above; reachable only if gix
-                                // ignores the option, in which case treat as no-op.
-                            }
-                        }
-                        Ok(ControlFlow::Continue(()))
-                    },
-                )
-                .map_err(|e| GitFailure::EnvChange(format!("branch_status for_each: {e}")))?;
-        }
-
-        // Worktree status (uncommitted + untracked).
-        let wt_status = self.status().unwrap_or_default();
-
-        // Build entries.
-        let mut entries: HashMap<String, FileEntry> = HashMap::new();
-
-        // 1) Paths in mb (Modified or Deletion in tree-diff).
-        for (path, blob_id) in &mb_blobs {
-            let worktree_path = work_dir.join(path);
-            let mb_text = match self.repo.find_object(*blob_id) {
-                Ok(b) => String::from_utf8_lossy(&b.data).into_owned(),
-                Err(_) => String::new(),
-            };
-
-            if worktree_path.exists() {
-                let wt_text = match std::fs::read_to_string(&worktree_path) {
-                    Ok(t) => t,
-                    // Binary or unreadable file: skip rather than report wrong numstat.
-                    // Matches pre-rewrite behavior.
-                    Err(_) => continue,
-                };
-                if mb_text != wt_text {
-                    let (ins, del) = count_line_changes(&mb_text, &wt_text);
-                    entries.insert(
-                        path.clone(),
-                        FileEntry {
-                            path: path.clone(),
-                            status: FileStatus::Modified,
-                            insertions: ins,
-                            deletions: del,
-                        },
-                    );
-                }
-            } else {
-                let del = mb_text.lines().count();
-                entries.insert(
-                    path.clone(),
-                    FileEntry {
-                        path: path.clone(),
-                        status: FileStatus::Deleted,
-                        insertions: 0,
-                        deletions: del,
-                    },
-                );
-            }
-        }
-
-        // 2) Paths added on this branch (in HEAD, not in mb).
-        for path in &added_on_branch {
-            if entries.contains_key(path) {
-                continue;
-            }
-            let worktree_path = work_dir.join(path);
-            if !worktree_path.exists() {
-                continue;
-            }
-            let wt_text = match std::fs::read_to_string(&worktree_path) {
-                Ok(t) => t,
-                // Binary or unreadable file: skip rather than report 0 insertions.
-                // Matches pre-rewrite behavior.
-                Err(_) => continue,
-            };
-            entries.insert(
-                path.clone(),
-                FileEntry {
-                    path: path.clone(),
-                    status: FileStatus::Added,
-                    insertions: wt_text.lines().count(),
-                    deletions: 0,
-                },
-            );
-        }
-
-        // 3) Worktree-only entries (uncommitted, including untracked).
-        for wt_entry in &wt_status {
-            if entries.contains_key(&wt_entry.path) {
-                continue;
-            }
-            if !mb_blobs.contains_key(&wt_entry.path) {
-                let mut entry = wt_entry.clone();
-                if entry.status != FileStatus::Untracked {
-                    entry.status = FileStatus::Added;
-                }
-                let worktree_path = work_dir.join(&entry.path);
-                if let Ok(content) = std::fs::read_to_string(&worktree_path) {
-                    entry.insertions = content.lines().count();
-                    entry.deletions = 0;
-                }
-                entries.insert(entry.path.clone(), entry);
-            }
-        }
-
-        let mut result: Vec<FileEntry> = entries.into_values().collect();
-        result.sort_by(|a, b| a.path.cmp(&b.path));
-        Ok(result)
+        crate::git::cli::compute_status_files(&self.repo_path, Some(&merge_base))
     }
 
     /// Compute the unified diff for a single file between the merge base
@@ -941,39 +779,6 @@ fn synthesize_deletion_diff(old: &str) -> FileDiff {
     }
 }
 
-/// Approximate line-change count: counts extra lines in `new` as insertions
-/// and extra lines in `old` as deletions using a multiset line comparison.
-fn count_line_changes(old: &str, new: &str) -> (usize, usize) {
-    use std::collections::HashMap;
-
-    let mut old_counts: HashMap<&str, i64> = HashMap::new();
-    for line in old.lines() {
-        *old_counts.entry(line).or_insert(0) += 1;
-    }
-    let mut new_counts: HashMap<&str, i64> = HashMap::new();
-    for line in new.lines() {
-        *new_counts.entry(line).or_insert(0) += 1;
-    }
-
-    let mut insertions = 0usize;
-    let mut deletions = 0usize;
-
-    for (line, &count) in &new_counts {
-        let old_count = old_counts.get(line).copied().unwrap_or(0);
-        if count > old_count {
-            insertions += (count - old_count) as usize;
-        }
-    }
-    for (line, &count) in &old_counts {
-        let new_count = new_counts.get(line).copied().unwrap_or(0);
-        if count > new_count {
-            deletions += (count - new_count) as usize;
-        }
-    }
-
-    (insertions, deletions)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1129,37 +934,6 @@ mod tests {
             assert!(!e.path.is_empty());
             assert!(!e.path.starts_with('/'));
         }
-    }
-
-    #[test]
-    fn test_count_line_changes_all_new() {
-        let (ins, del) = count_line_changes("", "a\nb\nc\n");
-        assert_eq!(ins, 3);
-        assert_eq!(del, 0);
-    }
-
-    #[test]
-    fn test_count_line_changes_all_removed() {
-        let (ins, del) = count_line_changes("a\nb\nc\n", "");
-        assert_eq!(ins, 0);
-        assert_eq!(del, 3);
-    }
-
-    #[test]
-    fn test_count_line_changes_mixed() {
-        let old = "line1\nline2\nline3\n";
-        let new = "line1\nline2-modified\nline3\nline4\n";
-        let (ins, del) = count_line_changes(old, new);
-        assert_eq!(ins, 2); // "line2-modified" + "line4"
-        assert_eq!(del, 1); // "line2"
-    }
-
-    #[test]
-    fn test_count_line_changes_unchanged() {
-        let text = "a\nb\nc\n";
-        let (ins, del) = count_line_changes(text, text);
-        assert_eq!(ins, 0);
-        assert_eq!(del, 0);
     }
 
     #[test]

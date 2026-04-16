@@ -215,6 +215,7 @@ pub fn merge_status_and_numstat(
     status: Vec<(String, FileStatus)>,
     numstat: Vec<(String, usize, usize)>,
     repo_root: &Path,
+    name_status: Option<std::collections::HashMap<String, FileStatus>>,
 ) -> Vec<FileEntry> {
     use std::collections::HashMap;
 
@@ -250,13 +251,18 @@ pub fn merge_status_and_numstat(
         })
         .collect();
 
-    // Defensive: if numstat reported something with no matching status entry
-    // (race condition between the two `git` calls), surface it as Modified
-    // so it doesn't silently disappear.
+    // Files in numstat but not in `git status` are committed changes that are
+    // clean in the working tree (e.g. a file added or modified on the branch
+    // but not touched since the commit). Use name-status when available for
+    // accurate classification; fall back to Modified as a safe default.
     for (path, (insertions, deletions)) in numstat_map {
+        let status = name_status
+            .as_ref()
+            .and_then(|ns| ns.get(&path).cloned())
+            .unwrap_or(FileStatus::Modified);
         entries.push(FileEntry {
             path,
-            status: FileStatus::Modified,
+            status,
             insertions,
             deletions,
         });
@@ -285,11 +291,27 @@ pub fn compute_status_files(
     repo_path: &Path,
     base_ref: Option<&gix::ObjectId>,
 ) -> Result<Vec<FileEntry>, GitFailure> {
+    use std::collections::HashMap;
     let status_bytes = run_status(repo_path)?;
     let numstat_bytes = run_numstat(repo_path, base_ref)?;
     let status = parse_porcelain_v2(&status_bytes);
     let numstat = parse_numstat(&numstat_bytes);
-    Ok(merge_status_and_numstat(status, numstat, repo_path))
+    // When diffing against a merge base, also fetch `--name-status` so we can
+    // accurately classify committed-only changes that don't appear in
+    // `git status` (e.g. a file added or modified on the branch but left clean
+    // in the worktree since the commit).
+    let name_status: Option<HashMap<String, FileStatus>> = if base_ref.is_some() {
+        let ns_bytes = run_diff_name_status(repo_path, base_ref)?;
+        Some(parse_name_status(&ns_bytes).into_iter().collect())
+    } else {
+        None
+    };
+    Ok(merge_status_and_numstat(
+        status,
+        numstat,
+        repo_path,
+        name_status,
+    ))
 }
 
 fn run_status(repo_path: &Path) -> Result<Vec<u8>, GitFailure> {
@@ -333,4 +355,63 @@ fn run_numstat(repo_path: &Path, base_ref: Option<&gix::ObjectId>) -> Result<Vec
         )));
     }
     Ok(out.stdout)
+}
+
+/// Run `git diff --name-status -z <base_ref>` and return raw stdout.
+fn run_diff_name_status(
+    repo_path: &Path,
+    base_ref: Option<&gix::ObjectId>,
+) -> Result<Vec<u8>, GitFailure> {
+    let mut cmd = Command::new("git");
+    cmd.current_dir(repo_path)
+        .args(["-c", "core.quotePath=false", "diff", "--name-status", "-z"]);
+    if let Some(oid) = base_ref {
+        cmd.arg(format!("{}", oid.to_hex()));
+    }
+    let out = cmd
+        .output()
+        .map_err(|e| GitFailure::EnvChange(format!("git diff --name-status spawn: {e}")))?;
+    if !out.status.success() {
+        return Err(GitFailure::EnvChange(format!(
+            "git diff --name-status exit {}: {}",
+            out.status,
+            String::from_utf8_lossy(&out.stderr)
+        )));
+    }
+    Ok(out.stdout)
+}
+
+/// Parse `git diff --name-status -z` output into `(path, FileStatus)` pairs.
+///
+/// Format: each record is `<status>\0<path>\0` for ordinary entries, or
+/// `R<score>\0<old-path>\0<new-path>\0` for renames.
+///
+/// Status letters: A=Added, M=Modified, D=Deleted, R=Renamed, C=Copied,
+/// T=Type-change, U=Unmerged, X=Unknown. We map to our `FileStatus` enum.
+pub fn parse_name_status(bytes: &[u8]) -> Vec<(String, FileStatus)> {
+    let mut out = Vec::new();
+    let mut chunks = bytes.split(|&b| b == 0).filter(|c| !c.is_empty());
+    while let Some(status_chunk) = chunks.next() {
+        let status_char = status_chunk.first().copied().unwrap_or(b'?');
+        let fs = match status_char {
+            b'A' => FileStatus::Added,
+            b'D' => FileStatus::Deleted,
+            b'R' | b'C' => {
+                // Rename/copy: skip old path, use new path.
+                let _old = chunks.next();
+                if let Some(new_path) = chunks.next() {
+                    out.push((
+                        String::from_utf8_lossy(new_path).into_owned(),
+                        FileStatus::Renamed,
+                    ));
+                }
+                continue;
+            }
+            _ => FileStatus::Modified,
+        };
+        if let Some(path_chunk) = chunks.next() {
+            out.push((String::from_utf8_lossy(path_chunk).into_owned(), fs));
+        }
+    }
+    out
 }

@@ -200,7 +200,7 @@ fn merge_attaches_numstat_to_status_entries() {
     ];
     let numstat = vec![("a.rs".to_string(), 5, 2), ("b.rs".to_string(), 10, 0)];
     let tmp = tempfile::tempdir().unwrap();
-    let result: Vec<FileEntry> = merge_status_and_numstat(status, numstat, tmp.path());
+    let result: Vec<FileEntry> = merge_status_and_numstat(status, numstat, tmp.path(), None);
 
     assert_eq!(result.len(), 2);
     let a = result.iter().find(|e| e.path == "a.rs").unwrap();
@@ -222,7 +222,7 @@ fn merge_sorts_output_by_path() {
     ];
     let numstat = vec![];
     let tmp = tempfile::tempdir().unwrap();
-    let result = merge_status_and_numstat(status, numstat, tmp.path());
+    let result = merge_status_and_numstat(status, numstat, tmp.path(), None);
 
     let paths: Vec<&str> = result.iter().map(|e| e.path.as_str()).collect();
     assert_eq!(paths, vec!["a.rs", "m.rs", "z.rs"]);
@@ -235,7 +235,7 @@ fn merge_untracked_file_counts_lines_from_disk() {
 
     let status = vec![("new.txt".to_string(), FileStatus::Untracked)];
     let numstat = vec![];
-    let result = merge_status_and_numstat(status, numstat, tmp.path());
+    let result = merge_status_and_numstat(status, numstat, tmp.path(), None);
 
     assert_eq!(result.len(), 1);
     assert_eq!(result[0].path, "new.txt");
@@ -250,7 +250,7 @@ fn merge_untracked_unreadable_file_reports_zero() {
     let status = vec![("ghost.txt".to_string(), FileStatus::Untracked)];
     let numstat = vec![];
     let tmp = tempfile::tempdir().unwrap();
-    let result = merge_status_and_numstat(status, numstat, tmp.path());
+    let result = merge_status_and_numstat(status, numstat, tmp.path(), None);
 
     assert_eq!(result.len(), 1);
     assert_eq!(result[0].insertions, 0);

@@ -204,29 +204,17 @@ impl App {
         theme_override: Option<String>,
         base_override: Option<String>,
     ) -> Result<Self> {
+        // Open the repo just long enough to read the branch name (sub-millisecond
+        // — reads `.git/HEAD`). Everything else — file list, head_info, ahead/behind,
+        // stash count, repo_state, merge_base — is deferred to the worker so
+        // App::new returns instantly even on huge repos.
         let git = GitRepo::new(&watch_path).context("Failed to open git repository")?;
-
         let branch = git.branch_name().unwrap_or_else(|_| "HEAD".to_string());
-
-        let (merge_base, resolved_base, files) = Self::compute_branch_files(
-            &git,
-            base_override.as_deref(),
-            config.base_branch.as_deref(),
-        )?;
+        drop(git); // worker re-opens its own GitRepo
 
         let flash_duration = Duration::from_millis(config.display.flash_duration_ms);
-        let mut state = AppState::new(files, flash_duration, branch);
-
-        state.set_repo_name(git.repo_name());
-        state.set_worktree_name(git.worktree_name());
-
-        if let Ok((sha, msg)) = git.head_info() {
-            state.set_head_info(sha, msg);
-        }
-        state.set_stash_count(git.stash_count().unwrap_or(0));
-        state.set_ahead_behind(git.ahead_behind().unwrap_or(None));
-        state.set_repo_state(git.repo_state());
-        state.set_merge_base(merge_base, resolved_base);
+        let mut state = AppState::new(Vec::new(), flash_duration, branch.clone());
+        state.set_computing(true);
 
         let user_themes_dir = crate::theme::default_user_themes_dir();
         let theme_name_or_path = theme_override.as_deref().unwrap_or(&config.theme);
@@ -246,7 +234,6 @@ impl App {
 
         let gh_rx = if config.pr.enabled {
             if let Some(token) = crate::github::resolve_auth_token() {
-                let branch = state.branch().to_string();
                 Some(crate::github::start_polling(&watch_path, &branch, &token))
             } else {
                 tracing::warn!("PR widget enabled but no GitHub auth token found");
@@ -258,9 +245,8 @@ impl App {
 
         let main_worktree_path = crate::git::main_worktree_path(&repo_path);
 
-        // Spawn the git worker thread. The synchronous initial load above
-        // populated the first frame; from this point on the worker handles
-        // all git work.
+        // Spawn the git worker thread and queue the initial Recompute. The
+        // first Status response populates the file list and all branch metadata.
         let (worker_tx, worker_req_rx) = bounded::<Request>(8);
         let (worker_resp_tx, worker_rx) = bounded::<Response>(8);
         let worker_handle = Worker::spawn(
@@ -270,6 +256,11 @@ impl App {
             worker_req_rx,
             worker_resp_tx,
         );
+        // Best-effort initial Recompute. If the channel is full or disconnected,
+        // the worker is dead and the app would fail anyway — log and continue.
+        if let Err(e) = worker_tx.try_send(Request::Recompute) {
+            tracing::warn!(error = %e, "initial Recompute send failed");
+        }
 
         Ok(Self {
             state,
@@ -517,39 +508,6 @@ impl App {
             _ => {}
         }
         Ok(false)
-    }
-
-    /// Resolve merge base and compute file list. Falls back to working-tree
-    /// status when no merge base is available or on error.
-    fn compute_branch_files(
-        git: &GitRepo,
-        base_override: Option<&str>,
-        config_base: Option<&str>,
-    ) -> Result<(Option<gix::ObjectId>, String, Vec<crate::git::FileEntry>)> {
-        let base_ref = base_override.or(config_base);
-        let resolved_base = git.resolve_base_branch(base_ref);
-
-        let (merge_base, files) = match &resolved_base {
-            Some(base_name) => match git.merge_base(base_name) {
-                Ok(Some(mb)) => match git.branch_status(mb) {
-                    Ok(f) => (Some(mb), f),
-                    Err(e) if e.is_env_change() => {
-                        tracing::debug!(error = %e, "branch_status failed, falling back");
-                        (None, git.status()?)
-                    }
-                    Err(e) => return Err(e.into()),
-                },
-                Ok(None) => (None, git.status()?),
-                Err(e) if e.is_env_change() => {
-                    tracing::debug!(error = %e, "merge_base failed, falling back");
-                    (None, git.status()?)
-                }
-                Err(e) => return Err(e.into()),
-            },
-            None => (None, git.status()?),
-        };
-
-        Ok((merge_base, resolved_base.unwrap_or_default(), files))
     }
 
     /// Send a Recompute request to the worker. Non-blocking. The response

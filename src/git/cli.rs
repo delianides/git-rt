@@ -145,3 +145,63 @@ fn map_xy(xy: [u8; 2]) -> FileStatus {
     }
     FileStatus::Modified
 }
+
+/// Parse `git diff --numstat -z <ref>` output into `(path, insertions, deletions)`.
+///
+/// **Trust assumption:** like [`parse_porcelain_v2`], this consumes the output
+/// of a stable git CLI command and does not validate against malformed inputs
+/// that git cannot emit.
+///
+/// Format:
+///   Regular:  `<added>\t<deleted>\t<path>\0`
+///   Binary:   `-\t-\t<path>\0`     → reported as (path, 0, 0)
+///   Rename:   `<added>\t<deleted>\t\0<from>\0<to>\0`
+///             → emitted under the destination path; the source name is dropped
+///             (status output already reports the deletion via porcelain).
+pub fn parse_numstat(bytes: &[u8]) -> Vec<(String, usize, usize)> {
+    let mut out = Vec::new();
+    let mut chunks = bytes.split(|&b| b == 0).filter(|c| !c.is_empty());
+    while let Some(chunk) = chunks.next() {
+        // Each chunk is "<added>\t<deleted>\t<path-or-empty>".
+        let mut fields = chunk.splitn(3, |&b| b == b'\t');
+        let added_b = match fields.next() {
+            Some(f) => f,
+            None => continue,
+        };
+        let deleted_b = match fields.next() {
+            Some(f) => f,
+            None => continue,
+        };
+        let path_b = match fields.next() {
+            Some(f) => f,
+            None => continue,
+        };
+
+        let added = parse_count(added_b);
+        let deleted = parse_count(deleted_b);
+
+        if path_b.is_empty() {
+            // Rename: drop the next chunk (source path), use the one after as destination.
+            let _from = chunks.next();
+            let to = match chunks.next() {
+                Some(c) => c,
+                None => continue,
+            };
+            out.push((String::from_utf8_lossy(to).into_owned(), added, deleted));
+        } else {
+            out.push((String::from_utf8_lossy(path_b).into_owned(), added, deleted));
+        }
+    }
+    out
+}
+
+/// Parse a numstat count field. `-` (binary file marker) → 0.
+fn parse_count(bytes: &[u8]) -> usize {
+    if bytes == b"-" {
+        return 0;
+    }
+    std::str::from_utf8(bytes)
+        .ok()
+        .and_then(|s| s.parse::<usize>().ok())
+        .unwrap_or(0)
+}

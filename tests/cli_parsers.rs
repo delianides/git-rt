@@ -1,4 +1,4 @@
-use git_rt::git::cli::parse_porcelain_v2;
+use git_rt::git::cli::{parse_numstat, parse_porcelain_v2};
 use git_rt::git::FileStatus;
 
 #[test]
@@ -141,4 +141,53 @@ fn parse_porcelain_v2_ignored_lines_skipped() {
     let input = b"! ignored.rs\0? real.rs\0";
     let result = parse_porcelain_v2(input);
     assert_eq!(result, vec![("real.rs".to_string(), FileStatus::Untracked)]);
+}
+
+#[test]
+fn parse_numstat_single_regular() {
+    let input = b"5\t2\tsrc/main.rs\0";
+    let result = parse_numstat(input);
+    assert_eq!(result, vec![("src/main.rs".to_string(), 5, 2)]);
+}
+
+#[test]
+fn parse_numstat_multiple() {
+    let input = b"5\t2\ta.rs\x00100\t0\tb.rs\0";
+    let result = parse_numstat(input);
+    assert_eq!(
+        result,
+        vec![("a.rs".to_string(), 5, 2), ("b.rs".to_string(), 100, 0),]
+    );
+}
+
+#[test]
+fn parse_numstat_binary_file_zeros() {
+    let input = b"-\t-\timage.png\0";
+    let result = parse_numstat(input);
+    assert_eq!(result, vec![("image.png".to_string(), 0, 0)]);
+}
+
+#[test]
+fn parse_numstat_rename_uses_destination_path() {
+    // Rename: `<added>\t<deleted>\t\0<from>\0<to>\0`
+    let input = b"3\t1\t\0old/path.rs\0new/path.rs\0";
+    let result = parse_numstat(input);
+    assert_eq!(result, vec![("new/path.rs".to_string(), 3, 1)]);
+}
+
+#[test]
+fn parse_numstat_path_with_space() {
+    let input = b"7\t3\tdir name/file with space.rs\0";
+    let result = parse_numstat(input);
+    assert_eq!(
+        result,
+        vec![("dir name/file with space.rs".to_string(), 7, 3)]
+    );
+}
+
+#[test]
+fn parse_numstat_empty_input() {
+    let input = b"";
+    let result = parse_numstat(input);
+    assert!(result.is_empty());
 }

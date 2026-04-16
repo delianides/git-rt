@@ -41,6 +41,11 @@ pub fn parse_porcelain_v2(bytes: &[u8]) -> Vec<(String, FileStatus)> {
                     ));
                 }
             }
+            Some(&b'1') => {
+                if let Some((xy, path)) = parse_type1(chunk) {
+                    out.push((path, map_xy(xy)));
+                }
+            }
             _ => {
                 // Other entry types implemented in following tasks.
                 let _ = &mut chunks; // silence unused-mut once more arms exist
@@ -48,4 +53,50 @@ pub fn parse_porcelain_v2(bytes: &[u8]) -> Vec<(String, FileStatus)> {
         }
     }
     out
+}
+
+/// Parse `1 XY sub mH mI mW hH hI <path>` → (XY-bytes, path).
+/// Returns None if the line doesn't have enough fields.
+fn parse_type1(chunk: &[u8]) -> Option<([u8; 2], String)> {
+    // Field positions (0-indexed by space-split):
+    //   0=marker(1), 1=XY, 2=sub, 3=mH, 4=mI, 5=mW, 6=hH, 7=hI, 8..=path
+    // Path may itself contain spaces, so use splitn to keep the tail intact.
+    let mut parts = chunk.splitn(9, |&b| b == b' ');
+    let _marker = parts.next()?; // "1"
+    let xy_bytes = parts.next()?; // "XY"
+    if xy_bytes.len() != 2 {
+        return None;
+    }
+    let xy = [xy_bytes[0], xy_bytes[1]];
+    // Skip the next 6 metadata fields.
+    for _ in 0..6 {
+        parts.next()?;
+    }
+    let path = parts.next()?;
+    Some((xy, String::from_utf8_lossy(path).into_owned()))
+}
+
+/// Map the porcelain v2 XY status code to our `FileStatus` enum.
+///
+/// Priority order (most specific wins):
+///   1. Either side is `D` → Deleted
+///   2. Worktree side is `M` → Modified (covers `.M` and `MM`)
+///   3. Index side is `A` → Added
+///   4. Index side is `M` → Staged (covers `M.`)
+///   5. Default → Modified (catch-all for unusual combinations)
+fn map_xy(xy: [u8; 2]) -> FileStatus {
+    let (x, y) = (xy[0], xy[1]);
+    if y == b'D' || x == b'D' {
+        return FileStatus::Deleted;
+    }
+    if y == b'M' {
+        return FileStatus::Modified;
+    }
+    if x == b'A' {
+        return FileStatus::Added;
+    }
+    if x == b'M' {
+        return FileStatus::Staged;
+    }
+    FileStatus::Modified
 }

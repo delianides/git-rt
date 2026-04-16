@@ -173,15 +173,25 @@ fn shell_single_quote(s: &str) -> String {
     out
 }
 
+/// `-c` overrides injected into every `git diff` invocation for the pager.
+///
+/// - `delta.paging=always` forces delta (a popular git pager) to always
+///   invoke its pager even on short diffs. Delta's default `paging=auto`
+///   prints directly to stdout for output shorter than the terminal height,
+///   which causes the in-app pager to flash and disappear on 1–4 line diffs.
+///   The key is ignored if delta isn't in use.
+const PAGER_CONFIG_OVERRIDES: &[&str] = &["-c", "delta.paging=always"];
+
 /// Build the shell command string for opening a file diff via git's configured
 /// pager. When `merge_base` is `Some`, produces a branch-scoped diff matching
 /// the in-app branch view (merge-base vs working tree). Otherwise produces a
 /// working-tree-vs-index diff. `quoted_path` MUST be pre-quoted via
 /// `shell_single_quote`.
 fn build_diff_command(merge_base: Option<&gix::ObjectId>, quoted_path: &str) -> String {
+    let overrides = PAGER_CONFIG_OVERRIDES.join(" ");
     match merge_base {
-        Some(mb) => format!("git diff {} -- {}", mb.to_hex(), quoted_path),
-        None => format!("git diff -- {}", quoted_path),
+        Some(mb) => format!("git {} diff {} -- {}", overrides, mb.to_hex(), quoted_path),
+        None => format!("git {} diff -- {}", overrides, quoted_path),
     }
 }
 
@@ -1031,7 +1041,7 @@ mod editor_tests {
     #[test]
     fn build_diff_command_working_tree() {
         let cmd = build_diff_command(None, "'src/main.rs'");
-        assert_eq!(cmd, "git diff -- 'src/main.rs'");
+        assert_eq!(cmd, "git -c delta.paging=always diff -- 'src/main.rs'");
     }
 
     #[test]
@@ -1040,14 +1050,25 @@ mod editor_tests {
         let cmd = build_diff_command(Some(&mb), "'src/main.rs'");
         assert_eq!(
             cmd,
-            "git diff 0000000000000000000000000000000000000000 -- 'src/main.rs'"
+            "git -c delta.paging=always diff 0000000000000000000000000000000000000000 -- 'src/main.rs'"
         );
     }
 
     #[test]
     fn build_diff_command_quoted_path_with_space() {
         let cmd = build_diff_command(None, "'my file.rs'");
-        assert_eq!(cmd, "git diff -- 'my file.rs'");
+        assert_eq!(cmd, "git -c delta.paging=always diff -- 'my file.rs'");
+    }
+
+    /// Regression guard: the `-c delta.paging=always` override must appear in
+    /// every diff command so delta doesn't skip the pager on short diffs.
+    #[test]
+    fn build_diff_command_injects_delta_paging_override() {
+        let cmd = build_diff_command(None, "'x'");
+        assert!(
+            cmd.contains("-c delta.paging=always"),
+            "expected delta.paging override in: {cmd}"
+        );
     }
 
     /// Regression guard: git's default pager env (`LESS=FRX`) includes `-F`

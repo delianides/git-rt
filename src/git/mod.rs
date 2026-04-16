@@ -146,8 +146,7 @@ impl GitRepo {
         let repo = gix::open(path).map_err(|_e| GitFailure::NotARepo(path.to_path_buf()))?;
 
         // Resolve the canonical work dir path for downstream methods that still
-        // use filesystem paths (e.g., diff_untracked which reads the file,
-        // repo_name/worktree_name which take file_name of the path).
+        // use filesystem paths (e.g., repo_name/worktree_name which take file_name of the path).
         //
         // gix's workdir() may return a relative path (e.g., "."). We canonicalize
         // it to ensure .file_name() and .parent() work correctly — a relative

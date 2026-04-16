@@ -429,11 +429,12 @@ impl App {
                         self.state.select_previous();
                     }
 
-                    // Expand / open diff (Enter, l, Right, Space)
+                    // Expand / open diff (Enter, l, Right, Space, d)
                     (_, KeyCode::Enter)
                     | (_, KeyCode::Char('l'))
                     | (_, KeyCode::Right)
-                    | (_, KeyCode::Char(' ')) => {
+                    | (_, KeyCode::Char(' '))
+                    | (_, KeyCode::Char('d')) => {
                         self.open_pager_diff(terminal)?;
                     }
 
@@ -455,11 +456,6 @@ impl App {
                     // Help popup
                     (_, KeyCode::Char('?')) => {
                         self.state.show_help();
-                    }
-
-                    // Open selected file in the configured git pager
-                    (_, KeyCode::Char('d')) => {
-                        self.open_pager_diff(terminal)?;
                     }
 
                     _ => {}

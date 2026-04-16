@@ -52,9 +52,23 @@ pub fn parse_porcelain_v2(bytes: &[u8]) -> Vec<(String, FileStatus)> {
                     out.push((path, map_xy(xy)));
                 }
             }
+            Some(&b'2') => {
+                // Rename: parse new path from this chunk, original path from next chunk.
+                if let Some(new_path) = parse_type2_new_path(chunk) {
+                    if let Some(orig_chunk) = chunks.next() {
+                        let orig = String::from_utf8_lossy(orig_chunk).into_owned();
+                        out.push((orig, FileStatus::Deleted));
+                        out.push((new_path, FileStatus::Added));
+                    }
+                }
+            }
+            Some(&b'u') => {
+                if let Some(path) = parse_type_u(chunk) {
+                    out.push((path, FileStatus::Conflicted));
+                }
+            }
             _ => {
-                // Other entry types implemented in following tasks.
-                let _ = &mut chunks; // silence unused-mut once more arms exist
+                // `! ignored` lines and unknown markers — skip
             }
         }
     }
@@ -80,6 +94,31 @@ fn parse_type1(chunk: &[u8]) -> Option<([u8; 2], String)> {
     }
     let path = parts.next()?;
     Some((xy, String::from_utf8_lossy(path).into_owned()))
+}
+
+/// Parse type-2 entry, returning the new (destination) path.
+/// Format: `2 XY sub mH mI mW hH hI Xscore <newPath>`.
+/// The original path follows in the next NUL-terminated chunk.
+fn parse_type2_new_path(chunk: &[u8]) -> Option<String> {
+    // 0=marker, 1=XY, 2=sub, 3=mH, 4=mI, 5=mW, 6=hH, 7=hI, 8=Xscore, 9..=newPath
+    let mut parts = chunk.splitn(10, |&b| b == b' ');
+    for _ in 0..9 {
+        parts.next()?;
+    }
+    let path = parts.next()?;
+    Some(String::from_utf8_lossy(path).into_owned())
+}
+
+/// Parse type-u (unmerged) entry, returning the path.
+/// Format: `u XY sub m1 m2 m3 mW h1 h2 h3 <path>`.
+fn parse_type_u(chunk: &[u8]) -> Option<String> {
+    // 0=marker, 1=XY, 2=sub, 3=m1, 4=m2, 5=m3, 6=mW, 7=h1, 8=h2, 9=h3, 10..=path
+    let mut parts = chunk.splitn(11, |&b| b == b' ');
+    for _ in 0..10 {
+        parts.next()?;
+    }
+    let path = parts.next()?;
+    Some(String::from_utf8_lossy(path).into_owned())
 }
 
 /// Map the porcelain v2 XY status code to our `FileStatus` enum.

@@ -110,3 +110,35 @@ fn parse_porcelain_v2_mixed_with_untracked() {
         ]
     );
 }
+
+#[test]
+fn parse_porcelain_v2_rename_emits_delete_then_add() {
+    // Rename old.rs → new.rs: emit (old, Deleted) then (new, Added)
+    let input = b"2 R. N... 100644 100644 100644 abc def R100 new.rs\0old.rs\0";
+    let result = parse_porcelain_v2(input);
+    assert_eq!(
+        result,
+        vec![
+            ("old.rs".to_string(), FileStatus::Deleted),
+            ("new.rs".to_string(), FileStatus::Added),
+        ]
+    );
+}
+
+#[test]
+fn parse_porcelain_v2_unmerged_conflict() {
+    let input = b"u UU N... 100644 100644 100644 100644 abc def ghi conflict.rs\0";
+    let result = parse_porcelain_v2(input);
+    assert_eq!(
+        result,
+        vec![("conflict.rs".to_string(), FileStatus::Conflicted)]
+    );
+}
+
+#[test]
+fn parse_porcelain_v2_ignored_lines_skipped() {
+    // ! lines: should never appear (we don't pass --ignored), but be defensive
+    let input = b"! ignored.rs\0? real.rs\0";
+    let result = parse_porcelain_v2(input);
+    assert_eq!(result, vec![("real.rs".to_string(), FileStatus::Untracked)]);
+}

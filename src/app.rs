@@ -185,6 +185,19 @@ fn build_diff_command(merge_base: Option<&gix::ObjectId>, quoted_path: &str) -> 
     }
 }
 
+/// Build the `Command` used to launch the user's git pager for `cmd`, rooted
+/// at `cwd`.
+///
+/// Sets `LESS=R` in the child env so `less` (used directly or by delta/bat)
+/// keeps raw ANSI but does **not** auto-quit on short diffs. Git's default
+/// `LESS=FRX` would otherwise cause short (1–4 line) diffs to flash and
+/// close immediately.
+fn build_pager_command(cwd: &std::path::Path, cmd: &str) -> std::process::Command {
+    let mut c = std::process::Command::new("sh");
+    c.arg("-c").arg(cmd).current_dir(cwd).env("LESS", "R");
+    c
+}
+
 /// Open a URL in the user's default browser (macOS `open`, Linux `xdg-open`,
 /// Windows `cmd /C start`). Detached: returns immediately, git-rt keeps running.
 /// Stdio is nulled so launcher noise doesn't corrupt the TUI.
@@ -652,10 +665,7 @@ impl App {
         tracing::info!(%cmd, cwd = %self.watch_path.display(), "Launching git diff");
 
         let _guard = TerminalGuard::suspend(terminal)?;
-        let status = std::process::Command::new("sh")
-            .arg("-c")
-            .arg(&cmd)
-            .current_dir(&self.watch_path)
+        let status = build_pager_command(&self.watch_path, &cmd)
             .status()
             .with_context(|| format!("failed to launch git diff: {cmd}"))?;
 
@@ -1038,5 +1048,39 @@ mod editor_tests {
     fn build_diff_command_quoted_path_with_space() {
         let cmd = build_diff_command(None, "'my file.rs'");
         assert_eq!(cmd, "git diff -- 'my file.rs'");
+    }
+
+    /// Regression guard: git's default pager env (`LESS=FRX`) includes `-F`
+    /// which auto-quits less on short diffs, causing a visible "flash" on
+    /// files with 1–4 line changes. `build_pager_command` must override this
+    /// by setting `LESS=R` for the child process.
+    #[test]
+    fn build_pager_command_sets_less_without_f() {
+        let cmd = build_pager_command(std::path::Path::new("/tmp"), "git diff");
+        let less = cmd
+            .get_envs()
+            .find_map(|(k, v)| {
+                if k == std::ffi::OsStr::new("LESS") {
+                    v.map(|v| v.to_os_string())
+                } else {
+                    None
+                }
+            })
+            .expect("LESS env var must be set");
+        assert_eq!(less, std::ffi::OsString::from("R"));
+    }
+
+    #[test]
+    fn build_pager_command_uses_sh_c() {
+        let cmd = build_pager_command(std::path::Path::new("/tmp"), "git diff -- 'x'");
+        assert_eq!(cmd.get_program(), std::ffi::OsStr::new("sh"));
+        let args: Vec<&std::ffi::OsStr> = cmd.get_args().collect();
+        assert_eq!(
+            args,
+            vec![
+                std::ffi::OsStr::new("-c"),
+                std::ffi::OsStr::new("git diff -- 'x'"),
+            ]
+        );
     }
 }

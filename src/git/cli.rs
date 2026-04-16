@@ -18,6 +18,12 @@ use crate::git::{FileEntry, FileStatus, GitFailure};
 /// `(path, FileStatus)` pairs. Robust to records appearing in any order;
 /// callers downstream sort by path.
 ///
+/// **Trust assumption:** this parser consumes the output of
+/// `git status --porcelain=v2 -z`, a stable spec'd format. Defensive
+/// validation for inputs git cannot emit (malformed XY codes, no-change
+/// entries, etc.) is intentionally omitted — invalid inputs would indicate
+/// git itself is broken, not a bug in the caller.
+///
 /// Handles entry types:
 ///   `1 XY ...`  — ordinary changed entries
 ///   `2 XY ...`  — renames/copies (emitted as Deleted(from) + Added(to))

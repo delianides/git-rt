@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.0.3](https://github.com/delianides/git-rt/compare/v1.0.2...v1.0.3) (2026-04-16)
+
+
+### Performance Improvements
+
+* **git:** swap gix index-worktree walk for git CLI shell-out ([#58](https://github.com/delianides/git-rt/issues/58)) ([ef96923](https://github.com/delianides/git-rt/commit/ef96923a6475656cb9143fd22556ca40ba011cdd))
+
 ## [1.0.2](https://github.com/delianides/git-rt/compare/v1.0.1...v1.0.2) (2026-04-15)
 
 

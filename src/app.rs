@@ -260,6 +260,7 @@ impl App {
         // the worker is dead and the app would fail anyway — log and continue.
         if let Err(e) = worker_tx.try_send(Request::Recompute) {
             tracing::warn!(error = %e, "initial Recompute send failed");
+            state.set_computing(false);
         }
 
         Ok(Self {
@@ -522,6 +523,7 @@ impl App {
             }
             Err(crossbeam_channel::TrySendError::Disconnected(_)) => {
                 tracing::warn!("git worker has exited; recompute dropped");
+                self.state.set_computing(false);
                 return Ok(());
             }
         }

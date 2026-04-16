@@ -206,21 +206,37 @@ impl App {
         // — reads `.git/HEAD`). Everything else — file list, head_info, ahead/behind,
         // stash count, repo_state, merge_base — is deferred to the worker so
         // App::new returns instantly even on huge repos.
+        let t = Instant::now();
         let git = GitRepo::new(&watch_path).context("Failed to open git repository")?;
         let branch = git.branch_name().unwrap_or_else(|_| "HEAD".to_string());
         drop(git); // worker re-opens its own GitRepo
+        tracing::debug!(
+            elapsed_ms = t.elapsed().as_millis() as u64,
+            "App::new: GitRepo open + branch_name"
+        );
 
         let flash_duration = Duration::from_millis(config.display.flash_duration_ms);
         let mut state = AppState::new(Vec::new(), flash_duration, branch.clone());
         state.set_computing(true);
 
+        let t = Instant::now();
         let user_themes_dir = crate::theme::default_user_themes_dir();
         let theme_name_or_path = theme_override.as_deref().unwrap_or(&config.theme);
         let theme = crate::theme::load_theme(theme_name_or_path, user_themes_dir.as_deref());
+        tracing::debug!(
+            elapsed_ms = t.elapsed().as_millis() as u64,
+            "App::new: theme load"
+        );
 
+        let t = Instant::now();
         let debounce = Duration::from_millis(debounce_ms);
         let (fs_rx, watcher) = FsWatcher::new(&watch_path, debounce)?;
+        tracing::debug!(
+            elapsed_ms = t.elapsed().as_millis() as u64,
+            "App::new: FsWatcher::new"
+        );
 
+        let t = Instant::now();
         let gh_rx = if config.pr.enabled {
             if let Some(token) = crate::github::resolve_auth_token() {
                 Some(crate::github::start_polling(&watch_path, &branch, &token))
@@ -231,11 +247,21 @@ impl App {
         } else {
             None
         };
+        tracing::debug!(
+            elapsed_ms = t.elapsed().as_millis() as u64,
+            "App::new: github polling setup"
+        );
 
+        let t = Instant::now();
         let main_worktree_path = crate::git::main_worktree_path(&repo_path);
+        tracing::debug!(
+            elapsed_ms = t.elapsed().as_millis() as u64,
+            "App::new: main_worktree_path"
+        );
 
         // Spawn the git worker thread and queue the initial Recompute. The
         // first Status response populates the file list and all branch metadata.
+        let t = Instant::now();
         let (worker_tx, worker_req_rx) = bounded::<Request>(8);
         let (worker_resp_tx, worker_rx) = bounded::<Response>(8);
         let worker_handle = Worker::spawn(
@@ -251,6 +277,10 @@ impl App {
             tracing::warn!(error = %e, "initial Recompute send failed");
             state.set_computing(false);
         }
+        tracing::debug!(
+            elapsed_ms = t.elapsed().as_millis() as u64,
+            "App::new: Worker spawn + queue initial Recompute"
+        );
 
         Ok(Self {
             state,
@@ -290,10 +320,19 @@ impl App {
 
     fn event_loop(&mut self, terminal: &mut Terminal) -> Result<()> {
         let mut last_tick = Instant::now();
+        let loop_t0 = Instant::now();
+        let mut first_draw_logged = false;
 
         loop {
             // Render current state
             terminal.draw(&mut self.state, &self.config, &self.theme)?;
+            if !first_draw_logged {
+                tracing::info!(
+                    elapsed_ms = loop_t0.elapsed().as_millis() as u64,
+                    "event_loop: first draw complete"
+                );
+                first_draw_logged = true;
+            }
 
             // Calculate timeout until next tick
             let timeout = self
@@ -476,6 +515,14 @@ impl App {
 
     /// Apply a worker `StatusBundle` to `AppState`.
     fn apply_status(&mut self, bundle: StatusBundle) {
+        static FIRST_STATUS_LOGGED: std::sync::atomic::AtomicBool =
+            std::sync::atomic::AtomicBool::new(false);
+        if !FIRST_STATUS_LOGGED.swap(true, std::sync::atomic::Ordering::Relaxed) {
+            tracing::info!(
+                file_count = bundle.files.len(),
+                "apply_status: first Status received"
+            );
+        }
         self.state.update_files(bundle.files);
         self.state
             .set_merge_base(bundle.merge_base, bundle.base_branch);

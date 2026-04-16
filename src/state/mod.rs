@@ -1,14 +1,7 @@
 use std::collections::HashMap;
 use std::time::{Duration, Instant};
 
-use crate::git::{FileDiff, FileEntry};
-
-/// How the diff is displayed when Enter is pressed
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum DiffViewMode {
-    Overlay,
-    Inline,
-}
+use crate::git::FileEntry;
 
 /// State of the PR widget
 #[derive(Debug, Clone, Default)]
@@ -95,12 +88,6 @@ pub struct AppState {
     files: Vec<FileEntry>,
     /// Currently selected index in the file list
     selected: usize,
-    /// The path of the currently expanded file (if any)
-    expanded: Option<String>,
-    /// Cached diffs keyed by file path
-    diff_cache: HashMap<String, FileDiff>,
-    /// Scroll offset within the expanded diff
-    diff_scroll: usize,
     /// Number of times the file list has been refreshed
     refresh_count: usize,
     /// When the app started (for computing "last updated N seconds ago")
@@ -131,19 +118,8 @@ pub struct AppState {
     repo_state: Option<String>,
     /// Temporary message displayed on the bottom statusline
     flash_message: Option<(String, Instant)>,
-    /// Whether the diff overlay is currently shown
-    overlay_visible: bool,
     /// Whether the help popup is currently shown
     help_visible: bool,
-    /// When true, the next draw must start with a full terminal clear.
-    /// Set on overlay dismissal to defeat residual cells that ratatui's
-    /// cell-level diff can leave behind on some terminals (e.g. Ghostty)
-    /// when a large styled region is replaced by reset cells.
-    needs_clear: bool,
-    /// Monotonic token bumped each time the user requests a diff. Lets the
-    /// app drop stale `Response::Diff` messages whose token doesn't match
-    /// the current pending request.
-    pending_diff_token: u64,
     /// True when a worker `Recompute` request has been sent and no
     /// `Status` response has come back yet. Lets the UI surface a subtle
     /// indicator without blocking input.
@@ -164,9 +140,6 @@ impl AppState {
         Self {
             files,
             selected: 0,
-            expanded: None,
-            diff_cache: HashMap::new(),
-            diff_scroll: 0,
             refresh_count: 0,
             start_time: now,
             last_refresh: now,
@@ -182,10 +155,7 @@ impl AppState {
             ahead_behind: None,
             repo_state: None,
             flash_message: None,
-            overlay_visible: false,
             help_visible: false,
-            needs_clear: false,
-            pending_diff_token: 0,
             is_computing: false,
             pr_state: PrState::default(),
             border_flash_until: None,
@@ -206,24 +176,6 @@ impl AppState {
 
     pub fn selected_path(&self) -> Option<String> {
         self.files.get(self.selected).map(|f| f.path.clone())
-    }
-
-    pub fn is_expanded(&self, path: &str) -> bool {
-        self.expanded.as_deref() == Some(path)
-    }
-
-    pub fn expanded_path(&self) -> Option<&str> {
-        self.expanded.as_deref()
-    }
-
-    pub fn expanded_diff(&self) -> Option<&FileDiff> {
-        self.expanded
-            .as_ref()
-            .and_then(|path| self.diff_cache.get(path))
-    }
-
-    pub fn diff_scroll(&self) -> usize {
-        self.diff_scroll
     }
 
     pub fn refresh_count(&self) -> usize {
@@ -352,25 +304,6 @@ impl AppState {
         self.flash_message = None;
     }
 
-    // -- Overlay --
-
-    /// Returns true if the diff overlay is currently visible
-    pub fn is_overlay_visible(&self) -> bool {
-        self.overlay_visible
-    }
-
-    /// Show the diff overlay
-    pub fn show_overlay(&mut self) {
-        self.overlay_visible = true;
-    }
-
-    /// Hide the diff overlay and reset diff scroll
-    pub fn hide_overlay(&mut self) {
-        self.overlay_visible = false;
-        self.diff_scroll = 0;
-        self.needs_clear = true;
-    }
-
     // -- Help overlay --
 
     /// Returns true if the help popup is currently visible
@@ -378,38 +311,14 @@ impl AppState {
         self.help_visible
     }
 
-    /// Show the help popup. Also hides the diff overlay to enforce the
-    /// "only one overlay at a time" rule.
+    /// Show the help popup.
     pub fn show_help(&mut self) {
         self.help_visible = true;
-        self.overlay_visible = false;
-        self.diff_scroll = 0;
     }
 
     /// Hide the help popup
     pub fn hide_help(&mut self) {
         self.help_visible = false;
-        self.needs_clear = true;
-    }
-
-    /// Consume the "needs clear" flag, returning its prior value. The
-    /// render loop calls this before drawing and performs a full terminal
-    /// clear when it returns `true`.
-    pub fn take_needs_clear(&mut self) -> bool {
-        std::mem::replace(&mut self.needs_clear, false)
-    }
-
-    /// Bump and return the next diff token. Call this when sending a new
-    /// `Request::Diff` so stale responses can be filtered out.
-    pub fn next_diff_token(&mut self) -> u64 {
-        self.pending_diff_token = self.pending_diff_token.wrapping_add(1);
-        self.pending_diff_token
-    }
-
-    /// Current pending diff token. `Response::Diff` results with a different
-    /// token must be discarded.
-    pub fn pending_diff_token(&self) -> u64 {
-        self.pending_diff_token
     }
 
     /// True when a recompute is in flight.
@@ -465,43 +374,6 @@ impl AppState {
         self.selected = self.selected.saturating_sub(1);
     }
 
-    // -- Expand / Collapse --
-
-    /// Expand the selected file's diff, collapsing any previously expanded file
-    pub fn expand_selected(&mut self, diff: FileDiff) {
-        if let Some(path) = self.selected_path() {
-            self.diff_cache.insert(path.clone(), diff);
-            self.expanded = Some(path);
-            self.diff_scroll = 0;
-        }
-    }
-
-    /// Expand the file at `path` with the given diff, regardless of the
-    /// current selection. Used by the async worker pipeline so a stale diff
-    /// (selection moved between request and response) doesn't bind the diff
-    /// to the wrong file.
-    pub fn expand_selected_with_path(&mut self, path: String, diff: FileDiff) {
-        self.diff_cache.insert(path.clone(), diff);
-        self.expanded = Some(path);
-        self.diff_scroll = 0;
-    }
-
-    /// Collapse the currently expanded file
-    pub fn collapse_selected(&mut self) {
-        self.expanded = None;
-        self.diff_scroll = 0;
-    }
-
-    // -- Diff scrolling --
-
-    pub fn scroll_diff_down(&mut self) {
-        self.diff_scroll = self.diff_scroll.saturating_add(1);
-    }
-
-    pub fn scroll_diff_up(&mut self) {
-        self.diff_scroll = self.diff_scroll.saturating_sub(1);
-    }
-
     // -- State updates --
 
     /// Reset state for a worktree switch. Clears selection, expansion,
@@ -516,9 +388,6 @@ impl AppState {
     ) {
         self.files = files;
         self.selected = 0;
-        self.expanded = None;
-        self.diff_cache.clear();
-        self.diff_scroll = 0;
         self.refresh_count = 0;
         self.last_refresh = Instant::now();
         self.flash_times.clear();
@@ -530,8 +399,6 @@ impl AppState {
         self.stash_count = 0;
         self.ahead_behind = None;
         self.repo_state = None;
-        self.overlay_visible = false;
-        self.pending_diff_token = 0;
         self.is_computing = false;
         self.pr_state = PrState::default();
         // Activate border flash for visual feedback on switch
@@ -552,22 +419,6 @@ impl AppState {
             .iter()
             .map(|f| (f.path.as_str(), (f.insertions, f.deletions)))
             .collect();
-
-        // Invalidate diff cache for files that are no longer present
-        // or whose stats have changed
-        let new_paths: std::collections::HashSet<&str> =
-            new_files.iter().map(|f| f.path.as_str()).collect();
-
-        self.diff_cache
-            .retain(|path, _| new_paths.contains(path.as_str()));
-
-        // If the expanded file is gone, collapse
-        if let Some(ref expanded) = self.expanded {
-            if !new_paths.contains(expanded.as_str()) {
-                self.expanded = None;
-                self.diff_scroll = 0;
-            }
-        }
 
         // Detect changed files and record flash times
         let now = Instant::now();
@@ -660,20 +511,6 @@ mod tests {
     }
 
     #[test]
-    fn test_expand_collapse() {
-        let files = vec![make_entry("a.rs", 1, 0)];
-        let mut state = AppState::new(files, Duration::from_millis(600), "main".to_string());
-
-        assert!(state.expanded_path().is_none());
-
-        state.expand_selected(FileDiff::default());
-        assert_eq!(state.expanded_path(), Some("a.rs"));
-
-        state.collapse_selected();
-        assert!(state.expanded_path().is_none());
-    }
-
-    #[test]
     fn test_accessors() {
         let files = vec![make_entry("a.rs", 1, 0), make_entry("b.rs", 2, 1)];
         let state = AppState::new(files, Duration::from_millis(600), "main".to_string());
@@ -682,47 +519,7 @@ mod tests {
         assert_eq!(state.files()[0].path, "a.rs");
         assert_eq!(state.selected_index(), 0);
         assert_eq!(state.selected_path(), Some("a.rs".to_string()));
-        assert!(!state.is_expanded("a.rs"));
-        assert_eq!(state.diff_scroll(), 0);
         assert_eq!(state.refresh_count(), 0);
-    }
-
-    #[test]
-    fn test_expanded_diff_returns_cached() {
-        let files = vec![make_entry("a.rs", 1, 0)];
-        let mut state = AppState::new(files, Duration::from_millis(600), "main".to_string());
-
-        assert!(state.expanded_diff().is_none());
-
-        let diff = FileDiff {
-            hunks: vec![crate::git::DiffHunk {
-                header: "@@ test @@".to_string(),
-                lines: vec![],
-            }],
-        };
-        state.expand_selected(diff);
-
-        let cached = state.expanded_diff().unwrap();
-        assert_eq!(cached.hunks.len(), 1);
-        assert_eq!(cached.hunks[0].header, "@@ test @@");
-    }
-
-    #[test]
-    fn test_scroll_diff() {
-        let files = vec![make_entry("a.rs", 1, 0)];
-        let mut state = AppState::new(files, Duration::from_millis(600), "main".to_string());
-
-        assert_eq!(state.diff_scroll(), 0);
-        state.scroll_diff_down();
-        assert_eq!(state.diff_scroll(), 1);
-        state.scroll_diff_down();
-        assert_eq!(state.diff_scroll(), 2);
-        state.scroll_diff_up();
-        assert_eq!(state.diff_scroll(), 1);
-        state.scroll_diff_up();
-        assert_eq!(state.diff_scroll(), 0);
-        state.scroll_diff_up(); // should clamp at 0
-        assert_eq!(state.diff_scroll(), 0);
     }
 
     #[test]
@@ -749,18 +546,6 @@ mod tests {
         // Shrink to 1 file — selection should clamp
         state.update_files(vec![make_entry("x.rs", 1, 1)]);
         assert_eq!(state.selected_index(), 0);
-    }
-
-    #[test]
-    fn test_update_collapses_when_expanded_file_removed() {
-        let files = vec![make_entry("a.rs", 1, 0)];
-        let mut state = AppState::new(files, Duration::from_millis(600), "main".to_string());
-        state.expand_selected(FileDiff::default());
-        assert!(state.expanded_path().is_some());
-
-        // Update with a list that doesn't contain a.rs
-        state.update_files(vec![make_entry("b.rs", 2, 0)]);
-        assert!(state.expanded_path().is_none());
     }
 
     #[test]
@@ -815,21 +600,6 @@ mod tests {
         // Sleep just past the flash duration
         std::thread::sleep(Duration::from_millis(5));
         assert!(!state.is_flashing("a.rs"));
-    }
-
-    #[test]
-    fn test_diff_cache_invalidated_on_file_removal() {
-        let files = vec![make_entry("a.rs", 1, 0), make_entry("b.rs", 2, 1)];
-        let mut state = AppState::new(files, Duration::from_millis(600), "main".to_string());
-
-        // Expand a.rs to populate cache
-        state.expand_selected(FileDiff::default());
-        assert!(state.expanded_diff().is_some());
-
-        // Remove a.rs from file list
-        state.update_files(vec![make_entry("b.rs", 2, 1)]);
-        // expanded should be collapsed and diff cache cleared for a.rs
-        assert!(state.expanded_path().is_none());
     }
 
     #[test]
@@ -910,16 +680,6 @@ mod tests {
     }
 
     #[test]
-    fn test_overlay_visibility() {
-        let mut state = AppState::new(vec![], Duration::from_millis(600), "main".to_string());
-        assert!(!state.is_overlay_visible());
-        state.show_overlay();
-        assert!(state.is_overlay_visible());
-        state.hide_overlay();
-        assert!(!state.is_overlay_visible());
-    }
-
-    #[test]
     fn test_help_visible_default_false() {
         let s = AppState::new(vec![], Duration::from_millis(600), "main".to_string());
         assert!(!s.is_help_visible());
@@ -932,44 +692,6 @@ mod tests {
         assert!(s.is_help_visible());
         s.hide_help();
         assert!(!s.is_help_visible());
-    }
-
-    #[test]
-    fn test_hide_overlay_sets_needs_clear() {
-        let mut s = AppState::new(vec![], Duration::from_millis(600), "main".to_string());
-        s.show_overlay();
-        assert!(
-            !s.take_needs_clear(),
-            "opening the overlay must not request a clear"
-        );
-        s.hide_overlay();
-        assert!(
-            s.take_needs_clear(),
-            "dismissing the overlay must request one full clear"
-        );
-        assert!(
-            !s.take_needs_clear(),
-            "take_needs_clear must reset the flag"
-        );
-    }
-
-    #[test]
-    fn test_hide_help_sets_needs_clear() {
-        let mut s = AppState::new(vec![], Duration::from_millis(600), "main".to_string());
-        s.show_help();
-        let _ = s.take_needs_clear();
-        s.hide_help();
-        assert!(s.take_needs_clear());
-    }
-
-    #[test]
-    fn test_show_help_hides_diff_overlay() {
-        let mut s = AppState::new(vec![], Duration::from_millis(600), "main".to_string());
-        s.show_overlay();
-        assert!(s.is_overlay_visible());
-        s.show_help();
-        assert!(s.is_help_visible());
-        assert!(!s.is_overlay_visible());
     }
 
     #[test]
@@ -1009,10 +731,9 @@ mod tests {
     }
 
     #[test]
-    fn test_reset_clears_overlay_and_pr() {
+    fn test_reset_clears_pr() {
         let files = vec![make_entry("a.rs", 1, 0)];
         let mut state = AppState::new(files, Duration::from_millis(600), "main".to_string());
-        state.show_overlay();
         state.set_pr_info(PrDisplayInfo {
             number: 1,
             title: "t".to_string(),
@@ -1033,7 +754,6 @@ mod tests {
             url: String::new(),
         });
         state.reset_for_switch(vec![], "main".to_string(), "r".to_string(), "w".to_string());
-        assert!(!state.is_overlay_visible());
         assert!(state.pr_state().info.is_none());
     }
 
@@ -1106,7 +826,6 @@ mod tests {
         let files = vec![make_entry("a.rs", 1, 0), make_entry("b.rs", 2, 1)];
         let mut state = AppState::new(files, Duration::from_millis(600), "main".to_string());
         state.select_next(); // select b.rs
-        state.expand_selected(FileDiff::default());
         state.set_repo_name("old-repo".to_string());
         state.set_worktree_name("old-wt".to_string());
 
@@ -1119,26 +838,12 @@ mod tests {
         );
 
         assert_eq!(state.selected_index(), 0);
-        assert!(state.expanded_path().is_none());
         assert_eq!(state.files().len(), 1);
         assert_eq!(state.files()[0].path, "c.rs");
         assert_eq!(state.branch(), "feature");
         assert_eq!(state.repo_name(), "new-repo");
         assert_eq!(state.worktree_name(), "new-wt");
         assert_eq!(state.refresh_count(), 0);
-    }
-
-    #[test]
-    fn diff_token_is_monotonic() {
-        let mut s = AppState::new(vec![], Duration::from_millis(600), "main".to_string());
-        assert_eq!(s.pending_diff_token(), 0);
-        let t1 = s.next_diff_token();
-        let t2 = s.next_diff_token();
-        let t3 = s.next_diff_token();
-        assert_eq!(t1, 1);
-        assert_eq!(t2, 2);
-        assert_eq!(t3, 3);
-        assert_eq!(s.pending_diff_token(), 3);
     }
 
     #[test]
@@ -1149,57 +854,5 @@ mod tests {
         assert!(s.is_computing());
         s.set_computing(false);
         assert!(!s.is_computing());
-    }
-
-    #[test]
-    fn expand_selected_with_path_stores_diff_independent_of_selection() {
-        use crate::git::FileDiff;
-        let files = vec![
-            FileEntry {
-                path: "a.rs".to_string(),
-                status: FileStatus::Modified,
-                insertions: 0,
-                deletions: 0,
-            },
-            FileEntry {
-                path: "b.rs".to_string(),
-                status: FileStatus::Modified,
-                insertions: 0,
-                deletions: 0,
-            },
-        ];
-        let mut s = AppState::new(files, Duration::from_millis(600), "main".to_string());
-
-        // Selection is a.rs (index 0); deliver a diff for b.rs.
-        assert_eq!(s.selected_index(), 0);
-        s.expand_selected_with_path("b.rs".to_string(), FileDiff::default());
-
-        assert_eq!(s.expanded_path(), Some("b.rs"));
-        assert!(s.expanded_diff().is_some());
-    }
-
-    #[test]
-    fn expand_selected_with_path_resets_diff_scroll() {
-        use crate::git::FileDiff;
-        let files = vec![FileEntry {
-            path: "a.rs".to_string(),
-            status: FileStatus::Modified,
-            insertions: 0,
-            deletions: 0,
-        }];
-        let mut s = AppState::new(files, Duration::from_millis(600), "main".to_string());
-        s.scroll_diff_down();
-        s.scroll_diff_down();
-        s.scroll_diff_down();
-        assert!(
-            s.diff_scroll() > 0,
-            "diff_scroll should be non-zero after scrolling"
-        );
-        s.expand_selected_with_path("a.rs".to_string(), FileDiff::default());
-        assert_eq!(
-            s.diff_scroll(),
-            0,
-            "expand_selected_with_path must reset diff_scroll"
-        );
     }
 }

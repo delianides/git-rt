@@ -205,3 +205,66 @@ fn parse_count(bytes: &[u8]) -> usize {
         .and_then(|s| s.parse::<usize>().ok())
         .unwrap_or(0)
 }
+
+/// Merge status and numstat outputs into a sorted `Vec<FileEntry>`.
+///
+/// `repo_root` is used to resolve untracked-file paths so we can read the
+/// file from disk and count lines (treated as insertions, matching the
+/// pre-existing `branch_status` behavior).
+///
+/// Output is sorted by `path` ascending — matches the contract of the old
+/// `branch_status` / `status` implementations.
+pub fn merge_status_and_numstat(
+    status: Vec<(String, FileStatus)>,
+    numstat: Vec<(String, usize, usize)>,
+    repo_root: &Path,
+) -> Vec<FileEntry> {
+    use std::collections::HashMap;
+
+    // Index numstat by path for O(1) lookup.
+    let mut numstat_map: HashMap<String, (usize, usize)> = numstat
+        .into_iter()
+        .map(|(p, ins, del)| (p, (ins, del)))
+        .collect();
+
+    let mut entries: Vec<FileEntry> = status
+        .into_iter()
+        .map(|(path, fs_status)| {
+            let (insertions, deletions) = if let Some((ins, del)) = numstat_map.remove(&path) {
+                (ins, del)
+            } else if matches!(fs_status, FileStatus::Untracked) {
+                // Untracked files have no numstat entry — read from disk to
+                // count lines (synthetic "all-additions" diff).
+                let abs = repo_root.join(&path);
+                let lines = std::fs::read_to_string(&abs)
+                    .map(|s| s.lines().count())
+                    .unwrap_or(0);
+                (lines, 0)
+            } else {
+                (0, 0)
+            };
+
+            FileEntry {
+                path,
+                status: fs_status,
+                insertions,
+                deletions,
+            }
+        })
+        .collect();
+
+    // Defensive: if numstat reported something with no matching status entry
+    // (race condition between the two `git` calls), surface it as Modified
+    // so it doesn't silently disappear.
+    for (path, (insertions, deletions)) in numstat_map {
+        entries.push(FileEntry {
+            path,
+            status: FileStatus::Modified,
+            insertions,
+            deletions,
+        });
+    }
+
+    entries.sort_by(|a, b| a.path.cmp(&b.path));
+    entries
+}

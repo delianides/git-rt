@@ -1,5 +1,4 @@
 use std::path::{Path, PathBuf};
-use std::process::Command;
 
 use anyhow::Result;
 use thiserror::Error;
@@ -51,6 +50,7 @@ pub fn discover_worktree_root(start: &Path) -> Result<PathBuf, DiscoverError> {
     }
 }
 
+pub mod cli;
 pub mod worker;
 
 /// Status of a file relative to the git index/HEAD
@@ -198,102 +198,11 @@ impl GitRepo {
         }
     }
 
-    /// Compute the current status of all changed files with numstat.
-    ///
-    /// Uses gix's index-worktree iterator to discover unstaged/untracked
-    /// changes, and shells out to `git diff --cached --numstat` for staged
-    /// changes (tree-vs-index). Any failure from either source is reported
-    /// as [`GitFailure::EnvChange`] so callers can hold the previous state
-    /// rather than crashing during a transient git env change (worktree
-    /// being cleaned up, index.lock, mid-rebase, etc.).
+    /// Compute the current status of all changed files with numstat,
+    /// relative to HEAD (no base branch). Delegates to `git status --porcelain=v2`
+    /// + `git diff --numstat` via [`crate::git::cli::compute_status_files`].
     pub fn status(&self) -> Result<Vec<FileEntry>, GitFailure> {
-        use std::collections::HashMap;
-
-        // Map of path -> (insertions, deletions) merged across all sources.
-        let mut stats: HashMap<String, (usize, usize)> = HashMap::new();
-        // Map of path -> FileStatus. Staged entries recorded first, then
-        // unstaged worktree changes can override (or augment) them.
-        let mut statuses: HashMap<String, FileStatus> = HashMap::new();
-
-        // --- 1. Staged changes: tree vs index (via shell-out, wrapped). ---
-        // gix 0.68 does not ship a tree-to-index iterator, so we retain a
-        // minimal shell-out here but wrap errors as EnvChange.
-        let cached_numstat_output = Command::new("git")
-            .args(["diff", "--cached", "--numstat"])
-            .current_dir(&self.repo_path)
-            .output()
-            .map_err(|e| GitFailure::EnvChange(format!("git diff --cached --numstat: {e}")))?;
-
-        if cached_numstat_output.status.success() {
-            let cached = String::from_utf8_lossy(&cached_numstat_output.stdout);
-            for line in cached.lines() {
-                let parts: Vec<&str> = line.split('\t').collect();
-                if parts.len() >= 3 {
-                    let ins = parts[0].parse::<usize>().unwrap_or(0);
-                    let del = parts[1].parse::<usize>().unwrap_or(0);
-                    let path = parts[2].to_string();
-                    let entry = stats.entry(path.clone()).or_insert((0, 0));
-                    entry.0 += ins;
-                    entry.1 += del;
-                    statuses.entry(path).or_insert(FileStatus::Staged);
-                }
-            }
-        }
-        // Non-success exit (e.g. mid-rebase): treat as no staged changes
-        // rather than failing the whole status call.
-
-        // --- 2. Unstaged changes: index vs worktree (via gix). ---
-        let platform = self
-            .repo
-            .status(gix::progress::Discard)
-            .map_err(|e| GitFailure::EnvChange(format!("status platform: {e}")))?;
-
-        let iter = platform
-            .into_index_worktree_iter(Vec::<gix::bstr::BString>::new())
-            .map_err(|e| GitFailure::EnvChange(format!("status iter: {e}")))?;
-
-        for item_res in iter {
-            let item = match item_res {
-                Ok(item) => item,
-                Err(e) => return Err(GitFailure::EnvChange(format!("status item: {e}"))),
-            };
-
-            let (path, file_status) = match classify_status_item(&item) {
-                Some(pair) => pair,
-                None => continue,
-            };
-
-            // Compute line counts (best-effort).
-            let (insertions, deletions) =
-                compute_line_counts(&self.repo, &path, &self.repo_path).unwrap_or((0, 0));
-
-            // Merge into maps. Worktree-level status generally wins over a
-            // previous "Staged" record (e.g., a file that is both staged and
-            // further modified should display as Modified).
-            statuses.insert(path.clone(), file_status);
-            let stats_entry = stats.entry(path).or_insert((0, 0));
-            stats_entry.0 += insertions;
-            stats_entry.1 += deletions;
-        }
-
-        // --- 3. Build FileEntry list. ---
-        let mut entries: Vec<FileEntry> = statuses
-            .into_iter()
-            .map(|(path, status)| {
-                let (insertions, deletions) = stats.get(&path).copied().unwrap_or((0, 0));
-                FileEntry {
-                    path,
-                    status,
-                    insertions,
-                    deletions,
-                }
-            })
-            .collect();
-
-        entries.sort_by(|a, b| a.path.cmp(&b.path));
-        entries.dedup_by(|a, b| a.path == b.path);
-
-        Ok(entries)
+        crate::git::cli::compute_status_files(&self.repo_path, None)
     }
 
     /// Compute the unified diff for a single file.
@@ -609,176 +518,14 @@ impl GitRepo {
         None
     }
 
-    /// Compute file status for all changes between a merge base commit and the
-    /// current working tree (committed + uncommitted on this branch).
+    /// Compute the file list for the branch view: union of committed changes
+    /// (vs `merge_base`) and uncommitted changes (vs HEAD), with untracked
+    /// files included.
     ///
-    /// 1. Loads the merge base commit tree and collects all blobs into a map.
-    /// 2. Compares each blob against the current worktree file.
-    /// 3. Adds files that are new on this branch (not in the merge base).
+    /// Delegates to `git diff --numstat <merge_base>` + `git status --porcelain=v2`
+    /// via [`crate::git::cli::compute_status_files`].
     pub fn branch_status(&self, merge_base: gix::ObjectId) -> Result<Vec<FileEntry>, GitFailure> {
-        use std::collections::HashMap;
-        use std::ops::ControlFlow;
-
-        let work_dir = match self.repo.workdir() {
-            Some(d) => d.to_path_buf(),
-            None => return Ok(vec![]),
-        };
-
-        // Resolve mb tree.
-        let mb_tree = self
-            .repo
-            .find_object(merge_base)
-            .map_err(|e| GitFailure::EnvChange(format!("branch_status find merge base: {e}")))?
-            .try_into_commit()
-            .map_err(|e| GitFailure::EnvChange(format!("branch_status into commit: {e}")))?
-            .tree()
-            .map_err(|e| GitFailure::EnvChange(format!("branch_status mb tree: {e}")))?;
-
-        // HEAD tree may be unavailable for unborn-branch repos. If so, fall
-        // back to status()-only via the let-some.
-        let head_tree = self.repo.head_commit().ok().and_then(|c| c.tree().ok());
-
-        // Single tree-diff pass populates BOTH:
-        // - mb_blobs: path -> mb blob id, for files that exist in mb (Deletion
-        //   or Modification entries — i.e., the mb-side blob is known).
-        // - added_on_branch: paths added in HEAD relative to mb (no mb blob).
-        let mut mb_blobs: HashMap<String, gix::ObjectId> = HashMap::new();
-        let mut added_on_branch: Vec<String> = Vec::new();
-
-        if let Some(ref head_tree) = head_tree {
-            let mut platform = mb_tree
-                .changes()
-                .map_err(|e| GitFailure::EnvChange(format!("branch_status changes: {e}")))?;
-            // Disable rename tracking so renames look like delete+add (matches
-            // pre-existing behavior of the old O(N) implementation).
-            platform.options(|opts| {
-                opts.track_rewrites(None);
-            });
-            platform
-                .for_each_to_obtain_tree(
-                    head_tree,
-                    |change| -> Result<_, std::convert::Infallible> {
-                        use gix::object::tree::diff::Change;
-                        match change {
-                            Change::Addition { location, .. } => {
-                                added_on_branch.push(location.to_string());
-                            }
-                            Change::Deletion { location, id, .. } => {
-                                mb_blobs.insert(location.to_string(), id.detach());
-                            }
-                            Change::Modification {
-                                location,
-                                previous_id,
-                                ..
-                            } => {
-                                mb_blobs.insert(location.to_string(), previous_id.detach());
-                            }
-                            Change::Rewrite { .. } => {
-                                // Rewrites are disabled above; reachable only if gix
-                                // ignores the option, in which case treat as no-op.
-                            }
-                        }
-                        Ok(ControlFlow::Continue(()))
-                    },
-                )
-                .map_err(|e| GitFailure::EnvChange(format!("branch_status for_each: {e}")))?;
-        }
-
-        // Worktree status (uncommitted + untracked).
-        let wt_status = self.status().unwrap_or_default();
-
-        // Build entries.
-        let mut entries: HashMap<String, FileEntry> = HashMap::new();
-
-        // 1) Paths in mb (Modified or Deletion in tree-diff).
-        for (path, blob_id) in &mb_blobs {
-            let worktree_path = work_dir.join(path);
-            let mb_text = match self.repo.find_object(*blob_id) {
-                Ok(b) => String::from_utf8_lossy(&b.data).into_owned(),
-                Err(_) => String::new(),
-            };
-
-            if worktree_path.exists() {
-                let wt_text = match std::fs::read_to_string(&worktree_path) {
-                    Ok(t) => t,
-                    // Binary or unreadable file: skip rather than report wrong numstat.
-                    // Matches pre-rewrite behavior.
-                    Err(_) => continue,
-                };
-                if mb_text != wt_text {
-                    let (ins, del) = count_line_changes(&mb_text, &wt_text);
-                    entries.insert(
-                        path.clone(),
-                        FileEntry {
-                            path: path.clone(),
-                            status: FileStatus::Modified,
-                            insertions: ins,
-                            deletions: del,
-                        },
-                    );
-                }
-            } else {
-                let del = mb_text.lines().count();
-                entries.insert(
-                    path.clone(),
-                    FileEntry {
-                        path: path.clone(),
-                        status: FileStatus::Deleted,
-                        insertions: 0,
-                        deletions: del,
-                    },
-                );
-            }
-        }
-
-        // 2) Paths added on this branch (in HEAD, not in mb).
-        for path in &added_on_branch {
-            if entries.contains_key(path) {
-                continue;
-            }
-            let worktree_path = work_dir.join(path);
-            if !worktree_path.exists() {
-                continue;
-            }
-            let wt_text = match std::fs::read_to_string(&worktree_path) {
-                Ok(t) => t,
-                // Binary or unreadable file: skip rather than report 0 insertions.
-                // Matches pre-rewrite behavior.
-                Err(_) => continue,
-            };
-            entries.insert(
-                path.clone(),
-                FileEntry {
-                    path: path.clone(),
-                    status: FileStatus::Added,
-                    insertions: wt_text.lines().count(),
-                    deletions: 0,
-                },
-            );
-        }
-
-        // 3) Worktree-only entries (uncommitted, including untracked).
-        for wt_entry in &wt_status {
-            if entries.contains_key(&wt_entry.path) {
-                continue;
-            }
-            if !mb_blobs.contains_key(&wt_entry.path) {
-                let mut entry = wt_entry.clone();
-                if entry.status != FileStatus::Untracked {
-                    entry.status = FileStatus::Added;
-                }
-                let worktree_path = work_dir.join(&entry.path);
-                if let Ok(content) = std::fs::read_to_string(&worktree_path) {
-                    entry.insertions = content.lines().count();
-                    entry.deletions = 0;
-                }
-                entries.insert(entry.path.clone(), entry);
-            }
-        }
-
-        let mut result: Vec<FileEntry> = entries.into_values().collect();
-        result.sort_by(|a, b| a.path.cmp(&b.path));
-        Ok(result)
+        crate::git::cli::compute_status_files(&self.repo_path, Some(&merge_base))
     }
 
     /// Compute the unified diff for a single file between the merge base
@@ -1032,102 +779,6 @@ fn synthesize_deletion_diff(old: &str) -> FileDiff {
     }
 }
 
-/// Classify a gix index-worktree status item into our (path, FileStatus).
-/// Returns `None` for items we don't want to show (e.g., NeedsUpdate
-/// bookkeeping items or tracked directory entries).
-fn classify_status_item(item: &gix::status::index_worktree::Item) -> Option<(String, FileStatus)> {
-    use gix::bstr::ByteSlice;
-    use gix::status::index_worktree::Item;
-    use gix::status::plumbing::index_as_worktree::{Change, EntryStatus};
-
-    let path = item.rela_path().to_str().ok()?.to_string();
-
-    let status = match item {
-        Item::Modification { status, .. } => match status {
-            EntryStatus::Conflict { .. } => FileStatus::Conflicted,
-            EntryStatus::Change(change) => match change {
-                Change::Removed => FileStatus::Deleted,
-                Change::Type { .. } => FileStatus::Modified,
-                Change::Modification { .. } => FileStatus::Modified,
-                Change::SubmoduleModification(_) => FileStatus::Modified,
-            },
-            // NeedsUpdate is internal bookkeeping only — skip.
-            EntryStatus::NeedsUpdate(_) => return None,
-            EntryStatus::IntentToAdd => FileStatus::Added,
-        },
-        Item::DirectoryContents { entry, .. } => {
-            // Only surface untracked directory-walk entries.
-            if matches!(entry.status, gix::dir::entry::Status::Untracked) {
-                FileStatus::Untracked
-            } else {
-                return None;
-            }
-        }
-        Item::Rewrite { .. } => FileStatus::Renamed,
-    };
-
-    Some((path, status))
-}
-
-/// Compute a best-effort (insertions, deletions) count for a single path by
-/// comparing the index blob to the on-disk worktree file. Returns `None` if
-/// the path is not in the index or files can't be read.
-///
-/// This is intentionally simple — it's a line-count approximation used only
-/// for display, not an exact match for `git diff --numstat` in all cases
-/// (e.g., it won't match on files with many identical lines), but it's fast
-/// and gets the common case right.
-fn compute_line_counts(
-    repo: &gix::Repository,
-    path: &str,
-    repo_path: &std::path::Path,
-) -> Option<(usize, usize)> {
-    let index = repo.index_or_empty().ok()?;
-    let path_bstr: &gix::bstr::BStr = path.as_bytes().into();
-    let entry = index.entry_by_path(path_bstr)?;
-
-    let blob = repo.find_object(entry.id).ok()?;
-    let index_text = std::str::from_utf8(&blob.data).ok()?;
-
-    let worktree_path = repo_path.join(path);
-    let worktree_text = std::fs::read_to_string(&worktree_path).ok()?;
-
-    Some(count_line_changes(index_text, &worktree_text))
-}
-
-/// Approximate line-change count: counts extra lines in `new` as insertions
-/// and extra lines in `old` as deletions using a multiset line comparison.
-fn count_line_changes(old: &str, new: &str) -> (usize, usize) {
-    use std::collections::HashMap;
-
-    let mut old_counts: HashMap<&str, i64> = HashMap::new();
-    for line in old.lines() {
-        *old_counts.entry(line).or_insert(0) += 1;
-    }
-    let mut new_counts: HashMap<&str, i64> = HashMap::new();
-    for line in new.lines() {
-        *new_counts.entry(line).or_insert(0) += 1;
-    }
-
-    let mut insertions = 0usize;
-    let mut deletions = 0usize;
-
-    for (line, &count) in &new_counts {
-        let old_count = old_counts.get(line).copied().unwrap_or(0);
-        if count > old_count {
-            insertions += (count - old_count) as usize;
-        }
-    }
-    for (line, &count) in &old_counts {
-        let new_count = new_counts.get(line).copied().unwrap_or(0);
-        if count > new_count {
-            deletions += (count - new_count) as usize;
-        }
-    }
-
-    (insertions, deletions)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1283,37 +934,6 @@ mod tests {
             assert!(!e.path.is_empty());
             assert!(!e.path.starts_with('/'));
         }
-    }
-
-    #[test]
-    fn test_count_line_changes_all_new() {
-        let (ins, del) = count_line_changes("", "a\nb\nc\n");
-        assert_eq!(ins, 3);
-        assert_eq!(del, 0);
-    }
-
-    #[test]
-    fn test_count_line_changes_all_removed() {
-        let (ins, del) = count_line_changes("a\nb\nc\n", "");
-        assert_eq!(ins, 0);
-        assert_eq!(del, 3);
-    }
-
-    #[test]
-    fn test_count_line_changes_mixed() {
-        let old = "line1\nline2\nline3\n";
-        let new = "line1\nline2-modified\nline3\nline4\n";
-        let (ins, del) = count_line_changes(old, new);
-        assert_eq!(ins, 2); // "line2-modified" + "line4"
-        assert_eq!(del, 1); // "line2"
-    }
-
-    #[test]
-    fn test_count_line_changes_unchanged() {
-        let text = "a\nb\nc\n";
-        let (ins, del) = count_line_changes(text, text);
-        assert_eq!(ins, 0);
-        assert_eq!(del, 0);
     }
 
     #[test]

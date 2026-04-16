@@ -6,12 +6,9 @@
 //! parallel walk). This module wraps the CLI call + numstat output and
 //! merges them into the existing `FileEntry` shape.
 
-#[allow(unused_imports)]
 use std::path::Path;
-#[allow(unused_imports)]
 use std::process::Command;
 
-#[allow(unused_imports)]
 use crate::git::{FileEntry, FileStatus, GitFailure};
 
 /// Parse `git status --porcelain=v2 -z` output into a list of
@@ -267,4 +264,73 @@ pub fn merge_status_and_numstat(
 
     entries.sort_by(|a, b| a.path.cmp(&b.path));
     entries
+}
+
+/// Run `git status` + `git diff --numstat` against `repo_path` and merge
+/// the results into a sorted `Vec<FileEntry>`.
+///
+/// `base_ref`:
+///   - `Some(oid)` → branch view: numstat is `git diff --numstat -z <oid>`,
+///     which gives the merge-base-to-worktree union (committed
+///     on this branch + uncommitted) in one shot.
+///   - `None` → non-branch view: numstat is `git diff --numstat -z`,
+///     which gives HEAD-to-worktree (staged + unstaged).
+///
+/// Both invocations include `-c core.quotePath=false` so non-ASCII paths
+/// come through unquoted and parse cleanly under `-z`.
+///
+/// Errors map to [`GitFailure::EnvChange`] so the worker can log and the
+/// app can hold its previous state during transient git env changes.
+pub fn compute_status_files(
+    repo_path: &Path,
+    base_ref: Option<&gix::ObjectId>,
+) -> Result<Vec<FileEntry>, GitFailure> {
+    let status_bytes = run_status(repo_path)?;
+    let numstat_bytes = run_numstat(repo_path, base_ref)?;
+    let status = parse_porcelain_v2(&status_bytes);
+    let numstat = parse_numstat(&numstat_bytes);
+    Ok(merge_status_and_numstat(status, numstat, repo_path))
+}
+
+fn run_status(repo_path: &Path) -> Result<Vec<u8>, GitFailure> {
+    let out = Command::new("git")
+        .current_dir(repo_path)
+        .args([
+            "-c",
+            "core.quotePath=false",
+            "status",
+            "--porcelain=v2",
+            "-z",
+            "--untracked-files=normal",
+        ])
+        .output()
+        .map_err(|e| GitFailure::EnvChange(format!("git status spawn: {e}")))?;
+    if !out.status.success() {
+        return Err(GitFailure::EnvChange(format!(
+            "git status exit {}: {}",
+            out.status,
+            String::from_utf8_lossy(&out.stderr)
+        )));
+    }
+    Ok(out.stdout)
+}
+
+fn run_numstat(repo_path: &Path, base_ref: Option<&gix::ObjectId>) -> Result<Vec<u8>, GitFailure> {
+    let mut cmd = Command::new("git");
+    cmd.current_dir(repo_path)
+        .args(["-c", "core.quotePath=false", "diff", "--numstat", "-z"]);
+    if let Some(oid) = base_ref {
+        cmd.arg(format!("{}", oid.to_hex()));
+    }
+    let out = cmd
+        .output()
+        .map_err(|e| GitFailure::EnvChange(format!("git diff spawn: {e}")))?;
+    if !out.status.success() {
+        return Err(GitFailure::EnvChange(format!(
+            "git diff exit {}: {}",
+            out.status,
+            String::from_utf8_lossy(&out.stderr)
+        )));
+    }
+    Ok(out.stdout)
 }

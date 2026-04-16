@@ -51,6 +51,7 @@ pub fn discover_worktree_root(start: &Path) -> Result<PathBuf, DiscoverError> {
     }
 }
 
+pub mod cli;
 pub mod worker;
 
 /// Status of a file relative to the git index/HEAD

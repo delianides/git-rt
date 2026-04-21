@@ -77,7 +77,7 @@ impl Terminal {
 // ── Main render entry point ──────────────────────────────────────────────────
 
 /// Top-level render function.
-fn render(frame: &mut Frame, state: &AppState, config: &AppConfig, theme: &Theme) {
+fn render(frame: &mut Frame, state: &mut AppState, config: &AppConfig, theme: &Theme) {
     let area = frame.area();
 
     let has_pr = pr_line::has_bottom_bar(state);
@@ -147,7 +147,7 @@ fn pr_border_color_from_state(state: &AppState, theme: &Theme) -> ratatui::style
 /// Render the file list.
 fn render_file_list(
     frame: &mut Frame,
-    state: &AppState,
+    state: &mut AppState,
     config: &AppConfig,
     theme: &Theme,
     area: Rect,
@@ -245,10 +245,65 @@ fn render_file_list(
 
     let list = List::new(items)
         .block(Block::default().borders(Borders::NONE))
-        .highlight_style(highlight);
+        .highlight_style(highlight)
+        .scroll_padding(config.display.scroll_padding);
 
-    let mut list_state = ListState::default();
-    list_state.select(Some(selected_list_index));
+    let mut list_state = ListState::default()
+        .with_offset(state.scroll_offset())
+        .with_selected(Some(selected_list_index));
 
     frame.render_stateful_widget(list, area, &mut list_state);
+
+    state.set_scroll_offset(list_state.offset());
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::git::{FileEntry, FileStatus};
+    use crate::theme::load_theme;
+    use ratatui::backend::TestBackend;
+    use std::time::Duration;
+
+    fn make_entry(path: &str) -> FileEntry {
+        FileEntry {
+            path: path.to_string(),
+            status: FileStatus::Modified,
+            insertions: 1,
+            deletions: 1,
+        }
+    }
+
+    #[test]
+    fn test_render_persists_scroll_offset() {
+        // 50 files, selection at index 45, viewport ~22 rows (20 content + borders).
+        let files: Vec<FileEntry> = (0..50)
+            .map(|i| make_entry(&format!("file_{i:02}.rs")))
+            .collect();
+        let mut state = AppState::new(files, Duration::from_millis(600), "main".to_string());
+        for _ in 0..45 {
+            state.select_next();
+        }
+        assert_eq!(state.selected_index(), 45);
+
+        let mut config = AppConfig::default();
+        config.display.scroll_padding = 3;
+        let theme = load_theme(crate::theme::DEFAULT_THEME_NAME, None);
+
+        let backend = TestBackend::new(40, 22);
+        let mut terminal = ratatui::Terminal::new(backend).unwrap();
+        terminal
+            .draw(|frame| render(frame, &mut state, &config, &theme))
+            .unwrap();
+
+        // With selection=45 and scroll_padding=3 in a ~19-row content area,
+        // offset must be > 0 (cannot show selection=45 starting at offset=0)
+        // and must be small enough that selection+padding (48) is still visible.
+        let offset = state.scroll_offset();
+        assert!(offset > 0, "offset should scroll forward, got {offset}");
+        assert!(
+            offset + 19 > 48,
+            "selection+padding must be in viewport, offset={offset}"
+        );
+    }
 }

@@ -132,6 +132,11 @@ pub struct AppState {
     merge_base: Option<gix::ObjectId>,
     /// Resolved base branch name
     base_branch: String,
+    /// Viewport offset into the file list. Persisted across renders so
+    /// ratatui's `List::scroll_padding` can maintain sticky scroll behavior.
+    /// Mutated in place by the widget during `render_stateful_widget` and
+    /// read back by the render function.
+    scroll_offset: usize,
 }
 
 impl AppState {
@@ -161,6 +166,7 @@ impl AppState {
             border_flash_until: None,
             merge_base: None,
             base_branch: String::new(),
+            scroll_offset: 0,
         }
     }
 
@@ -176,6 +182,14 @@ impl AppState {
 
     pub fn selected_path(&self) -> Option<String> {
         self.files.get(self.selected).map(|f| f.path.clone())
+    }
+
+    pub fn scroll_offset(&self) -> usize {
+        self.scroll_offset
+    }
+
+    pub fn set_scroll_offset(&mut self, offset: usize) {
+        self.scroll_offset = offset;
     }
 
     pub fn refresh_count(&self) -> usize {
@@ -405,6 +419,7 @@ impl AppState {
         self.border_flash_until = Some(Instant::now() + self.flash_duration);
         self.merge_base = None;
         self.base_branch.clear();
+        self.scroll_offset = 0;
     }
 
     /// Update the file list from a fresh git status computation.
@@ -452,6 +467,12 @@ impl AppState {
         } else {
             self.selected = self.selected.min(self.files.len().saturating_sub(1));
         }
+
+        // `scroll_offset` is intentionally not reset here. ratatui's
+        // `get_items_bounds` clamps any stale offset against the new list
+        // length on the next render, and the render path writes the corrected
+        // value back via `set_scroll_offset`. Resetting to 0 here would cause
+        // a one-frame viewport jump on every FS recompute.
     }
 }
 
@@ -854,5 +875,37 @@ mod tests {
         assert!(s.is_computing());
         s.set_computing(false);
         assert!(!s.is_computing());
+    }
+
+    #[test]
+    fn test_scroll_offset_default_and_roundtrip() {
+        let mut state = AppState::new(
+            vec![make_entry("a.rs", 1, 0)],
+            Duration::from_millis(600),
+            "main".to_string(),
+        );
+        assert_eq!(state.scroll_offset(), 0);
+
+        state.set_scroll_offset(17);
+        assert_eq!(state.scroll_offset(), 17);
+    }
+
+    #[test]
+    fn test_reset_for_switch_clears_scroll_offset() {
+        let mut state = AppState::new(
+            vec![make_entry("a.rs", 1, 0)],
+            Duration::from_millis(600),
+            "main".to_string(),
+        );
+        state.set_scroll_offset(42);
+        assert_eq!(state.scroll_offset(), 42);
+
+        state.reset_for_switch(
+            vec![make_entry("b.rs", 1, 0)],
+            "other".to_string(),
+            "repo".to_string(),
+            "wt".to_string(),
+        );
+        assert_eq!(state.scroll_offset(), 0);
     }
 }

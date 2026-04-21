@@ -49,6 +49,10 @@ pub struct DisplayConfig {
     pub flash_on_change: bool,
     /// Duration in milliseconds for the flash effect
     pub flash_duration_ms: u64,
+    /// Rows of context kept visible above and below the selected row in the
+    /// file list. 0 disables the feature. Clamped to `(viewport - 1) / 2` at
+    /// runtime by ratatui.
+    pub scroll_padding: usize,
 }
 
 impl Default for DisplayConfig {
@@ -57,6 +61,7 @@ impl Default for DisplayConfig {
             context_lines: 3,
             flash_on_change: true,
             flash_duration_ms: 600,
+            scroll_padding: 3,
         }
     }
 }
@@ -160,6 +165,7 @@ mod tests {
         assert_eq!(config.display.context_lines, 3);
         assert!(config.display.flash_on_change);
         assert_eq!(config.display.flash_duration_ms, 600);
+        assert_eq!(config.display.scroll_padding, 3);
     }
 
     #[test]
@@ -230,6 +236,33 @@ layout = "right"
         assert!(config.display.flash_on_change);
         assert!(config.pr.enabled);
         assert!(config.pr.layout.is_none());
+        assert_eq!(config.display.scroll_padding, 3);
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn test_load_scroll_padding_zero() {
+        let dir = std::env::temp_dir().join("git-rt-test-config-scroll-padding-zero");
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("config.toml");
+        std::fs::write(&path, "[display]\nscroll_padding = 0\n").unwrap();
+
+        let config = AppConfig::load(Some(&path)).unwrap();
+        assert_eq!(config.display.scroll_padding, 0);
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn test_load_scroll_padding_custom() {
+        let dir = std::env::temp_dir().join("git-rt-test-config-scroll-padding-custom");
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("config.toml");
+        std::fs::write(&path, "[display]\nscroll_padding = 10\n").unwrap();
+
+        let config = AppConfig::load(Some(&path)).unwrap();
+        assert_eq!(config.display.scroll_padding, 10);
 
         std::fs::remove_dir_all(&dir).ok();
     }

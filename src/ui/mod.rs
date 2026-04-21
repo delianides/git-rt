@@ -163,6 +163,7 @@ fn render_file_list(
     let files = state.files();
 
     if files.is_empty() {
+        state.set_scroll_offset(0);
         if area.height < 2 || area.width < 20 {
             return;
         }
@@ -296,14 +297,15 @@ mod tests {
             .draw(|frame| render(frame, &mut state, &config, &theme))
             .unwrap();
 
-        // With selection=45 and scroll_padding=3 in a ~19-row content area,
-        // offset must be > 0 (cannot show selection=45 starting at offset=0)
-        // and must be small enough that selection+padding (48) is still visible.
+        // Terminal: 22 rows. Block border: 2 rows. Top-pad inside
+        // render_file_list: 1 row. Content area: 22 - 2 - 1 = 19 rows.
+        // With selection=45 and scroll_padding=3, the last visible row must
+        // be at index >= 48, so offset >= 48 - (19 - 1) = 30.
         let offset = state.scroll_offset();
         assert!(offset > 0, "offset should scroll forward, got {offset}");
         assert!(
-            offset + 19 > 48,
-            "selection+padding must be in viewport, offset={offset}"
+            offset >= 30,
+            "offset must keep selection+padding visible, got {offset}"
         );
     }
 }

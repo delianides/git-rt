@@ -467,6 +467,12 @@ impl AppState {
         } else {
             self.selected = self.selected.min(self.files.len().saturating_sub(1));
         }
+
+        // `scroll_offset` is intentionally not reset here. ratatui's
+        // `get_items_bounds` clamps any stale offset against the new list
+        // length on the next render, and the render path writes the corrected
+        // value back via `set_scroll_offset`. Resetting to 0 here would cause
+        // a one-frame viewport jump on every FS recompute.
     }
 }
 

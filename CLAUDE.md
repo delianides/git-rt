@@ -39,6 +39,7 @@ src/
 - Navigation via `j/k` or arrow keys
 - `Enter`, `l`, `Right`, `Space`, or `d` opens the selected file's diff in `git`'s configured pager
 - `q` quits
+- The viewport keeps a configurable `scroll_padding` of rows (default 3) visible above and below the selected row — set `display.scroll_padding` in `config.toml` to change it (`0` disables).
 
 ### Event Loop
 

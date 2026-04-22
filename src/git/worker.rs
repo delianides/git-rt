@@ -6,13 +6,44 @@
 //! the main thread sends [`Request`] messages and receives [`Response`]
 //! messages.
 
-use std::collections::VecDeque;
+use std::collections::{HashMap, VecDeque};
 use std::path::PathBuf;
 use std::thread::{self, JoinHandle};
 
 use crossbeam_channel::{Receiver, Sender};
 
 use crate::git::{FileEntry, GitRepo};
+
+/// Per-branch cache of detected base branch names. Owned by the worker
+/// run-loop; cleared on `SwitchRepo`. Stores `Option<String>` so a
+/// genuine "no base detectable" result is remembered and doesn't retrigger
+/// detection on every recompute.
+#[derive(Debug, Default)]
+pub(crate) struct BaseCache {
+    entries: HashMap<String, Option<String>>,
+}
+
+impl BaseCache {
+    pub(crate) fn new() -> Self {
+        Self::default()
+    }
+
+    pub(crate) fn get(&self, branch: &str) -> Option<&Option<String>> {
+        self.entries.get(branch)
+    }
+
+    pub(crate) fn insert(&mut self, branch: String, base: Option<String>) {
+        self.entries.insert(branch, base);
+    }
+
+    pub(crate) fn clear(&mut self) {
+        self.entries.clear();
+    }
+
+    pub(crate) fn is_empty(&self) -> bool {
+        self.entries.is_empty()
+    }
+}
 
 /// Requests the main thread sends to the worker.
 #[derive(Debug)]
@@ -299,5 +330,42 @@ mod tests {
 
         req_tx.send(Request::Shutdown).unwrap();
         handle.join().unwrap();
+    }
+
+    #[test]
+    fn base_cache_starts_empty() {
+        let cache = BaseCache::new();
+        assert!(cache.is_empty());
+    }
+
+    #[test]
+    fn base_cache_insert_and_get() {
+        let mut cache = BaseCache::new();
+        cache.insert("feature-b".to_string(), Some("feature-a".to_string()));
+        assert_eq!(
+            cache.get("feature-b"),
+            Some(Some("feature-a".to_string())).as_ref()
+        );
+    }
+
+    #[test]
+    fn base_cache_caches_none_result() {
+        let mut cache = BaseCache::new();
+        cache.insert("orphan".to_string(), None);
+        // `None` entry must be distinguishable from "not cached".
+        assert!(cache.get("orphan").is_some());
+        assert!(cache.get("orphan").unwrap().is_none());
+        assert!(cache.get("other").is_none());
+    }
+
+    #[test]
+    fn base_cache_clear_removes_all_entries() {
+        let mut cache = BaseCache::new();
+        cache.insert("a".to_string(), Some("main".to_string()));
+        cache.insert("b".to_string(), None);
+        cache.clear();
+        assert!(cache.is_empty());
+        assert!(cache.get("a").is_none());
+        assert!(cache.get("b").is_none());
     }
 }

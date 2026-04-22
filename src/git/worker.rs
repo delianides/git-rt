@@ -6,13 +6,48 @@
 //! the main thread sends [`Request`] messages and receives [`Response`]
 //! messages.
 
-use std::collections::VecDeque;
+use std::collections::{HashMap, VecDeque};
 use std::path::PathBuf;
 use std::thread::{self, JoinHandle};
 
 use crossbeam_channel::{Receiver, Sender};
 
 use crate::git::{FileEntry, GitRepo};
+
+/// Per-branch cache of detected base branch names. Owned by the worker
+/// run-loop; cleared on `SwitchRepo`. Stores `Option<String>` so a
+/// genuine "no base detectable" result is remembered and doesn't retrigger
+/// detection on every recompute.
+#[derive(Debug, Default)]
+pub(crate) struct BaseCache {
+    entries: HashMap<String, Option<String>>,
+}
+
+impl BaseCache {
+    pub(crate) fn new() -> Self {
+        Self::default()
+    }
+
+    pub(crate) fn get(&self, branch: &str) -> Option<&Option<String>> {
+        self.entries.get(branch)
+    }
+
+    pub(crate) fn insert(&mut self, branch: String, base: Option<String>) {
+        self.entries.insert(branch, base);
+    }
+
+    pub(crate) fn clear(&mut self) {
+        self.entries.clear();
+    }
+
+    // Used by tests (compute_status_with_explicit_override_skips_cache)
+    // to assert the explicit-override path doesn't populate the cache.
+    // clippy's lib-target dead-code analysis does not count test-only usage.
+    #[allow(dead_code)]
+    pub(crate) fn is_empty(&self) -> bool {
+        self.entries.is_empty()
+    }
+}
 
 /// Requests the main thread sends to the worker.
 #[derive(Debug)]
@@ -125,6 +160,8 @@ impl Worker {
             }
         };
 
+        let mut cache = BaseCache::new();
+
         loop {
             // Block on the next request.
             let first = match req_rx.recv() {
@@ -146,13 +183,18 @@ impl Worker {
             for req in queue {
                 match req {
                     Request::Recompute => {
-                        let bundle =
-                            compute_status(&git, base_override.as_deref(), config_base.as_deref());
+                        let bundle = compute_status(
+                            &git,
+                            base_override.as_deref(),
+                            config_base.as_deref(),
+                            &mut cache,
+                        );
                         let _ = resp_tx.send(Response::Status(Box::new(bundle)));
                     }
                     Request::SwitchRepo(new_path) => match GitRepo::new(&new_path) {
                         Ok(new_git) => {
                             git = new_git;
+                            cache.clear();
                             let _ = resp_tx.send(Response::SwitchAck(true));
                         }
                         Err(e) => {
@@ -170,12 +212,69 @@ impl Worker {
 /// Compute the same status bundle the old synchronous `handle_fs_change`
 /// produced. Errors degrade to an empty / default field rather than failing
 /// the whole bundle — mirrors current "best-effort" semantics.
+///
+/// `cache` is consulted / populated only when no explicit override is in
+/// play. Explicit overrides always short-circuit and bypass the cache.
 fn compute_status(
     git: &GitRepo,
     base_override: Option<&str>,
     config_base: Option<&str>,
+    cache: &mut BaseCache,
 ) -> StatusBundle {
-    let resolved_base = git.resolve_base_branch(base_override.or(config_base));
+    let current_branch = git.branch_name().unwrap_or_else(|_| "HEAD".to_string());
+
+    // Priority 1 + 2: explicit overrides short-circuit detection entirely.
+    if let Some(explicit) = base_override.or(config_base) {
+        tracing::debug!(
+            target: "git_rt::git::base_detect",
+            branch = %current_branch,
+            base = %explicit,
+            "explicit override active; skipping detection"
+        );
+        return compute_with_base(git, Some(explicit.to_string()), current_branch);
+    }
+
+    // Priority 3: cache hit.
+    let resolved_base: Option<String> = if let Some(cached) = cache.get(&current_branch) {
+        tracing::debug!(
+            target: "git_rt::git::base_detect",
+            branch = %current_branch,
+            base = ?cached.as_deref(),
+            "cache hit"
+        );
+        cached.clone()
+    } else {
+        // Priority 4: detect.
+        tracing::debug!(
+            target: "git_rt::git::base_detect",
+            branch = %current_branch,
+            "cache miss, detecting"
+        );
+        let detected = git
+            .detect_base_branch(&current_branch)
+            .filter(|s| !s.is_empty());
+        // Priority 5: resolve_base_branch fallback if detection gave up
+        // OR returned an empty string (defensive — should not happen).
+        let final_base = detected.or_else(|| {
+            tracing::debug!(
+                target: "git_rt::git::base_detect",
+                branch = %current_branch,
+                "fallback: delegating to resolve_base_branch"
+            );
+            git.resolve_base_branch(None)
+        });
+        cache.insert(current_branch.clone(), final_base.clone());
+        final_base
+    };
+
+    compute_with_base(git, resolved_base, current_branch)
+}
+
+fn compute_with_base(
+    git: &GitRepo,
+    resolved_base: Option<String>,
+    current_branch: String,
+) -> StatusBundle {
     let (merge_base, files) = match resolved_base.as_deref() {
         Some(base_name) => match git.merge_base(base_name) {
             Ok(Some(mb)) => match git.branch_status(mb) {
@@ -191,7 +290,7 @@ fn compute_status(
         files,
         merge_base,
         base_branch: resolved_base.unwrap_or_default(),
-        branch: git.branch_name().unwrap_or_else(|_| "HEAD".to_string()),
+        branch: current_branch,
         head: git.head_info().ok(),
         stash_count: git.stash_count().unwrap_or(0),
         ahead_behind: git.ahead_behind().unwrap_or(None),
@@ -273,7 +372,15 @@ mod tests {
             .status()
             .unwrap();
         std::process::Command::new("git")
-            .args(["commit", "--allow-empty", "-q", "-m", "init"])
+            .args([
+                "-c",
+                "commit.gpgsign=false",
+                "commit",
+                "--allow-empty",
+                "-q",
+                "-m",
+                "init",
+            ])
             .current_dir(&repo_path)
             .env("GIT_AUTHOR_NAME", "t")
             .env("GIT_AUTHOR_EMAIL", "t@t")
@@ -294,6 +401,263 @@ mod tests {
 
         match resp {
             Response::Status(_) => {} // success
+            other => panic!("expected Status, got {:?}", other),
+        }
+
+        req_tx.send(Request::Shutdown).unwrap();
+        handle.join().unwrap();
+    }
+
+    #[test]
+    fn base_cache_starts_empty() {
+        let cache = BaseCache::new();
+        assert!(cache.is_empty());
+    }
+
+    #[test]
+    fn base_cache_insert_and_get() {
+        let mut cache = BaseCache::new();
+        cache.insert("feature-b".to_string(), Some("feature-a".to_string()));
+        assert_eq!(
+            cache.get("feature-b"),
+            Some(Some("feature-a".to_string())).as_ref()
+        );
+    }
+
+    #[test]
+    fn base_cache_caches_none_result() {
+        let mut cache = BaseCache::new();
+        cache.insert("orphan".to_string(), None);
+        // `None` entry must be distinguishable from "not cached".
+        assert!(cache.get("orphan").is_some());
+        assert!(cache.get("orphan").unwrap().is_none());
+        assert!(cache.get("other").is_none());
+    }
+
+    #[test]
+    fn base_cache_clear_removes_all_entries() {
+        let mut cache = BaseCache::new();
+        cache.insert("a".to_string(), Some("main".to_string()));
+        cache.insert("b".to_string(), None);
+        cache.clear();
+        assert!(cache.is_empty());
+        assert!(cache.get("a").is_none());
+        assert!(cache.get("b").is_none());
+    }
+
+    #[test]
+    fn compute_status_populates_cache_on_miss() {
+        let tmp = tempfile::tempdir().unwrap();
+        let p = tmp.path();
+        let g = |args: &[&str]| {
+            let status = std::process::Command::new("git")
+                .args(args)
+                .current_dir(p)
+                .env("GIT_AUTHOR_NAME", "t")
+                .env("GIT_AUTHOR_EMAIL", "t@t")
+                .env("GIT_COMMITTER_NAME", "t")
+                .env("GIT_COMMITTER_EMAIL", "t@t")
+                .status()
+                .expect("git must run");
+            assert!(status.success(), "git {:?} failed", args);
+        };
+        g(&["init", "-q", "-b", "main"]);
+        g(&[
+            "-c",
+            "commit.gpgsign=false",
+            "commit",
+            "--allow-empty",
+            "-q",
+            "-m",
+            "m1",
+        ]);
+        g(&["checkout", "-q", "-b", "feature-a"]);
+        g(&[
+            "-c",
+            "commit.gpgsign=false",
+            "commit",
+            "--allow-empty",
+            "-q",
+            "-m",
+            "a1",
+        ]);
+
+        let git = GitRepo::new(p).unwrap();
+        let mut cache = BaseCache::new();
+        let bundle = compute_status(&git, None, None, &mut cache);
+        assert_eq!(bundle.base_branch, "main");
+        assert_eq!(
+            cache.get("feature-a"),
+            Some(Some("main".to_string())).as_ref(),
+            "detection result should be cached under the current branch"
+        );
+    }
+
+    #[test]
+    fn compute_status_hits_cache_and_skips_detection() {
+        let tmp = tempfile::tempdir().unwrap();
+        let p = tmp.path();
+        let g = |args: &[&str]| {
+            let status = std::process::Command::new("git")
+                .args(args)
+                .current_dir(p)
+                .env("GIT_AUTHOR_NAME", "t")
+                .env("GIT_AUTHOR_EMAIL", "t@t")
+                .env("GIT_COMMITTER_NAME", "t")
+                .env("GIT_COMMITTER_EMAIL", "t@t")
+                .status()
+                .expect("git must run");
+            assert!(status.success(), "git {:?} failed", args);
+        };
+        g(&["init", "-q", "-b", "main"]);
+        g(&[
+            "-c",
+            "commit.gpgsign=false",
+            "commit",
+            "--allow-empty",
+            "-q",
+            "-m",
+            "m1",
+        ]);
+        g(&["checkout", "-q", "-b", "feature-a"]);
+        g(&[
+            "-c",
+            "commit.gpgsign=false",
+            "commit",
+            "--allow-empty",
+            "-q",
+            "-m",
+            "a1",
+        ]);
+
+        // Pre-populate the cache with a distinctive fake base that
+        // detection would NEVER produce. If compute_status returns this
+        // value, we know the cache short-circuited detection.
+        let mut cache = BaseCache::new();
+        cache.insert(
+            "feature-a".to_string(),
+            Some("definitely-not-a-real-branch".to_string()),
+        );
+
+        let git = GitRepo::new(p).unwrap();
+        let bundle = compute_status(&git, None, None, &mut cache);
+
+        assert_eq!(
+            bundle.base_branch, "definitely-not-a-real-branch",
+            "cache should have short-circuited detection"
+        );
+    }
+
+    #[test]
+    fn compute_status_with_explicit_override_skips_cache() {
+        let tmp = tempfile::tempdir().unwrap();
+        let p = tmp.path();
+        let g = |args: &[&str]| {
+            let status = std::process::Command::new("git")
+                .args(args)
+                .current_dir(p)
+                .env("GIT_AUTHOR_NAME", "t")
+                .env("GIT_AUTHOR_EMAIL", "t@t")
+                .env("GIT_COMMITTER_NAME", "t")
+                .env("GIT_COMMITTER_EMAIL", "t@t")
+                .status()
+                .expect("git must run");
+            assert!(status.success(), "git {:?} failed", args);
+        };
+        g(&["init", "-q", "-b", "main"]);
+        g(&[
+            "-c",
+            "commit.gpgsign=false",
+            "commit",
+            "--allow-empty",
+            "-q",
+            "-m",
+            "m1",
+        ]);
+        g(&["checkout", "-q", "-b", "feature-a"]);
+        g(&[
+            "-c",
+            "commit.gpgsign=false",
+            "commit",
+            "--allow-empty",
+            "-q",
+            "-m",
+            "a1",
+        ]);
+
+        let git = GitRepo::new(p).unwrap();
+        let mut cache = BaseCache::new();
+        let bundle = compute_status(&git, Some("main"), None, &mut cache);
+        assert_eq!(bundle.base_branch, "main");
+        assert!(
+            cache.is_empty(),
+            "explicit override must not populate the cache"
+        );
+    }
+
+    #[test]
+    fn switch_repo_clears_base_cache() {
+        use crossbeam_channel::bounded;
+        use std::time::Duration;
+
+        // Build two tiny repos.
+        let tmp_a = tempfile::tempdir().unwrap();
+        let tmp_b = tempfile::tempdir().unwrap();
+        for dir in [tmp_a.path(), tmp_b.path()] {
+            let init_status = std::process::Command::new("git")
+                .args(["init", "-q", "-b", "main"])
+                .current_dir(dir)
+                .status()
+                .expect("git init must run");
+            assert!(init_status.success(), "git init failed in {:?}", dir);
+            let commit_status = std::process::Command::new("git")
+                .args([
+                    "-c",
+                    "commit.gpgsign=false",
+                    "commit",
+                    "--allow-empty",
+                    "-q",
+                    "-m",
+                    "init",
+                ])
+                .current_dir(dir)
+                .env("GIT_AUTHOR_NAME", "t")
+                .env("GIT_AUTHOR_EMAIL", "t@t")
+                .env("GIT_COMMITTER_NAME", "t")
+                .env("GIT_COMMITTER_EMAIL", "t@t")
+                .status()
+                .expect("git commit must run");
+            assert!(commit_status.success(), "git commit failed in {:?}", dir);
+        }
+
+        let (req_tx, req_rx) = bounded::<Request>(8);
+        let (resp_tx, resp_rx) = bounded::<Response>(8);
+        let handle = Worker::spawn(tmp_a.path().to_path_buf(), None, None, req_rx, resp_tx);
+
+        // First recompute populates cache for repo A.
+        req_tx.send(Request::Recompute).unwrap();
+        let _ = resp_rx.recv_timeout(Duration::from_secs(5)).unwrap();
+
+        // Switch to repo B — cache must be cleared so repo A's answer
+        // doesn't leak.
+        req_tx
+            .send(Request::SwitchRepo(tmp_b.path().to_path_buf()))
+            .unwrap();
+        let ack = resp_rx.recv_timeout(Duration::from_secs(5)).unwrap();
+        match ack {
+            Response::SwitchAck(true) => {}
+            other => panic!("expected SwitchAck(true), got {:?}", other),
+        }
+
+        // Recompute against B — must succeed without stale state.
+        req_tx.send(Request::Recompute).unwrap();
+        let resp = resp_rx.recv_timeout(Duration::from_secs(5)).unwrap();
+        match resp {
+            Response::Status(b) => {
+                // Repo B has no remote, so no base — but the key assertion
+                // is that no panic / stale data bled through.
+                assert_eq!(b.branch, "main");
+            }
             other => panic!("expected Status, got {:?}", other),
         }
 

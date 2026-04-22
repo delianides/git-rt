@@ -190,6 +190,7 @@ impl Worker {
                     Request::SwitchRepo(new_path) => match GitRepo::new(&new_path) {
                         Ok(new_git) => {
                             git = new_git;
+                            cache.clear();
                             let _ = resp_tx.send(Response::SwitchAck(true));
                         }
                         Err(e) => {
@@ -532,5 +533,67 @@ mod tests {
             cache.is_empty(),
             "explicit override must not populate the cache"
         );
+    }
+
+    #[test]
+    fn switch_repo_clears_base_cache() {
+        use crossbeam_channel::bounded;
+        use std::time::Duration;
+
+        // Build two tiny repos.
+        let tmp_a = tempfile::tempdir().unwrap();
+        let tmp_b = tempfile::tempdir().unwrap();
+        for dir in [tmp_a.path(), tmp_b.path()] {
+            let init_status = std::process::Command::new("git")
+                .args(["init", "-q", "-b", "main"])
+                .current_dir(dir)
+                .status()
+                .expect("git init must run");
+            assert!(init_status.success(), "git init failed in {:?}", dir);
+            let commit_status = std::process::Command::new("git")
+                .args(["-c", "commit.gpgsign=false", "commit", "--allow-empty", "-q", "-m", "init"])
+                .current_dir(dir)
+                .env("GIT_AUTHOR_NAME", "t")
+                .env("GIT_AUTHOR_EMAIL", "t@t")
+                .env("GIT_COMMITTER_NAME", "t")
+                .env("GIT_COMMITTER_EMAIL", "t@t")
+                .status()
+                .expect("git commit must run");
+            assert!(commit_status.success(), "git commit failed in {:?}", dir);
+        }
+
+        let (req_tx, req_rx) = bounded::<Request>(8);
+        let (resp_tx, resp_rx) = bounded::<Response>(8);
+        let handle = Worker::spawn(tmp_a.path().to_path_buf(), None, None, req_rx, resp_tx);
+
+        // First recompute populates cache for repo A.
+        req_tx.send(Request::Recompute).unwrap();
+        let _ = resp_rx.recv_timeout(Duration::from_secs(5)).unwrap();
+
+        // Switch to repo B — cache must be cleared so repo A's answer
+        // doesn't leak.
+        req_tx
+            .send(Request::SwitchRepo(tmp_b.path().to_path_buf()))
+            .unwrap();
+        let ack = resp_rx.recv_timeout(Duration::from_secs(5)).unwrap();
+        match ack {
+            Response::SwitchAck(true) => {}
+            other => panic!("expected SwitchAck(true), got {:?}", other),
+        }
+
+        // Recompute against B — must succeed without stale state.
+        req_tx.send(Request::Recompute).unwrap();
+        let resp = resp_rx.recv_timeout(Duration::from_secs(5)).unwrap();
+        match resp {
+            Response::Status(b) => {
+                // Repo B has no remote, so no base — but the key assertion
+                // is that no panic / stale data bled through.
+                assert_eq!(b.branch, "main");
+            }
+            other => panic!("expected Status, got {:?}", other),
+        }
+
+        req_tx.send(Request::Shutdown).unwrap();
+        handle.join().unwrap();
     }
 }

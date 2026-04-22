@@ -137,6 +137,11 @@ pub struct AppState {
     /// Mutated in place by the widget during `render_stateful_widget` and
     /// read back by the render function.
     scroll_offset: usize,
+    /// False until the first `update_files` call completes. Prevents the
+    /// initial git-status snapshot (startup or post-worktree-switch) from
+    /// flashing every row, since there's nothing to meaningfully compare
+    /// against.
+    initial_seed_done: bool,
 }
 
 impl AppState {
@@ -167,6 +172,7 @@ impl AppState {
             merge_base: None,
             base_branch: String::new(),
             scroll_offset: 0,
+            initial_seed_done: false,
         }
     }
 

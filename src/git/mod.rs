@@ -651,6 +651,54 @@ impl GitRepo {
         pick_best_candidate(scored).map(|c| c.name)
     }
 
+    /// Detect the base branch for the given current branch using a
+    /// two-tier heuristic: (1) reflog parse, (2) closest merge-base among
+    /// local + remote-tracking branches.
+    ///
+    /// Returns `None` when neither tier can produce a result — callers
+    /// should fall back to [`GitRepo::resolve_base_branch`].
+    pub fn detect_base_branch(&self, current_branch: &str) -> Option<String> {
+        tracing::debug!(
+            target: "git_rt::git::base_detect",
+            branch = current_branch,
+            "resolving base for branch"
+        );
+
+        // Tier 1: reflog parse.
+        if let Some(b) = self.reflog_first_created_from(current_branch) {
+            tracing::debug!(
+                target: "git_rt::git::base_detect",
+                branch = current_branch,
+                base = %b,
+                "tier1 reflog hit"
+            );
+            return Some(b);
+        }
+        tracing::debug!(
+            target: "git_rt::git::base_detect",
+            branch = current_branch,
+            "tier1 reflog miss"
+        );
+
+        // Tier 2: closest merge-base.
+        if let Some(b) = self.closest_merge_base_candidate(current_branch) {
+            tracing::debug!(
+                target: "git_rt::git::base_detect",
+                branch = current_branch,
+                base = %b,
+                "tier2 merge-base winner"
+            );
+            return Some(b);
+        }
+
+        tracing::debug!(
+            target: "git_rt::git::base_detect",
+            branch = current_branch,
+            "both tiers empty, caller should fall back"
+        );
+        None
+    }
+
     /// Resolve the base branch name using priority:
     /// 1. Explicit override (CLI flag or config value, pre-merged by caller)
     /// 2. Auto-detect from origin/HEAD
@@ -1391,5 +1439,92 @@ mod tests {
         let repo = GitRepo::new(repo_path).unwrap();
         // A branch "created from itself" is a reset artifact, not useful.
         assert_eq!(repo.reflog_first_created_from("feature-b"), None);
+    }
+
+    #[test]
+    fn detect_base_tier1_reflog_wins_when_present() {
+        let tmp = tempfile::tempdir().unwrap();
+        let p = tmp.path();
+        let g = |args: &[&str]| {
+            let status = std::process::Command::new("git")
+                .args(args)
+                .current_dir(p)
+                .env("GIT_AUTHOR_NAME", "t")
+                .env("GIT_AUTHOR_EMAIL", "t@t")
+                .env("GIT_COMMITTER_NAME", "t")
+                .env("GIT_COMMITTER_EMAIL", "t@t")
+                .status()
+                .expect("git must run");
+            assert!(status.success(), "git {:?} failed", args);
+        };
+        g(&["init", "-q", "-b", "main"]);
+        g(&["-c", "commit.gpgsign=false", "commit", "--allow-empty", "-q", "-m", "m1"]);
+        g(&["checkout", "-q", "-b", "feature-a"]);
+        g(&["-c", "commit.gpgsign=false", "commit", "--allow-empty", "-q", "-m", "a1"]);
+        // Create feature-b via `git checkout -b feature-b feature-a`
+        // so its reflog records "Created from feature-a".
+        g(&["checkout", "-q", "-b", "feature-b", "feature-a"]);
+
+        let repo = GitRepo::new(p).unwrap();
+        assert_eq!(
+            repo.detect_base_branch("feature-b"),
+            Some("feature-a".to_string())
+        );
+    }
+
+    #[test]
+    fn detect_base_tier2_runs_when_reflog_missing() {
+        let tmp = tempfile::tempdir().unwrap();
+        let p = tmp.path();
+        let g = |args: &[&str]| {
+            let status = std::process::Command::new("git")
+                .args(args)
+                .current_dir(p)
+                .env("GIT_AUTHOR_NAME", "t")
+                .env("GIT_AUTHOR_EMAIL", "t@t")
+                .env("GIT_COMMITTER_NAME", "t")
+                .env("GIT_COMMITTER_EMAIL", "t@t")
+                .status()
+                .expect("git must run");
+            assert!(status.success(), "git {:?} failed", args);
+        };
+        g(&["init", "-q", "-b", "main"]);
+        g(&["-c", "commit.gpgsign=false", "commit", "--allow-empty", "-q", "-m", "m1"]);
+        g(&["checkout", "-q", "-b", "feature-a"]);
+        g(&["-c", "commit.gpgsign=false", "commit", "--allow-empty", "-q", "-m", "a1"]);
+        g(&["checkout", "-q", "-b", "feature-b"]);
+        g(&["-c", "commit.gpgsign=false", "commit", "--allow-empty", "-q", "-m", "b1"]);
+
+        // Delete the reflog to force tier-2 path.
+        let reflog = p.join(".git/logs/refs/heads/feature-b");
+        std::fs::remove_file(&reflog).ok();
+
+        let repo = GitRepo::new(p).unwrap();
+        assert_eq!(
+            repo.detect_base_branch("feature-b"),
+            Some("feature-a".to_string())
+        );
+    }
+
+    #[test]
+    fn detect_base_none_for_single_branch_repo() {
+        let tmp = tempfile::tempdir().unwrap();
+        let p = tmp.path();
+        let g = |args: &[&str]| {
+            let status = std::process::Command::new("git")
+                .args(args)
+                .current_dir(p)
+                .env("GIT_AUTHOR_NAME", "t")
+                .env("GIT_AUTHOR_EMAIL", "t@t")
+                .env("GIT_COMMITTER_NAME", "t")
+                .env("GIT_COMMITTER_EMAIL", "t@t")
+                .status()
+                .expect("git must run");
+            assert!(status.success(), "git {:?} failed", args);
+        };
+        g(&["init", "-q", "-b", "main"]);
+        g(&["-c", "commit.gpgsign=false", "commit", "--allow-empty", "-q", "-m", "m1"]);
+        let repo = GitRepo::new(p).unwrap();
+        assert_eq!(repo.detect_base_branch("main"), None);
     }
 }

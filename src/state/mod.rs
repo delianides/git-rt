@@ -609,10 +609,12 @@ mod tests {
 
     #[test]
     fn test_no_flash_on_unchanged_stats() {
-        let files = vec![make_entry("a.rs", 1, 0)];
-        let mut state = AppState::new(files, Duration::from_millis(600), "main".to_string());
+        let mut state = AppState::new(vec![], Duration::from_millis(600), "main".to_string());
+        // Seed the baseline.
+        state.update_files(vec![make_entry("a.rs", 1, 0)]);
 
-        // Update with same stats — should not flash
+        // Update with same stats — must not flash, exercising the changed=false
+        // branch inside the gate (not the initial-seed branch).
         state.update_files(vec![make_entry("a.rs", 1, 0)]);
         assert!(!state.is_flashing("a.rs"));
     }

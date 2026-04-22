@@ -147,7 +147,7 @@ pub struct AppState {
     /// Vertical scroll offset inside the diff overlay, in lines
     diff_scroll: usize,
     /// Whether the diff overlay is currently shown
-    overlay_visible: bool,
+    diff_overlay_visible: bool,
     /// Monotonically-increasing counter. Bumped on each `Request::Diff`
     /// so stale `Response::Diff` messages whose token doesn't match the
     /// current one get dropped by the app event loop.
@@ -185,7 +185,7 @@ impl AppState {
             initial_seed_done: false,
             current_diff: None,
             diff_scroll: 0,
-            overlay_visible: false,
+            diff_overlay_visible: false,
             pending_diff_token: 0,
         }
     }
@@ -349,7 +349,7 @@ impl AppState {
     /// "only one overlay at a time" rule.
     pub fn show_help(&mut self) {
         self.help_visible = true;
-        self.overlay_visible = false;
+        self.diff_overlay_visible = false;
         self.diff_scroll = 0;
     }
 
@@ -361,18 +361,18 @@ impl AppState {
     // -- Diff overlay --
 
     /// Returns true if the diff overlay is currently visible.
-    pub fn is_overlay_visible(&self) -> bool {
-        self.overlay_visible
+    pub fn is_diff_overlay_visible(&self) -> bool {
+        self.diff_overlay_visible
     }
 
     /// Show the diff overlay.
-    pub fn show_overlay(&mut self) {
-        self.overlay_visible = true;
+    pub fn show_diff_overlay(&mut self) {
+        self.diff_overlay_visible = true;
     }
 
     /// Hide the diff overlay and reset diff scroll.
-    pub fn hide_overlay(&mut self) {
-        self.overlay_visible = false;
+    pub fn hide_diff_overlay(&mut self) {
+        self.diff_overlay_visible = false;
         self.diff_scroll = 0;
     }
 
@@ -412,7 +412,7 @@ impl AppState {
 
     /// Set the current diff (used when a Response::Diff arrives whose
     /// token matches the pending token). Also resets scroll to top.
-    pub fn expand_selected_with_path(&mut self, _path: String, diff: FileDiff) {
+    pub fn set_expanded_diff(&mut self, diff: FileDiff) {
         self.current_diff = Some(diff);
         self.diff_scroll = 0;
     }
@@ -1081,21 +1081,21 @@ mod tests {
     #[test]
     fn test_overlay_show_hide() {
         let mut state = make_state();
-        assert!(!state.is_overlay_visible());
-        state.show_overlay();
-        assert!(state.is_overlay_visible());
-        state.hide_overlay();
-        assert!(!state.is_overlay_visible());
+        assert!(!state.is_diff_overlay_visible());
+        state.show_diff_overlay();
+        assert!(state.is_diff_overlay_visible());
+        state.hide_diff_overlay();
+        assert!(!state.is_diff_overlay_visible());
     }
 
     #[test]
     fn test_hide_overlay_resets_scroll() {
         let mut state = make_state();
-        state.show_overlay();
+        state.show_diff_overlay();
         state.scroll_diff_down();
         state.scroll_diff_down();
         assert_eq!(state.diff_scroll(), 2);
-        state.hide_overlay();
+        state.hide_diff_overlay();
         assert_eq!(state.diff_scroll(), 0);
     }
 
@@ -1132,19 +1132,22 @@ mod tests {
     #[test]
     fn test_show_help_hides_diff_overlay() {
         let mut state = make_state();
-        state.show_overlay();
+        state.show_diff_overlay();
         state.scroll_diff_down();
-        assert!(state.is_overlay_visible());
+        assert!(state.is_diff_overlay_visible());
         state.show_help();
-        assert!(!state.is_overlay_visible(), "help should close diff overlay");
+        assert!(
+            !state.is_diff_overlay_visible(),
+            "help should close diff overlay"
+        );
         assert_eq!(state.diff_scroll(), 0, "help should reset diff scroll");
     }
 
     #[test]
-    fn test_expand_selected_with_path_sets_diff() {
+    fn test_set_expanded_diff_sets_diff() {
         let mut state = make_state();
         let diff = FileDiff::default();
-        state.expand_selected_with_path("foo.rs".to_string(), diff);
+        state.set_expanded_diff(diff);
         assert!(state.expanded_diff().is_some());
         assert_eq!(state.diff_scroll(), 0);
     }

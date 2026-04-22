@@ -216,8 +216,6 @@ struct BaseCandidate {
     /// Short branch name (e.g. "main" or "develop" — no `refs/heads/` or
     /// `refs/remotes/origin/` prefix).
     name: String,
-    /// Full ref name (kept for logging / debugging).
-    full_ref: String,
     /// Tip commit of the candidate branch.
     tip: gix::ObjectId,
     /// True for `refs/heads/*`, false for `refs/remotes/*/*`.
@@ -547,7 +545,6 @@ impl GitRepo {
                 if let Some(tip) = commit_tip(r.id().detach()) {
                     out.push(BaseCandidate {
                         name: name.to_string(),
-                        full_ref: full_ref.clone(),
                         tip,
                         is_local: true,
                     });
@@ -573,7 +570,6 @@ impl GitRepo {
                 if let Some(tip) = commit_tip(r.id().detach()) {
                     out.push(BaseCandidate {
                         name: name.to_string(),
-                        full_ref: full_ref.clone(),
                         tip,
                         is_local: false,
                     });
@@ -1469,6 +1465,52 @@ mod tests {
         assert_eq!(
             repo.detect_base_branch("feature-b"),
             Some("feature-a".to_string())
+        );
+    }
+
+    #[test]
+    fn detect_base_tier1_short_circuits_when_tier2_would_disagree() {
+        // Build a real stacked repo: main ← feature-a ← feature-b with a
+        // real commit on feature-b, so tier 2 would naturally pick
+        // "feature-a". Then overwrite feature-b's reflog to lie and say it
+        // was created from "main". If tier 1 correctly short-circuits, the
+        // result is "main". If the implementation accidentally runs tier
+        // 2 anyway, the result would be "feature-a".
+        let tmp = tempfile::tempdir().unwrap();
+        let p = tmp.path();
+        let g = |args: &[&str]| {
+            let status = std::process::Command::new("git")
+                .args(args)
+                .current_dir(p)
+                .env("GIT_AUTHOR_NAME", "t")
+                .env("GIT_AUTHOR_EMAIL", "t@t")
+                .env("GIT_COMMITTER_NAME", "t")
+                .env("GIT_COMMITTER_EMAIL", "t@t")
+                .status()
+                .expect("git must run");
+            assert!(status.success(), "git {:?} failed", args);
+        };
+        g(&["init", "-q", "-b", "main"]);
+        g(&["-c", "commit.gpgsign=false", "commit", "--allow-empty", "-q", "-m", "m1"]);
+        g(&["checkout", "-q", "-b", "feature-a"]);
+        g(&["-c", "commit.gpgsign=false", "commit", "--allow-empty", "-q", "-m", "a1"]);
+        g(&["checkout", "-q", "-b", "feature-b"]);
+        g(&["-c", "commit.gpgsign=false", "commit", "--allow-empty", "-q", "-m", "b1"]);
+
+        // Overwrite feature-b's reflog with a synthetic first line that
+        // claims it was created from main, contradicting the actual DAG.
+        let reflog_path = p.join(".git/logs/refs/heads/feature-b");
+        std::fs::write(
+            &reflog_path,
+            "0000000000000000000000000000000000000000 abc123 t <t@t> 0 +0000\tbranch: Created from main\n",
+        )
+        .unwrap();
+
+        let repo = GitRepo::new(p).unwrap();
+        assert_eq!(
+            repo.detect_base_branch("feature-b"),
+            Some("main".to_string()),
+            "tier 1 must win when reflog provides a value, even when tier 2 would disagree"
         );
     }
 

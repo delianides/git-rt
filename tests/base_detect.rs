@@ -28,11 +28,44 @@ fn stacked_branches_detect_nearest_parent() {
     let p = tmp.path();
     // main ← feature-a ← feature-b
     git(p, &["init", "-q", "-b", "main"]);
-    git(p, &["-c", "commit.gpgsign=false", "commit", "--allow-empty", "-q", "-m", "m1"]);
+    git(
+        p,
+        &[
+            "-c",
+            "commit.gpgsign=false",
+            "commit",
+            "--allow-empty",
+            "-q",
+            "-m",
+            "m1",
+        ],
+    );
     git(p, &["checkout", "-q", "-b", "feature-a"]);
-    git(p, &["-c", "commit.gpgsign=false", "commit", "--allow-empty", "-q", "-m", "a1"]);
+    git(
+        p,
+        &[
+            "-c",
+            "commit.gpgsign=false",
+            "commit",
+            "--allow-empty",
+            "-q",
+            "-m",
+            "a1",
+        ],
+    );
     git(p, &["checkout", "-q", "-b", "feature-b"]);
-    git(p, &["-c", "commit.gpgsign=false", "commit", "--allow-empty", "-q", "-m", "b1"]);
+    git(
+        p,
+        &[
+            "-c",
+            "commit.gpgsign=false",
+            "commit",
+            "--allow-empty",
+            "-q",
+            "-m",
+            "b1",
+        ],
+    );
 
     let repo = GitRepo::new(p).unwrap();
     assert_eq!(
@@ -66,9 +99,31 @@ fn branch_off_remote_tracking_returns_short_name() {
         .expect("git clone scratch");
     assert!(status.success(), "scratch clone failed");
 
-    git(&scratch, &["-c", "commit.gpgsign=false", "commit", "--allow-empty", "-q", "-m", "m1"]);
+    git(
+        &scratch,
+        &[
+            "-c",
+            "commit.gpgsign=false",
+            "commit",
+            "--allow-empty",
+            "-q",
+            "-m",
+            "m1",
+        ],
+    );
     git(&scratch, &["checkout", "-q", "-b", "develop"]);
-    git(&scratch, &["-c", "commit.gpgsign=false", "commit", "--allow-empty", "-q", "-m", "d1"]);
+    git(
+        &scratch,
+        &[
+            "-c",
+            "commit.gpgsign=false",
+            "commit",
+            "--allow-empty",
+            "-q",
+            "-m",
+            "d1",
+        ],
+    );
     git(&scratch, &["push", "-q", "origin", "main", "develop"]);
 
     // Now clone fresh and branch off origin/develop without checking it out.
@@ -80,8 +135,22 @@ fn branch_off_remote_tracking_returns_short_name() {
         .expect("git clone");
     assert!(status.success(), "clone failed");
 
-    git(&clone, &["checkout", "-q", "-b", "feature", "origin/develop"]);
-    git(&clone, &["-c", "commit.gpgsign=false", "commit", "--allow-empty", "-q", "-m", "f1"]);
+    git(
+        &clone,
+        &["checkout", "-q", "-b", "feature", "origin/develop"],
+    );
+    git(
+        &clone,
+        &[
+            "-c",
+            "commit.gpgsign=false",
+            "commit",
+            "--allow-empty",
+            "-q",
+            "-m",
+            "f1",
+        ],
+    );
 
     let repo = GitRepo::new(&clone).unwrap();
     // Tier 1 should pick "develop" (short name) from reflog "Created from origin/develop".
@@ -102,11 +171,44 @@ fn explicit_base_override_short_circuits_detection() {
     let tmp = tempfile::tempdir().unwrap();
     let p = tmp.path();
     git(p, &["init", "-q", "-b", "main"]);
-    git(p, &["-c", "commit.gpgsign=false", "commit", "--allow-empty", "-q", "-m", "m1"]);
+    git(
+        p,
+        &[
+            "-c",
+            "commit.gpgsign=false",
+            "commit",
+            "--allow-empty",
+            "-q",
+            "-m",
+            "m1",
+        ],
+    );
     git(p, &["checkout", "-q", "-b", "feature-a"]);
-    git(p, &["-c", "commit.gpgsign=false", "commit", "--allow-empty", "-q", "-m", "a1"]);
+    git(
+        p,
+        &[
+            "-c",
+            "commit.gpgsign=false",
+            "commit",
+            "--allow-empty",
+            "-q",
+            "-m",
+            "a1",
+        ],
+    );
     git(p, &["checkout", "-q", "-b", "feature-b", "feature-a"]);
-    git(p, &["-c", "commit.gpgsign=false", "commit", "--allow-empty", "-q", "-m", "b1"]);
+    git(
+        p,
+        &[
+            "-c",
+            "commit.gpgsign=false",
+            "commit",
+            "--allow-empty",
+            "-q",
+            "-m",
+            "b1",
+        ],
+    );
 
     let (req_tx, req_rx) = bounded::<Request>(8);
     let (resp_tx, resp_rx) = bounded::<Response>(8);
@@ -135,17 +237,62 @@ fn rebased_branch_detects_new_parent() {
     let p = tmp.path();
     // main ← feature-a ← feature-b (initially)
     git(p, &["init", "-q", "-b", "main"]);
-    git(p, &["-c", "commit.gpgsign=false", "commit", "--allow-empty", "-q", "-m", "m1"]);
+    git(
+        p,
+        &[
+            "-c",
+            "commit.gpgsign=false",
+            "commit",
+            "--allow-empty",
+            "-q",
+            "-m",
+            "m1",
+        ],
+    );
     git(p, &["checkout", "-q", "-b", "feature-a"]);
-    git(p, &["-c", "commit.gpgsign=false", "commit", "--allow-empty", "-q", "-m", "a1"]);
+    git(
+        p,
+        &[
+            "-c",
+            "commit.gpgsign=false",
+            "commit",
+            "--allow-empty",
+            "-q",
+            "-m",
+            "a1",
+        ],
+    );
     git(p, &["checkout", "-q", "-b", "feature-b"]);
-    git(p, &["-c", "commit.gpgsign=false", "commit", "--allow-empty", "-q", "-m", "b1"]);
+    git(
+        p,
+        &[
+            "-c",
+            "commit.gpgsign=false",
+            "commit",
+            "--allow-empty",
+            "-q",
+            "-m",
+            "b1",
+        ],
+    );
 
     // Delete the reflog so tier-2 (merge-base) drives the result.
     std::fs::remove_file(p.join(".git/logs/refs/heads/feature-b")).ok();
 
     // Rebase feature-b directly onto main (dropping feature-a's commit).
-    git(p, &["-c", "commit.gpgsign=false", "rebase", "-q", "--onto", "main", "feature-a", "feature-b"]);
+    git(
+        p,
+        &[
+            "-c",
+            "commit.gpgsign=false",
+            "rebase",
+            "-q",
+            "--onto",
+            "main",
+            "feature-a",
+            "feature-b",
+        ],
+    );
 
     let repo = GitRepo::new(p).unwrap();
     assert_eq!(

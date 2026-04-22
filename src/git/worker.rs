@@ -454,9 +454,25 @@ mod tests {
             assert!(status.success(), "git {:?} failed", args);
         };
         g(&["init", "-q", "-b", "main"]);
-        g(&["-c", "commit.gpgsign=false", "commit", "--allow-empty", "-q", "-m", "m1"]);
+        g(&[
+            "-c",
+            "commit.gpgsign=false",
+            "commit",
+            "--allow-empty",
+            "-q",
+            "-m",
+            "m1",
+        ]);
         g(&["checkout", "-q", "-b", "feature-a"]);
-        g(&["-c", "commit.gpgsign=false", "commit", "--allow-empty", "-q", "-m", "a1"]);
+        g(&[
+            "-c",
+            "commit.gpgsign=false",
+            "commit",
+            "--allow-empty",
+            "-q",
+            "-m",
+            "a1",
+        ]);
 
         let git = GitRepo::new(p).unwrap();
         let mut cache = BaseCache::new();
@@ -486,9 +502,25 @@ mod tests {
             assert!(status.success(), "git {:?} failed", args);
         };
         g(&["init", "-q", "-b", "main"]);
-        g(&["-c", "commit.gpgsign=false", "commit", "--allow-empty", "-q", "-m", "m1"]);
+        g(&[
+            "-c",
+            "commit.gpgsign=false",
+            "commit",
+            "--allow-empty",
+            "-q",
+            "-m",
+            "m1",
+        ]);
         g(&["checkout", "-q", "-b", "feature-a"]);
-        g(&["-c", "commit.gpgsign=false", "commit", "--allow-empty", "-q", "-m", "a1"]);
+        g(&[
+            "-c",
+            "commit.gpgsign=false",
+            "commit",
+            "--allow-empty",
+            "-q",
+            "-m",
+            "a1",
+        ]);
 
         // Pre-populate the cache with a distinctive fake base that
         // detection would NEVER produce. If compute_status returns this
@@ -525,9 +557,25 @@ mod tests {
             assert!(status.success(), "git {:?} failed", args);
         };
         g(&["init", "-q", "-b", "main"]);
-        g(&["-c", "commit.gpgsign=false", "commit", "--allow-empty", "-q", "-m", "m1"]);
+        g(&[
+            "-c",
+            "commit.gpgsign=false",
+            "commit",
+            "--allow-empty",
+            "-q",
+            "-m",
+            "m1",
+        ]);
         g(&["checkout", "-q", "-b", "feature-a"]);
-        g(&["-c", "commit.gpgsign=false", "commit", "--allow-empty", "-q", "-m", "a1"]);
+        g(&[
+            "-c",
+            "commit.gpgsign=false",
+            "commit",
+            "--allow-empty",
+            "-q",
+            "-m",
+            "a1",
+        ]);
 
         let git = GitRepo::new(p).unwrap();
         let mut cache = BaseCache::new();
@@ -555,7 +603,15 @@ mod tests {
                 .expect("git init must run");
             assert!(init_status.success(), "git init failed in {:?}", dir);
             let commit_status = std::process::Command::new("git")
-                .args(["-c", "commit.gpgsign=false", "commit", "--allow-empty", "-q", "-m", "init"])
+                .args([
+                    "-c",
+                    "commit.gpgsign=false",
+                    "commit",
+                    "--allow-empty",
+                    "-q",
+                    "-m",
+                    "init",
+                ])
                 .current_dir(dir)
                 .env("GIT_AUTHOR_NAME", "t")
                 .env("GIT_AUTHOR_EMAIL", "t@t")

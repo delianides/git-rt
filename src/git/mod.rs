@@ -524,10 +524,7 @@ impl GitRepo {
             return None;
         }
         let remote_names = self.repo.remote_names();
-        if remote_names
-            .iter()
-            .any(|r| r.as_ref() == prefix)
-        {
+        if remote_names.iter().any(|r| r.as_ref() == prefix) {
             Some(branch.to_string())
         } else {
             None
@@ -1295,10 +1292,26 @@ mod tests {
             assert!(status.success(), "git {:?} failed", args);
         };
         g(&["init", "-q", "-b", "main"]);
-        g(&["-c", "commit.gpgsign=false", "commit", "--allow-empty", "-q", "-m", "init"]);
+        g(&[
+            "-c",
+            "commit.gpgsign=false",
+            "commit",
+            "--allow-empty",
+            "-q",
+            "-m",
+            "init",
+        ]);
         g(&["branch", "feature-a"]);
         g(&["checkout", "-q", "feature-a"]);
-        g(&["-c", "commit.gpgsign=false", "commit", "--allow-empty", "-q", "-m", "a"]);
+        g(&[
+            "-c",
+            "commit.gpgsign=false",
+            "commit",
+            "--allow-empty",
+            "-q",
+            "-m",
+            "a",
+        ]);
         g(&["branch", "feature-b"]);
 
         let repo = GitRepo::new(p).unwrap();
@@ -1307,7 +1320,10 @@ mod tests {
 
         assert!(names.contains(&"main"));
         assert!(names.contains(&"feature-b"));
-        assert!(!names.contains(&"feature-a"), "current branch must be excluded");
+        assert!(
+            !names.contains(&"feature-a"),
+            "current branch must be excluded"
+        );
     }
 
     #[test]
@@ -1327,7 +1343,15 @@ mod tests {
             assert!(status.success(), "git {:?} failed", args);
         };
         g(&["init", "-q", "-b", "main"]);
-        g(&["-c", "commit.gpgsign=false", "commit", "--allow-empty", "-q", "-m", "init"]);
+        g(&[
+            "-c",
+            "commit.gpgsign=false",
+            "commit",
+            "--allow-empty",
+            "-q",
+            "-m",
+            "init",
+        ]);
 
         let repo = GitRepo::new(p).unwrap();
         assert!(repo.list_base_candidates("main").is_empty());
@@ -1336,18 +1360,46 @@ mod tests {
     #[test]
     fn pick_best_most_recent_merge_base_wins() {
         let scored = vec![
-            ScoredCandidate { name: "main".into(), is_local: true, merge_base_time: 100, topo_distance: 5 },
-            ScoredCandidate { name: "feature-a".into(), is_local: true, merge_base_time: 500, topo_distance: 1 },
-            ScoredCandidate { name: "release-old".into(), is_local: true, merge_base_time: 10, topo_distance: 10 },
+            ScoredCandidate {
+                name: "main".into(),
+                is_local: true,
+                merge_base_time: 100,
+                topo_distance: 5,
+            },
+            ScoredCandidate {
+                name: "feature-a".into(),
+                is_local: true,
+                merge_base_time: 500,
+                topo_distance: 1,
+            },
+            ScoredCandidate {
+                name: "release-old".into(),
+                is_local: true,
+                merge_base_time: 10,
+                topo_distance: 10,
+            },
         ];
-        assert_eq!(pick_best_candidate(scored).map(|c| c.name), Some("feature-a".into()));
+        assert_eq!(
+            pick_best_candidate(scored).map(|c| c.name),
+            Some("feature-a".into())
+        );
     }
 
     #[test]
     fn pick_best_tie_prefers_local() {
         let scored = vec![
-            ScoredCandidate { name: "develop".into(), is_local: false, merge_base_time: 500, topo_distance: 1 },
-            ScoredCandidate { name: "develop".into(), is_local: true, merge_base_time: 500, topo_distance: 1 },
+            ScoredCandidate {
+                name: "develop".into(),
+                is_local: false,
+                merge_base_time: 500,
+                topo_distance: 1,
+            },
+            ScoredCandidate {
+                name: "develop".into(),
+                is_local: true,
+                merge_base_time: 500,
+                topo_distance: 1,
+            },
         ];
         let picked = pick_best_candidate(scored).unwrap();
         assert!(picked.is_local, "local should win tie with remote");
@@ -1356,19 +1408,45 @@ mod tests {
     #[test]
     fn pick_best_tie_prefers_shorter_name() {
         let scored = vec![
-            ScoredCandidate { name: "release/2024-old".into(), is_local: true, merge_base_time: 500, topo_distance: 1 },
-            ScoredCandidate { name: "main".into(), is_local: true, merge_base_time: 500, topo_distance: 1 },
+            ScoredCandidate {
+                name: "release/2024-old".into(),
+                is_local: true,
+                merge_base_time: 500,
+                topo_distance: 1,
+            },
+            ScoredCandidate {
+                name: "main".into(),
+                is_local: true,
+                merge_base_time: 500,
+                topo_distance: 1,
+            },
         ];
-        assert_eq!(pick_best_candidate(scored).map(|c| c.name), Some("main".into()));
+        assert_eq!(
+            pick_best_candidate(scored).map(|c| c.name),
+            Some("main".into())
+        );
     }
 
     #[test]
     fn pick_best_tie_alphabetical_final_tiebreak() {
         let scored = vec![
-            ScoredCandidate { name: "bar".into(), is_local: true, merge_base_time: 500, topo_distance: 1 },
-            ScoredCandidate { name: "aaa".into(), is_local: true, merge_base_time: 500, topo_distance: 1 },
+            ScoredCandidate {
+                name: "bar".into(),
+                is_local: true,
+                merge_base_time: 500,
+                topo_distance: 1,
+            },
+            ScoredCandidate {
+                name: "aaa".into(),
+                is_local: true,
+                merge_base_time: 500,
+                topo_distance: 1,
+            },
         ];
-        assert_eq!(pick_best_candidate(scored).map(|c| c.name), Some("aaa".into()));
+        assert_eq!(
+            pick_best_candidate(scored).map(|c| c.name),
+            Some("aaa".into())
+        );
     }
 
     #[test]
@@ -1381,10 +1459,23 @@ mod tests {
         // Both candidates share merge_base_time and is_local — the only
         // differentiator is topo_distance. Closer (smaller) wins.
         let scored = vec![
-            ScoredCandidate { name: "main".into(), is_local: true, merge_base_time: 500, topo_distance: 5 },
-            ScoredCandidate { name: "feature-a".into(), is_local: true, merge_base_time: 500, topo_distance: 1 },
+            ScoredCandidate {
+                name: "main".into(),
+                is_local: true,
+                merge_base_time: 500,
+                topo_distance: 5,
+            },
+            ScoredCandidate {
+                name: "feature-a".into(),
+                is_local: true,
+                merge_base_time: 500,
+                topo_distance: 1,
+            },
         ];
-        assert_eq!(pick_best_candidate(scored).map(|c| c.name), Some("feature-a".into()));
+        assert_eq!(
+            pick_best_candidate(scored).map(|c| c.name),
+            Some("feature-a".into())
+        );
     }
 
     #[test]
@@ -1405,11 +1496,35 @@ mod tests {
         };
         // main ← feature-a ← feature-b
         g(&["init", "-q", "-b", "main"]);
-        g(&["-c", "commit.gpgsign=false", "commit", "--allow-empty", "-q", "-m", "m1"]);
+        g(&[
+            "-c",
+            "commit.gpgsign=false",
+            "commit",
+            "--allow-empty",
+            "-q",
+            "-m",
+            "m1",
+        ]);
         g(&["checkout", "-q", "-b", "feature-a"]);
-        g(&["-c", "commit.gpgsign=false", "commit", "--allow-empty", "-q", "-m", "a1"]);
+        g(&[
+            "-c",
+            "commit.gpgsign=false",
+            "commit",
+            "--allow-empty",
+            "-q",
+            "-m",
+            "a1",
+        ]);
         g(&["checkout", "-q", "-b", "feature-b"]);
-        g(&["-c", "commit.gpgsign=false", "commit", "--allow-empty", "-q", "-m", "b1"]);
+        g(&[
+            "-c",
+            "commit.gpgsign=false",
+            "commit",
+            "--allow-empty",
+            "-q",
+            "-m",
+            "b1",
+        ]);
 
         let repo = GitRepo::new(p).unwrap();
         assert_eq!(
@@ -1435,7 +1550,15 @@ mod tests {
             assert!(status.success(), "git {:?} failed", args);
         };
         g(&["init", "-q", "-b", "main"]);
-        g(&["-c", "commit.gpgsign=false", "commit", "--allow-empty", "-q", "-m", "m1"]);
+        g(&[
+            "-c",
+            "commit.gpgsign=false",
+            "commit",
+            "--allow-empty",
+            "-q",
+            "-m",
+            "m1",
+        ]);
         let repo = GitRepo::new(p).unwrap();
         assert_eq!(repo.closest_merge_base_candidate("main"), None);
     }
@@ -1480,9 +1603,25 @@ mod tests {
             assert!(status.success(), "git {:?} failed", args);
         };
         g(&["init", "-q", "-b", "main"]);
-        g(&["-c", "commit.gpgsign=false", "commit", "--allow-empty", "-q", "-m", "m1"]);
+        g(&[
+            "-c",
+            "commit.gpgsign=false",
+            "commit",
+            "--allow-empty",
+            "-q",
+            "-m",
+            "m1",
+        ]);
         g(&["checkout", "-q", "-b", "feature-a"]);
-        g(&["-c", "commit.gpgsign=false", "commit", "--allow-empty", "-q", "-m", "a1"]);
+        g(&[
+            "-c",
+            "commit.gpgsign=false",
+            "commit",
+            "--allow-empty",
+            "-q",
+            "-m",
+            "a1",
+        ]);
         // Create feature-b via `git checkout -b feature-b feature-a`
         // so its reflog records "Created from feature-a".
         g(&["checkout", "-q", "-b", "feature-b", "feature-a"]);
@@ -1517,11 +1656,35 @@ mod tests {
             assert!(status.success(), "git {:?} failed", args);
         };
         g(&["init", "-q", "-b", "main"]);
-        g(&["-c", "commit.gpgsign=false", "commit", "--allow-empty", "-q", "-m", "m1"]);
+        g(&[
+            "-c",
+            "commit.gpgsign=false",
+            "commit",
+            "--allow-empty",
+            "-q",
+            "-m",
+            "m1",
+        ]);
         g(&["checkout", "-q", "-b", "feature-a"]);
-        g(&["-c", "commit.gpgsign=false", "commit", "--allow-empty", "-q", "-m", "a1"]);
+        g(&[
+            "-c",
+            "commit.gpgsign=false",
+            "commit",
+            "--allow-empty",
+            "-q",
+            "-m",
+            "a1",
+        ]);
         g(&["checkout", "-q", "-b", "feature-b"]);
-        g(&["-c", "commit.gpgsign=false", "commit", "--allow-empty", "-q", "-m", "b1"]);
+        g(&[
+            "-c",
+            "commit.gpgsign=false",
+            "commit",
+            "--allow-empty",
+            "-q",
+            "-m",
+            "b1",
+        ]);
 
         // Overwrite feature-b's reflog with a synthetic first line that
         // claims it was created from main, contradicting the actual DAG.
@@ -1557,11 +1720,35 @@ mod tests {
             assert!(status.success(), "git {:?} failed", args);
         };
         g(&["init", "-q", "-b", "main"]);
-        g(&["-c", "commit.gpgsign=false", "commit", "--allow-empty", "-q", "-m", "m1"]);
+        g(&[
+            "-c",
+            "commit.gpgsign=false",
+            "commit",
+            "--allow-empty",
+            "-q",
+            "-m",
+            "m1",
+        ]);
         g(&["checkout", "-q", "-b", "feature-a"]);
-        g(&["-c", "commit.gpgsign=false", "commit", "--allow-empty", "-q", "-m", "a1"]);
+        g(&[
+            "-c",
+            "commit.gpgsign=false",
+            "commit",
+            "--allow-empty",
+            "-q",
+            "-m",
+            "a1",
+        ]);
         g(&["checkout", "-q", "-b", "feature-b"]);
-        g(&["-c", "commit.gpgsign=false", "commit", "--allow-empty", "-q", "-m", "b1"]);
+        g(&[
+            "-c",
+            "commit.gpgsign=false",
+            "commit",
+            "--allow-empty",
+            "-q",
+            "-m",
+            "b1",
+        ]);
 
         // Delete the reflog to force tier-2 path.
         let reflog = p.join(".git/logs/refs/heads/feature-b");
@@ -1591,7 +1778,15 @@ mod tests {
             assert!(status.success(), "git {:?} failed", args);
         };
         g(&["init", "-q", "-b", "main"]);
-        g(&["-c", "commit.gpgsign=false", "commit", "--allow-empty", "-q", "-m", "m1"]);
+        g(&[
+            "-c",
+            "commit.gpgsign=false",
+            "commit",
+            "--allow-empty",
+            "-q",
+            "-m",
+            "m1",
+        ]);
         let repo = GitRepo::new(p).unwrap();
         assert_eq!(repo.detect_base_branch("main"), None);
     }

@@ -497,6 +497,16 @@ impl GitRepo {
             return out;
         };
 
+        // Returns Some(id) if the object at `id` is a commit, None otherwise.
+        // Non-commit refs (tags, trees) are skipped.
+        let commit_tip = |id: gix::ObjectId| -> Option<gix::ObjectId> {
+            self.repo
+                .find_object(id)
+                .ok()
+                .filter(|o| o.kind == gix::object::Kind::Commit)
+                .map(|_| id)
+        };
+
         // Local branches
         if let Ok(iter) = platform.prefixed("refs/heads/") {
             for r in iter.flatten() {
@@ -507,14 +517,7 @@ impl GitRepo {
                 if name == current_branch {
                     continue;
                 }
-                let tip = r.id().detach();
-                if self
-                    .repo
-                    .find_object(tip)
-                    .ok()
-                    .map(|o| o.kind == gix::object::Kind::Commit)
-                    .unwrap_or(false)
-                {
+                if let Some(tip) = commit_tip(r.id().detach()) {
                     out.push(BaseCandidate {
                         name: name.to_string(),
                         full_ref: full_ref.clone(),
@@ -525,7 +528,9 @@ impl GitRepo {
             }
         }
 
-        // Remote-tracking branches
+        // Remote-tracking branches. Skips any remote's symbolic HEAD
+        // (e.g. refs/remotes/origin/HEAD -> refs/remotes/origin/main) and
+        // any remote copy of the current branch.
         if let Ok(iter) = platform.prefixed("refs/remotes/") {
             for r in iter.flatten() {
                 let full_ref = r.name().as_bstr().to_string();
@@ -538,14 +543,7 @@ impl GitRepo {
                 if name == "HEAD" || name == current_branch {
                     continue;
                 }
-                let tip = r.id().detach();
-                if self
-                    .repo
-                    .find_object(tip)
-                    .ok()
-                    .map(|o| o.kind == gix::object::Kind::Commit)
-                    .unwrap_or(false)
-                {
+                if let Some(tip) = commit_tip(r.id().detach()) {
                     out.push(BaseCandidate {
                         name: name.to_string(),
                         full_ref: full_ref.clone(),

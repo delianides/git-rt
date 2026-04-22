@@ -219,8 +219,7 @@ impl Worker {
                                 let _ = resp_tx.send(Response::Diff { path, token, diff });
                             }
                             Err(e) => {
-                                let _ =
-                                    resp_tx.send(Response::Error(format!("diff {path}: {e}")));
+                                let _ = resp_tx.send(Response::Error(format!("diff {path}: {e}")));
                             }
                         }
                     }

@@ -132,7 +132,13 @@ fn render(frame: &mut Frame, state: &mut AppState, config: &AppConfig, theme: &T
                 .map(|f| (f.insertions, f.deletions))
                 .unwrap_or((0, 0));
             diff_overlay::render_diff_overlay(
-                frame, diff, &path, ins, del, state.diff_scroll(), theme,
+                frame,
+                diff,
+                &path,
+                ins,
+                del,
+                state.diff_scroll(),
+                theme,
             );
         }
     }

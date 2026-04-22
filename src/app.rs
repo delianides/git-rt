@@ -1037,5 +1037,4 @@ mod editor_tests {
     fn quote_empty() {
         assert_eq!(shell_single_quote(""), "''");
     }
-
 }

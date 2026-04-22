@@ -40,6 +40,10 @@ impl BaseCache {
         self.entries.clear();
     }
 
+    // Used by tests (compute_status_with_explicit_override_skips_cache)
+    // to assert the explicit-override path doesn't populate the cache.
+    // clippy's lib-target dead-code analysis does not count test-only usage.
+    #[allow(dead_code)]
     pub(crate) fn is_empty(&self) -> bool {
         self.entries.is_empty()
     }

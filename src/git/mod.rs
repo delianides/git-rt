@@ -526,7 +526,7 @@ impl GitRepo {
         let remote_names = self.repo.remote_names();
         if remote_names
             .iter()
-            .any(|r| r.as_ref().to_string() == prefix)
+            .any(|r| r.as_ref() == prefix)
         {
             Some(branch.to_string())
         } else {

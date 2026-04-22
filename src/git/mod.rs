@@ -505,7 +505,33 @@ impl GitRepo {
         if extracted == branch {
             return None;
         }
-        Some(extracted)
+
+        // If the extracted name looks like "<remote>/<branch>" (short remote-tracking
+        // form that git writes in reflogs, e.g. "origin/develop"), strip the remote
+        // prefix so callers always get the short branch name.
+        let short = self.strip_remote_prefix(&extracted).unwrap_or(extracted);
+        if short == branch {
+            return None;
+        }
+        Some(short)
+    }
+
+    /// If `name` is of the form `<remote>/<branch>` where `<remote>` is a
+    /// known remote, return `<branch>`. Otherwise return `None`.
+    fn strip_remote_prefix(&self, name: &str) -> Option<String> {
+        let (prefix, branch) = name.split_once('/')?;
+        if branch.is_empty() {
+            return None;
+        }
+        let remote_names = self.repo.remote_names();
+        if remote_names
+            .iter()
+            .any(|r| r.as_ref().to_string() == prefix)
+        {
+            Some(branch.to_string())
+        } else {
+            None
+        }
     }
 
     /// Enumerate all local branches and remote-tracking branches as

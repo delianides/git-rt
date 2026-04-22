@@ -173,41 +173,6 @@ fn shell_single_quote(s: &str) -> String {
     out
 }
 
-/// `-c` overrides injected into every `git diff` invocation for the pager.
-///
-/// - `delta.paging=always` forces delta (a popular git pager) to always
-///   invoke its pager even on short diffs. Delta's default `paging=auto`
-///   prints directly to stdout for output shorter than the terminal height,
-///   which causes the in-app pager to flash and disappear on 1–4 line diffs.
-///   The key is ignored if delta isn't in use.
-const PAGER_CONFIG_OVERRIDES: &[&str] = &["-c", "delta.paging=always"];
-
-/// Build the shell command string for opening a file diff via git's configured
-/// pager. When `merge_base` is `Some`, produces a branch-scoped diff matching
-/// the in-app branch view (merge-base vs working tree). Otherwise produces a
-/// working-tree-vs-index diff. `quoted_path` MUST be pre-quoted via
-/// `shell_single_quote`.
-fn build_diff_command(merge_base: Option<&gix::ObjectId>, quoted_path: &str) -> String {
-    let overrides = PAGER_CONFIG_OVERRIDES.join(" ");
-    match merge_base {
-        Some(mb) => format!("git {} diff {} -- {}", overrides, mb.to_hex(), quoted_path),
-        None => format!("git {} diff -- {}", overrides, quoted_path),
-    }
-}
-
-/// Build the `Command` used to launch the user's git pager for `cmd`, rooted
-/// at `cwd`.
-///
-/// Sets `LESS=R` in the child env so `less` (used directly or by delta/bat)
-/// keeps raw ANSI but does **not** auto-quit on short diffs. Git's default
-/// `LESS=FRX` would otherwise cause short (1–4 line) diffs to flash and
-/// close immediately.
-fn build_pager_command(cwd: &std::path::Path, cmd: &str) -> std::process::Command {
-    let mut c = std::process::Command::new("sh");
-    c.arg("-c").arg(cmd).current_dir(cwd).env("LESS", "R");
-    c
-}
-
 /// Open a URL in the user's default browser (macOS `open`, Linux `xdg-open`,
 /// Windows `cmd /C start`). Detached: returns immediately, git-rt keeps running.
 /// Stdio is nulled so launcher noise doesn't corrupt the TUI.
@@ -465,8 +430,17 @@ impl App {
             while let Ok(resp) = self.worker_rx.try_recv() {
                 match resp {
                     Response::Status(bundle) => self.apply_status(*bundle),
-                    Response::Diff { path, token, .. } => {
-                        tracing::debug!(token, ?path, "Diff response received (ignored until Task 6)");
+                    Response::Diff { path, token, diff } => {
+                        if token == self.state.pending_diff_token() {
+                            self.state.set_expanded_diff(diff);
+                        } else {
+                            tracing::debug!(
+                                token,
+                                current = self.state.pending_diff_token(),
+                                ?path,
+                                "Discarding stale diff response"
+                            );
+                        }
                     }
                     Response::SwitchAck(_) => {
                         // Handled inline by the SwitchRepo caller in Task 7.
@@ -535,6 +509,25 @@ impl App {
                     return Ok(false);
                 }
 
+                // Diff overlay mode: intercept keys before normal handling.
+                if self.state.is_diff_overlay_visible() {
+                    match (key.modifiers, key.code) {
+                        (KeyModifiers::CONTROL, KeyCode::Char('c')) => return Ok(true),
+                        (_, KeyCode::Esc)
+                        | (_, KeyCode::Char('q'))
+                        | (_, KeyCode::Char('h'))
+                        | (_, KeyCode::Left)
+                        | (_, KeyCode::Char(' '))
+                        | (_, KeyCode::Char('d')) => self.state.hide_diff_overlay(),
+                        (_, KeyCode::Char('j')) | (_, KeyCode::Down) => {
+                            self.state.scroll_diff_down()
+                        }
+                        (_, KeyCode::Char('k')) | (_, KeyCode::Up) => self.state.scroll_diff_up(),
+                        _ => {}
+                    }
+                    return Ok(false);
+                }
+
                 match (key.modifiers, key.code) {
                     // Quit
                     (_, KeyCode::Char('q')) => return Ok(true),
@@ -548,13 +541,13 @@ impl App {
                         self.state.select_previous();
                     }
 
-                    // Expand / open diff (Enter, l, Right, Space, d)
+                    // Open / toggle diff overlay
                     (_, KeyCode::Enter)
                     | (_, KeyCode::Char('l'))
                     | (_, KeyCode::Right)
                     | (_, KeyCode::Char(' '))
                     | (_, KeyCode::Char('d')) => {
-                        self.open_pager_diff(terminal)?;
+                        self.handle_expand()?;
                     }
 
                     // Refresh manually
@@ -664,27 +657,31 @@ impl App {
         Ok(())
     }
 
-    /// Open the currently selected file in the configured git pager via
-    /// `git diff`. Uses the app's merge base when set (matching the branch-
-    /// scoped in-app view); otherwise runs a working-tree-vs-index diff.
-    /// No-op when no file is selected.
-    fn open_pager_diff(&mut self, terminal: &mut Terminal) -> Result<()> {
+    /// Send a Diff request to the worker for the currently selected file.
+    /// The response is applied later when `worker_rx` is drained.
+    fn handle_expand(&mut self) -> Result<()> {
         let Some(path) = self.state.selected_path() else {
-            tracing::debug!("no file selected; skipping open_pager_diff");
             return Ok(());
         };
-        let quoted = shell_single_quote(&path);
-        let cmd = build_diff_command(self.state.merge_base().as_ref(), &quoted);
-        tracing::info!(%cmd, cwd = %self.watch_path.display(), "Launching git diff");
 
-        let _guard = TerminalGuard::suspend(terminal)?;
-        let status = build_pager_command(&self.watch_path, &cmd)
-            .status()
-            .with_context(|| format!("failed to launch git diff: {cmd}"))?;
+        let token = self.state.advance_pending_diff_token();
 
-        if !status.success() {
-            tracing::info!(?status, "git diff exited non-zero");
+        match self.worker_tx.try_send(Request::Diff {
+            path: path.clone(),
+            token,
+        }) {
+            Ok(()) => {}
+            Err(crossbeam_channel::TrySendError::Full(_)) => {
+                tracing::debug!(token, "Diff request dropped (channel full)");
+            }
+            Err(e) => {
+                return Err(anyhow::anyhow!("worker channel closed: {e}"));
+            }
         }
+
+        // Surface the overlay immediately so the user sees feedback; the
+        // diff will populate once the worker responds.
+        self.state.show_diff_overlay();
         Ok(())
     }
 
@@ -1041,70 +1038,4 @@ mod editor_tests {
         assert_eq!(shell_single_quote(""), "''");
     }
 
-    #[test]
-    fn build_diff_command_working_tree() {
-        let cmd = build_diff_command(None, "'src/main.rs'");
-        assert_eq!(cmd, "git -c delta.paging=always diff -- 'src/main.rs'");
-    }
-
-    #[test]
-    fn build_diff_command_branch_scoped() {
-        let mb = gix::ObjectId::null(gix::hash::Kind::Sha1);
-        let cmd = build_diff_command(Some(&mb), "'src/main.rs'");
-        assert_eq!(
-            cmd,
-            "git -c delta.paging=always diff 0000000000000000000000000000000000000000 -- 'src/main.rs'"
-        );
-    }
-
-    #[test]
-    fn build_diff_command_quoted_path_with_space() {
-        let cmd = build_diff_command(None, "'my file.rs'");
-        assert_eq!(cmd, "git -c delta.paging=always diff -- 'my file.rs'");
-    }
-
-    /// Regression guard: the `-c delta.paging=always` override must appear in
-    /// every diff command so delta doesn't skip the pager on short diffs.
-    #[test]
-    fn build_diff_command_injects_delta_paging_override() {
-        let cmd = build_diff_command(None, "'x'");
-        assert!(
-            cmd.contains("-c delta.paging=always"),
-            "expected delta.paging override in: {cmd}"
-        );
-    }
-
-    /// Regression guard: git's default pager env (`LESS=FRX`) includes `-F`
-    /// which auto-quits less on short diffs, causing a visible "flash" on
-    /// files with 1–4 line changes. `build_pager_command` must override this
-    /// by setting `LESS=R` for the child process.
-    #[test]
-    fn build_pager_command_sets_less_without_f() {
-        let cmd = build_pager_command(std::path::Path::new("/tmp"), "git diff");
-        let less = cmd
-            .get_envs()
-            .find_map(|(k, v)| {
-                if k == std::ffi::OsStr::new("LESS") {
-                    v.map(|v| v.to_os_string())
-                } else {
-                    None
-                }
-            })
-            .expect("LESS env var must be set");
-        assert_eq!(less, std::ffi::OsString::from("R"));
-    }
-
-    #[test]
-    fn build_pager_command_uses_sh_c() {
-        let cmd = build_pager_command(std::path::Path::new("/tmp"), "git diff -- 'x'");
-        assert_eq!(cmd.get_program(), std::ffi::OsStr::new("sh"));
-        let args: Vec<&std::ffi::OsStr> = cmd.get_args().collect();
-        assert_eq!(
-            args,
-            vec![
-                std::ffi::OsStr::new("-c"),
-                std::ffi::OsStr::new("git diff -- 'x'"),
-            ]
-        );
-    }
 }

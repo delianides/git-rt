@@ -50,11 +50,17 @@ fn parse_created_from(line: &str) -> Option<String> {
 
     // Strip refs/heads/ and refs/remotes/<remote>/ prefixes to return a short name.
     if let Some(rest) = target.strip_prefix("refs/heads/") {
+        if rest.is_empty() {
+            return None;
+        }
         return Some(rest.to_string());
     }
     if let Some(rest) = target.strip_prefix("refs/remotes/") {
         // rest is "<remote>/<branch>" — strip the remote segment.
         let (_, branch) = rest.split_once('/')?;
+        if branch.is_empty() {
+            return None;
+        }
         return Some(branch.to_string());
     }
 
@@ -809,6 +815,18 @@ mod tests {
     fn parse_created_from_sha_source_returns_none() {
         // Creating from a commit SHA rather than a named ref — not useful.
         let line = "0 abc123 U <u@x> 0 +0000\tbranch: Created from a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6e7f8a9b0";
+        assert_eq!(parse_created_from(line), None);
+    }
+
+    #[test]
+    fn parse_created_from_empty_refs_heads_returns_none() {
+        let line = "0 abc U <u@x> 0 +0000\tbranch: Created from refs/heads/";
+        assert_eq!(parse_created_from(line), None);
+    }
+
+    #[test]
+    fn parse_created_from_empty_remote_branch_returns_none() {
+        let line = "0 abc U <u@x> 0 +0000\tbranch: Created from refs/remotes/origin/";
         assert_eq!(parse_created_from(line), None);
     }
 

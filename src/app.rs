@@ -465,6 +465,9 @@ impl App {
             while let Ok(resp) = self.worker_rx.try_recv() {
                 match resp {
                     Response::Status(bundle) => self.apply_status(*bundle),
+                    Response::Diff { path, token, .. } => {
+                        tracing::debug!(token, ?path, "Diff response received (ignored until Task 6)");
+                    }
                     Response::SwitchAck(_) => {
                         // Handled inline by the SwitchRepo caller in Task 7.
                     }

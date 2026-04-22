@@ -37,7 +37,7 @@ src/
 
 - Each line shows a changed file path with red deletion count and green addition count
 - Navigation via `j/k` or arrow keys
-- `Enter`, `l`, `Right`, `Space`, or `d` opens the selected file's diff in `git`'s configured pager
+- `Enter`, `l`, `Right`, `Space`, or `d` opens the selected file's diff in an in-app overlay (centered 85% panel, scrollable with `j`/`k`, dismissible with `Esc`/`q`/`h`/`Left`)
 - `q` quits
 - The viewport keeps a configurable `scroll_padding` of rows (default 3) visible above and below the selected row — set `display.scroll_padding` in `config.toml` to change it (`0` disables).
 
@@ -64,7 +64,7 @@ When a filesystem event fires:
 - **File status**: `git status --porcelain=v2 -z` parsed natively — much faster than gix's walk on large repos thanks to git's untracked cache + fsmonitor.
 - **Diff numstat**: `git diff --numstat -z <merge-base>` for branch view, `git diff --numstat -z` for the working-tree view.
 - **Cheap reads**: branch name, HEAD commit, merge-base, stash count, ahead/behind still use `gix` — sub-millisecond.
-- **Diff content**: delegated to the user's pager via `git diff ... | $PAGER`; no in-app rendering.
+- **Diff content**: rendered in an in-app overlay (see `src/ui/diff_overlay.rs`) — centered 85% panel with colored `+`/`-`/context lines and line numbers, scrollable with `j`/`k`.
 
 ### Filesystem Watching
 
@@ -122,7 +122,7 @@ RUST_LOG=debug cargo run       # Run with debug logging
 
 ## Current Status
 
-Core feature set is complete: live file-list with numstat, PR status strip, pager-based diff, filesystem watching, config file + keybindings, themes, multi-worktree support, and branch-scoped diff range.
+Core feature set is complete: live file-list with numstat, PR status strip, in-app diff overlay, filesystem watching, config file + keybindings, themes, multi-worktree support, and branch-scoped diff range.
 
 Remaining open items:
 

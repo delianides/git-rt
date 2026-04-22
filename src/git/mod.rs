@@ -190,15 +190,19 @@ struct ScoredCandidate {
     is_local: bool,
     /// Commit time (seconds since epoch) of the merge-base commit.
     merge_base_time: i64,
+    /// Topological distance from HEAD to the merge-base commit (0 = HEAD itself).
+    /// Smaller = closer to HEAD = better. Defaults to `usize::MAX` if unknown.
+    topo_distance: usize,
 }
 
-/// Pick the best candidate by: (1) max `merge_base_time`, (2) local over
-/// remote, (3) shorter name, (4) alphabetical. Returns `None` for an
-/// empty input.
+/// Pick the best candidate by: (1) max `merge_base_time`, (2) min
+/// `topo_distance` (closer ancestor wins), (3) local over remote,
+/// (4) shorter name, (5) alphabetical. Returns `None` for an empty input.
 fn pick_best_candidate(scored: Vec<ScoredCandidate>) -> Option<ScoredCandidate> {
     scored.into_iter().max_by(|a, b| {
         a.merge_base_time
             .cmp(&b.merge_base_time)
+            .then_with(|| b.topo_distance.cmp(&a.topo_distance)) // smaller dist wins → reverse cmp
             .then_with(|| a.is_local.cmp(&b.is_local)) // true > false → local wins
             .then_with(|| b.name.len().cmp(&a.name.len())) // shorter name wins → reverse cmp
             .then_with(|| b.name.cmp(&a.name)) // alphabetical ascending → reverse cmp for max
@@ -578,6 +582,73 @@ impl GitRepo {
         }
 
         out
+    }
+
+    /// For the given current branch, enumerate candidate refs, compute
+    /// merge-base with each, score by merge-base commit time, and return
+    /// the best candidate's short name. Returns `None` if there are no
+    /// candidates or no merge-bases can be computed.
+    fn closest_merge_base_candidate(&self, current_branch: &str) -> Option<String> {
+        // Resolve current branch tip.
+        let head_id = {
+            let head_ref = self
+                .repo
+                .find_reference(format!("refs/heads/{current_branch}").as_str())
+                .ok()?;
+            head_ref.id().detach()
+        };
+
+        let candidates = self.list_base_candidates(current_branch);
+        if candidates.is_empty() {
+            return None;
+        }
+
+        // Collect all commits reachable from HEAD (with topological index) so
+        // we can measure how far back the merge-base is.  Smaller index = closer
+        // to HEAD = better parent candidate.
+        let head_walk_index: std::collections::HashMap<gix::ObjectId, usize> = {
+            let mut map = std::collections::HashMap::new();
+            if let Ok(walk) = self.repo.rev_walk([head_id]).all() {
+                for (idx, info) in walk.flatten().enumerate() {
+                    map.insert(info.id, idx);
+                }
+            }
+            map
+        };
+
+        let mut scored: Vec<ScoredCandidate> = Vec::with_capacity(candidates.len());
+        for cand in candidates {
+            let mb = match self.find_merge_base(head_id, cand.tip) {
+                Ok(Some(id)) => id,
+                _ => continue,
+            };
+            // Skip candidates whose merge-base equals our own tip — they are
+            // descendants, not parents.
+            if mb == head_id {
+                continue;
+            }
+            // Look up commit time of the merge-base commit.
+            let Ok(obj) = self.repo.find_object(mb) else {
+                continue;
+            };
+            let Ok(commit) = obj.try_into_commit() else {
+                continue;
+            };
+            let Ok(time) = commit.time() else {
+                continue;
+            };
+            // Topological distance: lower index = closer to HEAD tip = better.
+            // Use negated distance as a secondary sort key (higher negated = closer).
+            let topo_dist = head_walk_index.get(&mb).copied().unwrap_or(usize::MAX);
+            scored.push(ScoredCandidate {
+                name: cand.name,
+                is_local: cand.is_local,
+                merge_base_time: time.seconds,
+                topo_distance: topo_dist,
+            });
+        }
+
+        pick_best_candidate(scored).map(|c| c.name)
     }
 
     /// Resolve the base branch name using priority:
@@ -1195,9 +1266,9 @@ mod tests {
     #[test]
     fn pick_best_most_recent_merge_base_wins() {
         let scored = vec![
-            ScoredCandidate { name: "main".into(), is_local: true, merge_base_time: 100 },
-            ScoredCandidate { name: "feature-a".into(), is_local: true, merge_base_time: 500 },
-            ScoredCandidate { name: "release-old".into(), is_local: true, merge_base_time: 10 },
+            ScoredCandidate { name: "main".into(), is_local: true, merge_base_time: 100, topo_distance: 5 },
+            ScoredCandidate { name: "feature-a".into(), is_local: true, merge_base_time: 500, topo_distance: 1 },
+            ScoredCandidate { name: "release-old".into(), is_local: true, merge_base_time: 10, topo_distance: 10 },
         ];
         assert_eq!(pick_best_candidate(scored).map(|c| c.name), Some("feature-a".into()));
     }
@@ -1205,8 +1276,8 @@ mod tests {
     #[test]
     fn pick_best_tie_prefers_local() {
         let scored = vec![
-            ScoredCandidate { name: "develop".into(), is_local: false, merge_base_time: 500 },
-            ScoredCandidate { name: "develop".into(), is_local: true, merge_base_time: 500 },
+            ScoredCandidate { name: "develop".into(), is_local: false, merge_base_time: 500, topo_distance: 1 },
+            ScoredCandidate { name: "develop".into(), is_local: true, merge_base_time: 500, topo_distance: 1 },
         ];
         let picked = pick_best_candidate(scored).unwrap();
         assert!(picked.is_local, "local should win tie with remote");
@@ -1215,8 +1286,8 @@ mod tests {
     #[test]
     fn pick_best_tie_prefers_shorter_name() {
         let scored = vec![
-            ScoredCandidate { name: "release/2024-old".into(), is_local: true, merge_base_time: 500 },
-            ScoredCandidate { name: "main".into(), is_local: true, merge_base_time: 500 },
+            ScoredCandidate { name: "release/2024-old".into(), is_local: true, merge_base_time: 500, topo_distance: 1 },
+            ScoredCandidate { name: "main".into(), is_local: true, merge_base_time: 500, topo_distance: 1 },
         ];
         assert_eq!(pick_best_candidate(scored).map(|c| c.name), Some("main".into()));
     }
@@ -1224,8 +1295,8 @@ mod tests {
     #[test]
     fn pick_best_tie_alphabetical_final_tiebreak() {
         let scored = vec![
-            ScoredCandidate { name: "bar".into(), is_local: true, merge_base_time: 500 },
-            ScoredCandidate { name: "aaa".into(), is_local: true, merge_base_time: 500 },
+            ScoredCandidate { name: "bar".into(), is_local: true, merge_base_time: 500, topo_distance: 1 },
+            ScoredCandidate { name: "aaa".into(), is_local: true, merge_base_time: 500, topo_distance: 1 },
         ];
         assert_eq!(pick_best_candidate(scored).map(|c| c.name), Some("aaa".into()));
     }
@@ -1233,6 +1304,59 @@ mod tests {
     #[test]
     fn pick_best_empty_returns_none() {
         assert!(pick_best_candidate(Vec::new()).is_none());
+    }
+
+    #[test]
+    fn closest_merge_base_picks_stacked_parent() {
+        let tmp = tempfile::tempdir().unwrap();
+        let p = tmp.path();
+        let g = |args: &[&str]| {
+            let status = std::process::Command::new("git")
+                .args(args)
+                .current_dir(p)
+                .env("GIT_AUTHOR_NAME", "t")
+                .env("GIT_AUTHOR_EMAIL", "t@t")
+                .env("GIT_COMMITTER_NAME", "t")
+                .env("GIT_COMMITTER_EMAIL", "t@t")
+                .status()
+                .expect("git must run");
+            assert!(status.success(), "git {:?} failed", args);
+        };
+        // main ← feature-a ← feature-b
+        g(&["init", "-q", "-b", "main"]);
+        g(&["-c", "commit.gpgsign=false", "commit", "--allow-empty", "-q", "-m", "m1"]);
+        g(&["checkout", "-q", "-b", "feature-a"]);
+        g(&["-c", "commit.gpgsign=false", "commit", "--allow-empty", "-q", "-m", "a1"]);
+        g(&["checkout", "-q", "-b", "feature-b"]);
+        g(&["-c", "commit.gpgsign=false", "commit", "--allow-empty", "-q", "-m", "b1"]);
+
+        let repo = GitRepo::new(p).unwrap();
+        assert_eq!(
+            repo.closest_merge_base_candidate("feature-b"),
+            Some("feature-a".to_string())
+        );
+    }
+
+    #[test]
+    fn closest_merge_base_none_for_single_branch_repo() {
+        let tmp = tempfile::tempdir().unwrap();
+        let p = tmp.path();
+        let g = |args: &[&str]| {
+            let status = std::process::Command::new("git")
+                .args(args)
+                .current_dir(p)
+                .env("GIT_AUTHOR_NAME", "t")
+                .env("GIT_AUTHOR_EMAIL", "t@t")
+                .env("GIT_COMMITTER_NAME", "t")
+                .env("GIT_COMMITTER_EMAIL", "t@t")
+                .status()
+                .expect("git must run");
+            assert!(status.success(), "git {:?} failed", args);
+        };
+        g(&["init", "-q", "-b", "main"]);
+        g(&["-c", "commit.gpgsign=false", "commit", "--allow-empty", "-q", "-m", "m1"]);
+        let repo = GitRepo::new(p).unwrap();
+        assert_eq!(repo.closest_merge_base_candidate("main"), None);
     }
 
     #[test]

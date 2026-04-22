@@ -27,6 +27,47 @@ impl GitFailure {
     }
 }
 
+/// Parse a single reflog line and return the branch name the current branch
+/// was created from, if this line is a "branch: Created from X" entry.
+///
+/// Returns `None` for malformed lines, non-"Created from" entries, the
+/// `HEAD` sentinel, and SHA sources (no branch name to return).
+///
+/// Expected format (single line, tab-separated message field):
+///   `<old-sha> <new-sha> <who> <time> <tz>\tbranch: Created from <ref>`
+fn parse_created_from(line: &str) -> Option<String> {
+    // Message is after the first tab.
+    let (_, msg) = line.split_once('\t')?;
+    let target = msg.strip_prefix("branch: Created from ")?.trim();
+
+    // Reject sentinels and raw SHAs.
+    if target == "HEAD" || target.is_empty() {
+        return None;
+    }
+    if is_hex_sha(target) {
+        return None;
+    }
+
+    // Strip refs/heads/ and refs/remotes/<remote>/ prefixes to return a short name.
+    if let Some(rest) = target.strip_prefix("refs/heads/") {
+        return Some(rest.to_string());
+    }
+    if let Some(rest) = target.strip_prefix("refs/remotes/") {
+        // rest is "<remote>/<branch>" — strip the remote segment.
+        let (_, branch) = rest.split_once('/')?;
+        return Some(branch.to_string());
+    }
+
+    Some(target.to_string())
+}
+
+/// True if `s` looks like a full or abbreviated git object SHA (hex only,
+/// length 4..=40).
+fn is_hex_sha(s: &str) -> bool {
+    let len = s.len();
+    (4..=40).contains(&len) && s.bytes().all(|b| b.is_ascii_hexdigit())
+}
+
 /// Errors from `discover_worktree_root`.
 #[derive(Debug, Error)]
 pub enum DiscoverError {
@@ -727,6 +768,48 @@ mod tests {
 
         let result = main_worktree_path(&repo);
         assert_eq!(result, repo);
+    }
+
+    #[test]
+    fn parse_created_from_plain_branch() {
+        let line = "0000000000000000000000000000000000000000 abc123 User <u@x> 1700000000 +0000\tbranch: Created from feature-a";
+        assert_eq!(parse_created_from(line), Some("feature-a".to_string()));
+    }
+
+    #[test]
+    fn parse_created_from_refs_heads_prefix() {
+        let line = "0 abc123 U <u@x> 0 +0000\tbranch: Created from refs/heads/feature-a";
+        assert_eq!(parse_created_from(line), Some("feature-a".to_string()));
+    }
+
+    #[test]
+    fn parse_created_from_remote_prefix() {
+        let line = "0 abc123 U <u@x> 0 +0000\tbranch: Created from refs/remotes/origin/develop";
+        assert_eq!(parse_created_from(line), Some("develop".to_string()));
+    }
+
+    #[test]
+    fn parse_created_from_head_sentinel() {
+        // "HEAD" as the source isn't a branch name we can use — reject it.
+        let line = "0 abc123 U <u@x> 0 +0000\tbranch: Created from HEAD";
+        assert_eq!(parse_created_from(line), None);
+    }
+
+    #[test]
+    fn parse_created_from_malformed_returns_none() {
+        assert_eq!(parse_created_from("not a reflog line"), None);
+        assert_eq!(parse_created_from(""), None);
+        assert_eq!(
+            parse_created_from("0 abc U <u@x> 0 +0000\tcheckout: moving from x to y"),
+            None
+        );
+    }
+
+    #[test]
+    fn parse_created_from_sha_source_returns_none() {
+        // Creating from a commit SHA rather than a named ref — not useful.
+        let line = "0 abc123 U <u@x> 0 +0000\tbranch: Created from a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6e7f8a9b0";
+        assert_eq!(parse_created_from(line), None);
     }
 
     // --- discover_worktree_root tests ---

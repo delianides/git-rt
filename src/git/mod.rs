@@ -448,6 +448,26 @@ impl GitRepo {
         }
     }
 
+    /// Read the first line of the branch's reflog (shared across worktrees —
+    /// lives in the *common* git dir at `logs/refs/heads/<branch>`) and extract
+    /// the branch name it was created from, if any.
+    ///
+    /// Returns `None` if the reflog file is missing, empty, malformed, or
+    /// references the branch itself (a reset artifact).
+    fn reflog_first_created_from(&self, branch: &str) -> Option<String> {
+        let common = resolve_common_git_dir(&self.repo_path)?;
+        let reflog_path = common.join("logs/refs/heads").join(branch);
+
+        let content = std::fs::read_to_string(&reflog_path).ok()?;
+        let first_line = content.lines().next()?;
+
+        let extracted = parse_created_from(first_line)?;
+        if extracted == branch {
+            return None;
+        }
+        Some(extracted)
+    }
+
     /// Resolve the base branch name using priority:
     /// 1. Explicit override (CLI flag or config value, pre-merged by caller)
     /// 2. Auto-detect from origin/HEAD
@@ -938,5 +958,78 @@ mod tests {
             matches!(err, DiscoverError::BareRepo(_)),
             "expected BareRepo, got {err:?}"
         );
+    }
+
+    #[test]
+    fn reflog_first_created_from_reads_valid_file() {
+        let tmp = tempfile::tempdir().unwrap();
+        let repo_path = tmp.path();
+
+        // Init a real repo so GitRepo::new succeeds.
+        std::process::Command::new("git")
+            .args(["init", "-q", "-b", "main"])
+            .current_dir(repo_path)
+            .status()
+            .unwrap();
+        std::process::Command::new("git")
+            .args(["commit", "--allow-empty", "-q", "-m", "init"])
+            .current_dir(repo_path)
+            .env("GIT_AUTHOR_NAME", "t")
+            .env("GIT_AUTHOR_EMAIL", "t@t")
+            .env("GIT_COMMITTER_NAME", "t")
+            .env("GIT_COMMITTER_EMAIL", "t@t")
+            .status()
+            .unwrap();
+
+        // Write a synthetic reflog for branch "feature-b" that looks like
+        // it was branched from feature-a.
+        let logs_dir = repo_path.join(".git/logs/refs/heads");
+        std::fs::create_dir_all(&logs_dir).unwrap();
+        std::fs::write(
+            logs_dir.join("feature-b"),
+            "0000000000000000000000000000000000000000 abc123 U <u@x> 0 +0000\tbranch: Created from feature-a\n",
+        )
+        .unwrap();
+
+        let repo = GitRepo::new(repo_path).unwrap();
+        assert_eq!(
+            repo.reflog_first_created_from("feature-b"),
+            Some("feature-a".to_string())
+        );
+    }
+
+    #[test]
+    fn reflog_first_created_from_missing_file_returns_none() {
+        let tmp = tempfile::tempdir().unwrap();
+        std::process::Command::new("git")
+            .args(["init", "-q", "-b", "main"])
+            .current_dir(tmp.path())
+            .status()
+            .unwrap();
+        let repo = GitRepo::new(tmp.path()).unwrap();
+        assert_eq!(repo.reflog_first_created_from("no-such-branch"), None);
+    }
+
+    #[test]
+    fn reflog_first_created_from_rejects_self_reference() {
+        let tmp = tempfile::tempdir().unwrap();
+        let repo_path = tmp.path();
+        std::process::Command::new("git")
+            .args(["init", "-q", "-b", "main"])
+            .current_dir(repo_path)
+            .status()
+            .unwrap();
+
+        let logs_dir = repo_path.join(".git/logs/refs/heads");
+        std::fs::create_dir_all(&logs_dir).unwrap();
+        std::fs::write(
+            logs_dir.join("feature-b"),
+            "0 abc U <u@x> 0 +0000\tbranch: Created from feature-b\n",
+        )
+        .unwrap();
+
+        let repo = GitRepo::new(repo_path).unwrap();
+        // A branch "created from itself" is a reset artifact, not useful.
+        assert_eq!(repo.reflog_first_created_from("feature-b"), None);
     }
 }

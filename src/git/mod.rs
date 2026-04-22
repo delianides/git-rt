@@ -97,6 +97,34 @@ pub fn discover_worktree_root(start: &Path) -> Result<PathBuf, DiscoverError> {
     }
 }
 
+/// Parsed diff output for a single file.
+#[derive(Debug, Clone, Default)]
+pub struct FileDiff {
+    pub hunks: Vec<DiffHunk>,
+}
+
+/// A single diff hunk.
+#[derive(Debug, Clone)]
+pub struct DiffHunk {
+    pub header: String,
+    pub lines: Vec<DiffLine>,
+}
+
+/// A line within a diff hunk.
+#[derive(Debug, Clone)]
+pub struct DiffLine {
+    pub kind: DiffLineKind,
+    pub content: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum DiffLineKind {
+    Context,
+    Addition,
+    Deletion,
+    HunkHeader,
+}
+
 pub mod cli;
 pub mod worker;
 
@@ -261,6 +289,56 @@ impl GitRepo {
     /// + `git diff --numstat` via [`crate::git::cli::compute_status_files`].
     pub fn status(&self) -> Result<Vec<FileEntry>, GitFailure> {
         crate::git::cli::compute_status_files(&self.repo_path, None)
+    }
+
+    /// Compute the unified diff for a single file.
+    ///
+    /// Uses gix to load the index blob and diffs it against the worktree file.
+    /// For untracked files, synthesizes a diff where every line is an addition.
+    pub fn diff_file(&self, path: &str) -> Result<FileDiff, GitFailure> {
+        let work_dir = match self.repo.workdir() {
+            Some(d) => d.to_path_buf(),
+            None => return Ok(FileDiff::default()),
+        };
+        let worktree_path = work_dir.join(path);
+
+        // Load the index to find the tracked blob
+        let index = match self.repo.index_or_empty() {
+            Ok(i) => i,
+            Err(e) => return Err(GitFailure::EnvChange(format!("diff_file index: {e}"))),
+        };
+
+        let path_bstr: &gix::bstr::BStr = path.as_bytes().into();
+        let entry = index.entry_by_path(path_bstr);
+
+        match entry {
+            Some(entry) => {
+                let blob = match self.repo.find_object(entry.id) {
+                    Ok(obj) => obj,
+                    Err(e) => {
+                        return Err(GitFailure::EnvChange(format!("diff_file blob: {e}")));
+                    }
+                };
+                let index_text = String::from_utf8_lossy(&blob.data).into_owned();
+
+                let worktree_text = match std::fs::read_to_string(&worktree_path) {
+                    Ok(t) => t,
+                    Err(_) => {
+                        return Ok(synthesize_deletion_diff(&index_text));
+                    }
+                };
+
+                Ok(synthesize_text_diff(&index_text, &worktree_text))
+            }
+            None => {
+                if worktree_path.exists() {
+                    self.diff_untracked(path)
+                        .map_err(|e| GitFailure::Failed(format!("diff_untracked: {e}")))
+                } else {
+                    Ok(FileDiff::default())
+                }
+            }
+        }
     }
 
     /// Get the repository name (basename of the main repo, even in a linked worktree).
@@ -762,6 +840,214 @@ impl GitRepo {
     pub fn branch_status(&self, merge_base: gix::ObjectId) -> Result<Vec<FileEntry>, GitFailure> {
         crate::git::cli::compute_status_files(&self.repo_path, Some(&merge_base))
     }
+
+    /// Compute the unified diff for a single file between the merge base
+    /// and the current working tree.
+    pub fn branch_diff_file(
+        &self,
+        path: &str,
+        merge_base: gix::ObjectId,
+    ) -> Result<FileDiff, GitFailure> {
+        let work_dir = match self.repo.workdir() {
+            Some(d) => d.to_path_buf(),
+            None => return Ok(FileDiff::default()),
+        };
+        let worktree_path = work_dir.join(path);
+
+        let mb_commit = self
+            .repo
+            .find_object(merge_base)
+            .map_err(|e| GitFailure::EnvChange(format!("branch_diff_file find mb: {e}")))?
+            .try_into_commit()
+            .map_err(|e| GitFailure::EnvChange(format!("branch_diff_file into commit: {e}")))?;
+        let mb_tree = mb_commit
+            .tree()
+            .map_err(|e| GitFailure::EnvChange(format!("branch_diff_file tree: {e}")))?;
+
+        let old_text = self.find_blob_in_tree(&mb_tree, path);
+
+        match (old_text, worktree_path.exists()) {
+            (Some(old), true) => {
+                let new_text = match std::fs::read_to_string(&worktree_path) {
+                    Ok(t) => t,
+                    Err(_) => return Ok(FileDiff::default()),
+                };
+                Ok(synthesize_text_diff(&old, &new_text))
+            }
+            (Some(old), false) => Ok(synthesize_deletion_diff(&old)),
+            (None, true) => self
+                .diff_untracked(path)
+                .map_err(|e| GitFailure::Failed(format!("branch_diff_file untracked: {e}"))),
+            (None, false) => Ok(FileDiff::default()),
+        }
+    }
+
+    fn find_blob_in_tree(&self, tree: &gix::Tree<'_>, path: &str) -> Option<String> {
+        let parts: Vec<&str> = path.split('/').collect();
+        self.walk_tree_for_blob(tree, &parts)
+    }
+
+    fn walk_tree_for_blob(&self, tree: &gix::Tree<'_>, parts: &[&str]) -> Option<String> {
+        use gix::bstr::ByteSlice;
+
+        if parts.is_empty() {
+            return None;
+        }
+
+        let first = parts[0];
+        let rest = &parts[1..];
+
+        for entry in tree.iter().flatten() {
+            let name = entry.filename().to_str_lossy();
+            if name == first {
+                if rest.is_empty() {
+                    // Leaf: should be a blob
+                    let id = entry.object_id();
+                    let obj = self.repo.find_object(id).ok()?;
+                    if obj.kind.is_blob() {
+                        return Some(String::from_utf8_lossy(&obj.data).into_owned());
+                    }
+                    return None;
+                } else {
+                    // Descend into subtree
+                    let id = entry.object_id();
+                    let obj = self.repo.find_object(id).ok()?;
+                    let subtree = obj.try_into_tree().ok()?;
+                    return self.walk_tree_for_blob(&subtree, rest);
+                }
+            }
+        }
+        None
+    }
+
+    /// Create a synthetic diff for untracked files (all lines as additions)
+    fn diff_untracked(&self, path: &str) -> Result<FileDiff> {
+        let file_path = self.repo_path.join(path);
+        let content = std::fs::read_to_string(&file_path).unwrap_or_default();
+
+        let lines: Vec<DiffLine> = content
+            .lines()
+            .map(|l| DiffLine {
+                kind: DiffLineKind::Addition,
+                content: l.to_string(),
+            })
+            .collect();
+
+        let line_count = lines.len();
+
+        Ok(FileDiff {
+            hunks: vec![DiffHunk {
+                header: format!("@@ -0,0 +1,{line_count} @@ (new file)"),
+                lines,
+            }],
+        })
+    }
+}
+
+/// Synthesize a FileDiff between two texts using a simple prefix/suffix trim.
+/// Emits a single hunk showing the changed region with 3 lines of context.
+/// Not a proper Myers diff but readable enough for the compact view.
+fn synthesize_text_diff(old: &str, new: &str) -> FileDiff {
+    let old_lines: Vec<&str> = old.lines().collect();
+    let new_lines: Vec<&str> = new.lines().collect();
+
+    // Trim common prefix
+    let mut prefix_len = 0;
+    while prefix_len < old_lines.len()
+        && prefix_len < new_lines.len()
+        && old_lines[prefix_len] == new_lines[prefix_len]
+    {
+        prefix_len += 1;
+    }
+
+    // Trim common suffix (be careful not to overlap prefix)
+    let mut suffix_len = 0;
+    while suffix_len < (old_lines.len().saturating_sub(prefix_len))
+        && suffix_len < (new_lines.len().saturating_sub(prefix_len))
+        && old_lines[old_lines.len() - 1 - suffix_len]
+            == new_lines[new_lines.len() - 1 - suffix_len]
+    {
+        suffix_len += 1;
+    }
+
+    let old_changed_start = prefix_len;
+    let old_changed_end = old_lines.len() - suffix_len;
+    let new_changed_start = prefix_len;
+    let new_changed_end = new_lines.len() - suffix_len;
+
+    // If nothing changed, return empty diff
+    if old_changed_start >= old_changed_end && new_changed_start >= new_changed_end {
+        return FileDiff::default();
+    }
+
+    let mut lines = Vec::new();
+
+    // Context before (up to 3 lines)
+    let context_before_start = prefix_len.saturating_sub(3);
+    for line in &old_lines[context_before_start..prefix_len] {
+        lines.push(DiffLine {
+            kind: DiffLineKind::Context,
+            content: line.to_string(),
+        });
+    }
+
+    // Deletions
+    for line in &old_lines[old_changed_start..old_changed_end] {
+        lines.push(DiffLine {
+            kind: DiffLineKind::Deletion,
+            content: line.to_string(),
+        });
+    }
+
+    // Additions
+    for line in &new_lines[new_changed_start..new_changed_end] {
+        lines.push(DiffLine {
+            kind: DiffLineKind::Addition,
+            content: line.to_string(),
+        });
+    }
+
+    // Context after (up to 3 lines)
+    let context_after_end = (old_changed_end + 3).min(old_lines.len());
+    for line in &old_lines[old_changed_end..context_after_end] {
+        lines.push(DiffLine {
+            kind: DiffLineKind::Context,
+            content: line.to_string(),
+        });
+    }
+
+    let old_count = old_changed_end - context_before_start;
+    let new_count = new_changed_end - context_before_start;
+
+    let header = format!(
+        "@@ -{},{} +{},{} @@",
+        context_before_start + 1,
+        old_count.max(1),
+        context_before_start + 1,
+        new_count.max(1)
+    );
+
+    FileDiff {
+        hunks: vec![DiffHunk { header, lines }],
+    }
+}
+
+/// Synthesize a "file deleted" diff (all lines as deletions).
+fn synthesize_deletion_diff(old: &str) -> FileDiff {
+    let lines: Vec<DiffLine> = old
+        .lines()
+        .map(|l| DiffLine {
+            kind: DiffLineKind::Deletion,
+            content: l.to_string(),
+        })
+        .collect();
+    let count = lines.len();
+    FileDiff {
+        hunks: vec![DiffHunk {
+            header: format!("@@ -1,{count} +0,0 @@ (deleted)"),
+            lines,
+        }],
+    }
 }
 
 /// Count commits reachable from `from` but not from `exclude`.
@@ -797,6 +1083,54 @@ fn count_reachable_exclusive(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn test_synthesize_text_diff_detects_changes() {
+        let old = "line1\nline2\nline3\n";
+        let new = "line1\nmodified\nline3\n";
+        let diff = synthesize_text_diff(old, new);
+        assert_eq!(diff.hunks.len(), 1, "should produce one hunk");
+        let hunk = &diff.hunks[0];
+        let del_count = hunk
+            .lines
+            .iter()
+            .filter(|l| matches!(l.kind, DiffLineKind::Deletion))
+            .count();
+        let add_count = hunk
+            .lines
+            .iter()
+            .filter(|l| matches!(l.kind, DiffLineKind::Addition))
+            .count();
+        assert_eq!(del_count, 1, "one line deleted");
+        assert_eq!(add_count, 1, "one line added");
+    }
+
+    #[test]
+    fn test_synthesize_text_diff_no_changes() {
+        let s = "same\nsame\n";
+        let diff = synthesize_text_diff(s, s);
+        assert!(diff.hunks.is_empty(), "identical texts produce empty diff");
+    }
+
+    #[test]
+    fn test_synthesize_deletion_diff_marks_all_deletions() {
+        let diff = synthesize_deletion_diff("a\nb\nc\n");
+        assert_eq!(diff.hunks.len(), 1);
+        assert_eq!(diff.hunks[0].lines.len(), 3);
+        assert!(diff.hunks[0]
+            .lines
+            .iter()
+            .all(|l| matches!(l.kind, DiffLineKind::Deletion)));
+    }
+
+    #[test]
+    fn test_diff_file_handles_missing_path() {
+        let repo = GitRepo::new(std::path::Path::new(".")).unwrap();
+        let result = repo.diff_file("nonexistent-file-xyz-12345.rs");
+        assert!(result.is_ok());
+        let diff = result.unwrap();
+        assert!(diff.hunks.is_empty());
+    }
 
     #[test]
     fn test_file_status_variants() {

@@ -434,30 +434,38 @@ impl AppState {
         // Try to preserve the selected file by path
         let selected_path = self.selected_path();
 
-        // Build a snapshot of old file stats for flash detection
-        let old_stats: HashMap<&str, (usize, usize)> = self
-            .files
-            .iter()
-            .map(|f| (f.path.as_str(), (f.insertions, f.deletions)))
-            .collect();
-
-        // Detect changed files and record flash times
         let now = Instant::now();
-        for file in &new_files {
-            let changed = match old_stats.get(file.path.as_str()) {
-                Some(&(old_ins, old_del)) => {
-                    old_ins != file.insertions || old_del != file.deletions
-                }
-                None => true, // new file
-            };
-            if changed {
-                self.flash_times.insert(file.path.clone(), now);
-            }
-        }
 
-        // Clean up expired flash times
-        self.flash_times
-            .retain(|_, t| t.elapsed() < self.flash_duration);
+        if self.initial_seed_done {
+            // Build a snapshot of old file stats for flash detection
+            let old_stats: HashMap<&str, (usize, usize)> = self
+                .files
+                .iter()
+                .map(|f| (f.path.as_str(), (f.insertions, f.deletions)))
+                .collect();
+
+            // Detect changed files and record flash times
+            for file in &new_files {
+                let changed = match old_stats.get(file.path.as_str()) {
+                    Some(&(old_ins, old_del)) => {
+                        old_ins != file.insertions || old_del != file.deletions
+                    }
+                    None => true, // new file
+                };
+                if changed {
+                    self.flash_times.insert(file.path.clone(), now);
+                }
+            }
+
+            // Clean up expired flash times
+            self.flash_times
+                .retain(|_, t| t.elapsed() < self.flash_duration);
+        } else {
+            // First populate after construction or worktree switch — treat
+            // as baseline, not a set of changes. Future calls will flash
+            // real diffs against this baseline.
+            self.initial_seed_done = true;
+        }
 
         self.files = new_files;
         self.refresh_count += 1;
@@ -588,19 +596,10 @@ mod tests {
     }
 
     #[test]
-    fn test_flash_on_new_file() {
-        let mut state = AppState::new(vec![], Duration::from_millis(600), "main".to_string());
-        assert!(!state.is_flashing("a.rs"));
-
-        state.update_files(vec![make_entry("a.rs", 1, 0)]);
-        assert!(state.is_flashing("a.rs"));
-    }
-
-    #[test]
     fn test_flash_on_changed_stats() {
-        let files = vec![make_entry("a.rs", 1, 0)];
-        let mut state = AppState::new(files, Duration::from_millis(600), "main".to_string());
-        // Initial load doesn't flash (no previous state to compare)
+        let mut state = AppState::new(vec![], Duration::from_millis(600), "main".to_string());
+        // Seed the baseline via the first update_files (matches production)
+        state.update_files(vec![make_entry("a.rs", 1, 0)]);
         assert!(!state.is_flashing("a.rs"));
 
         // Update with changed stats — should flash
@@ -620,9 +619,11 @@ mod tests {
 
     #[test]
     fn test_flash_expires() {
-        let files = vec![make_entry("a.rs", 1, 0)];
-        let mut state = AppState::new(files, Duration::from_millis(1), "main".to_string()); // 1ms flash
+        let mut state = AppState::new(vec![], Duration::from_millis(1), "main".to_string()); // 1ms flash
+                                                                                             // Seed the baseline
+        state.update_files(vec![make_entry("a.rs", 1, 0)]);
 
+        // Change triggers a flash
         state.update_files(vec![make_entry("a.rs", 5, 2)]);
         // Sleep just past the flash duration
         std::thread::sleep(Duration::from_millis(5));
@@ -881,6 +882,39 @@ mod tests {
         assert!(s.is_computing());
         s.set_computing(false);
         assert!(!s.is_computing());
+    }
+
+    #[test]
+    fn update_files_initial_seed_does_not_flash() {
+        let mut state = AppState::new(vec![], Duration::from_millis(600), "main".to_string());
+        state.update_files(vec![
+            make_entry("a.rs", 1, 0),
+            make_entry("b.rs", 2, 1),
+            make_entry("c.rs", 0, 3),
+        ]);
+        assert!(!state.is_flashing("a.rs"));
+        assert!(!state.is_flashing("b.rs"));
+        assert!(!state.is_flashing("c.rs"));
+    }
+
+    #[test]
+    fn update_files_after_seed_flashes_changed_numstat() {
+        let mut state = AppState::new(vec![], Duration::from_millis(600), "main".to_string());
+        state.update_files(vec![make_entry("a.rs", 1, 0)]); // seed
+        state.update_files(vec![make_entry("a.rs", 5, 2)]); // stats change
+        assert!(state.is_flashing("a.rs"));
+    }
+
+    #[test]
+    fn update_files_after_seed_flashes_new_file() {
+        let mut state = AppState::new(vec![], Duration::from_millis(600), "main".to_string());
+        state.update_files(vec![make_entry("a.rs", 1, 0)]); // seed
+        state.update_files(vec![
+            make_entry("a.rs", 1, 0), // unchanged
+            make_entry("b.rs", 2, 1), // new
+        ]);
+        assert!(!state.is_flashing("a.rs"));
+        assert!(state.is_flashing("b.rs"));
     }
 
     #[test]

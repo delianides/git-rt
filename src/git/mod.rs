@@ -638,7 +638,7 @@ impl GitRepo {
                 continue;
             };
             // Topological distance: lower index = closer to HEAD tip = better.
-            // Use negated distance as a secondary sort key (higher negated = closer).
+            // Stored as-is; pick_best_candidate uses a reversed compare so smaller wins.
             let topo_dist = head_walk_index.get(&mb).copied().unwrap_or(usize::MAX);
             scored.push(ScoredCandidate {
                 name: cand.name,
@@ -1304,6 +1304,17 @@ mod tests {
     #[test]
     fn pick_best_empty_returns_none() {
         assert!(pick_best_candidate(Vec::new()).is_none());
+    }
+
+    #[test]
+    fn pick_best_tie_prefers_closer_topo_distance() {
+        // Both candidates share merge_base_time and is_local — the only
+        // differentiator is topo_distance. Closer (smaller) wins.
+        let scored = vec![
+            ScoredCandidate { name: "main".into(), is_local: true, merge_base_time: 500, topo_distance: 5 },
+            ScoredCandidate { name: "feature-a".into(), is_local: true, merge_base_time: 500, topo_distance: 1 },
+        ];
+        assert_eq!(pick_best_candidate(scored).map(|c| c.name), Some("feature-a".into()));
     }
 
     #[test]

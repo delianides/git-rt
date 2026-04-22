@@ -619,8 +619,9 @@ mod tests {
 
     #[test]
     fn test_flash_expires() {
-        let mut state = AppState::new(vec![], Duration::from_millis(1), "main".to_string()); // 1ms flash
-                                                                                             // Seed the baseline
+        // 1ms flash duration so the sleep below reliably outruns it.
+        let mut state = AppState::new(vec![], Duration::from_millis(1), "main".to_string());
+        // Seed the baseline.
         state.update_files(vec![make_entry("a.rs", 1, 0)]);
 
         // Change triggers a flash

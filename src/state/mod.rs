@@ -411,6 +411,7 @@ impl AppState {
         self.refresh_count = 0;
         self.last_refresh = Instant::now();
         self.flash_times.clear();
+        self.initial_seed_done = false;
         self.branch = branch;
         self.repo_name = repo_name;
         self.worktree_name = worktree_name;
@@ -950,5 +951,50 @@ mod tests {
             "wt".to_string(),
         );
         assert_eq!(state.scroll_offset(), 0);
+    }
+
+    #[test]
+    fn reset_for_switch_clears_seed_flag() {
+        let mut state = AppState::new(vec![], Duration::from_millis(600), "main".to_string());
+        // Seed the baseline
+        state.update_files(vec![make_entry("a.rs", 1, 0)]);
+
+        // Switch worktree — should force the next update_files to be a new baseline
+        state.reset_for_switch(
+            Vec::new(),
+            "feat/foo".to_string(),
+            "repo".to_string(),
+            "wt".to_string(),
+        );
+
+        // First post-switch update must not flash any row
+        state.update_files(vec![make_entry("x.rs", 5, 2), make_entry("y.rs", 0, 1)]);
+        assert!(!state.is_flashing("x.rs"));
+        assert!(!state.is_flashing("y.rs"));
+    }
+
+    #[test]
+    fn post_switch_change_on_clean_branch_flashes() {
+        let mut state = AppState::new(vec![], Duration::from_millis(600), "main".to_string());
+        // Initial seed (empty state)
+        state.update_files(vec![]);
+
+        // Switch to a clean branch
+        state.reset_for_switch(
+            Vec::new(),
+            "feat/foo".to_string(),
+            "repo".to_string(),
+            "wt".to_string(),
+        );
+
+        // First post-switch update: empty (the new branch is clean)
+        state.update_files(vec![]);
+
+        // User edits a file on the new branch
+        state.update_files(vec![make_entry("new.rs", 3, 1)]);
+
+        // That file must flash — this is the case that rules out the
+        // "empty-list" shortcut alternative design.
+        assert!(state.is_flashing("new.rs"));
     }
 }

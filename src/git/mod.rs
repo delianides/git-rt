@@ -966,20 +966,34 @@ mod tests {
         let repo_path = tmp.path();
 
         // Init a real repo so GitRepo::new succeeds.
-        std::process::Command::new("git")
+        // `-c commit.gpgsign=false` overrides any global signing config so
+        // the setup commit doesn't spew "fatal: gpg" noise or fail on strict
+        // gpg-required environments.
+        let init_status = std::process::Command::new("git")
             .args(["init", "-q", "-b", "main"])
             .current_dir(repo_path)
             .status()
-            .unwrap();
-        std::process::Command::new("git")
-            .args(["commit", "--allow-empty", "-q", "-m", "init"])
+            .expect("git init must run");
+        assert!(init_status.success(), "git init failed");
+
+        let commit_status = std::process::Command::new("git")
+            .args([
+                "-c",
+                "commit.gpgsign=false",
+                "commit",
+                "--allow-empty",
+                "-q",
+                "-m",
+                "init",
+            ])
             .current_dir(repo_path)
             .env("GIT_AUTHOR_NAME", "t")
             .env("GIT_AUTHOR_EMAIL", "t@t")
             .env("GIT_COMMITTER_NAME", "t")
             .env("GIT_COMMITTER_EMAIL", "t@t")
             .status()
-            .unwrap();
+            .expect("git commit must run");
+        assert!(commit_status.success(), "git commit failed");
 
         // Write a synthetic reflog for branch "feature-b" that looks like
         // it was branched from feature-a.

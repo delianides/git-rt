@@ -182,6 +182,21 @@ pub fn main_worktree_path(repo_path: &Path) -> PathBuf {
         .unwrap_or_else(|| repo_path.to_path_buf())
 }
 
+/// A candidate ref for base-branch detection. `is_local` controls tie-break
+/// preference when two candidates share the same merge-base commit time.
+#[derive(Debug, Clone)]
+struct BaseCandidate {
+    /// Short branch name (e.g. "main" or "develop" — no `refs/heads/` or
+    /// `refs/remotes/origin/` prefix).
+    name: String,
+    /// Full ref name (kept for logging / debugging).
+    full_ref: String,
+    /// Tip commit of the candidate branch.
+    tip: gix::ObjectId,
+    /// True for `refs/heads/*`, false for `refs/remotes/*/*`.
+    is_local: bool,
+}
+
 /// Git repository handle backed by gix (gitoxide).
 pub struct GitRepo {
     repo: gix::Repository,
@@ -466,6 +481,82 @@ impl GitRepo {
             return None;
         }
         Some(extracted)
+    }
+
+    /// Enumerate all local branches and remote-tracking branches as
+    /// candidates for base-branch detection, excluding the current branch
+    /// and any symbolic refs (e.g. `refs/remotes/origin/HEAD`).
+    ///
+    /// Remote-tracking candidates use the short branch name (trailing
+    /// path segment) as `name`; callers route through
+    /// [`GitRepo::merge_base`] which handles short-name disambiguation.
+    fn list_base_candidates(&self, current_branch: &str) -> Vec<BaseCandidate> {
+        let mut out = Vec::new();
+
+        let Ok(platform) = self.repo.references() else {
+            return out;
+        };
+
+        // Local branches
+        if let Ok(iter) = platform.prefixed("refs/heads/") {
+            for r in iter.flatten() {
+                let full_ref = r.name().as_bstr().to_string();
+                let Some(name) = full_ref.strip_prefix("refs/heads/") else {
+                    continue;
+                };
+                if name == current_branch {
+                    continue;
+                }
+                let tip = r.id().detach();
+                if self
+                    .repo
+                    .find_object(tip)
+                    .ok()
+                    .map(|o| o.kind == gix::object::Kind::Commit)
+                    .unwrap_or(false)
+                {
+                    out.push(BaseCandidate {
+                        name: name.to_string(),
+                        full_ref: full_ref.clone(),
+                        tip,
+                        is_local: true,
+                    });
+                }
+            }
+        }
+
+        // Remote-tracking branches
+        if let Ok(iter) = platform.prefixed("refs/remotes/") {
+            for r in iter.flatten() {
+                let full_ref = r.name().as_bstr().to_string();
+                let Some(rest) = full_ref.strip_prefix("refs/remotes/") else {
+                    continue;
+                };
+                let Some((_, name)) = rest.split_once('/') else {
+                    continue;
+                };
+                if name == "HEAD" || name == current_branch {
+                    continue;
+                }
+                let tip = r.id().detach();
+                if self
+                    .repo
+                    .find_object(tip)
+                    .ok()
+                    .map(|o| o.kind == gix::object::Kind::Commit)
+                    .unwrap_or(false)
+                {
+                    out.push(BaseCandidate {
+                        name: name.to_string(),
+                        full_ref: full_ref.clone(),
+                        tip,
+                        is_local: false,
+                    });
+                }
+            }
+        }
+
+        out
     }
 
     /// Resolve the base branch name using priority:
@@ -1022,6 +1113,62 @@ mod tests {
             .unwrap();
         let repo = GitRepo::new(tmp.path()).unwrap();
         assert_eq!(repo.reflog_first_created_from("no-such-branch"), None);
+    }
+
+    #[test]
+    fn list_base_candidates_excludes_current_branch() {
+        let tmp = tempfile::tempdir().unwrap();
+        let p = tmp.path();
+
+        let g = |args: &[&str]| {
+            let status = std::process::Command::new("git")
+                .args(args)
+                .current_dir(p)
+                .env("GIT_AUTHOR_NAME", "t")
+                .env("GIT_AUTHOR_EMAIL", "t@t")
+                .env("GIT_COMMITTER_NAME", "t")
+                .env("GIT_COMMITTER_EMAIL", "t@t")
+                .status()
+                .expect("git must run");
+            assert!(status.success(), "git {:?} failed", args);
+        };
+        g(&["init", "-q", "-b", "main"]);
+        g(&["-c", "commit.gpgsign=false", "commit", "--allow-empty", "-q", "-m", "init"]);
+        g(&["branch", "feature-a"]);
+        g(&["checkout", "-q", "feature-a"]);
+        g(&["-c", "commit.gpgsign=false", "commit", "--allow-empty", "-q", "-m", "a"]);
+        g(&["branch", "feature-b"]);
+
+        let repo = GitRepo::new(p).unwrap();
+        let candidates = repo.list_base_candidates("feature-a");
+        let names: Vec<&str> = candidates.iter().map(|c| c.name.as_str()).collect();
+
+        assert!(names.contains(&"main"));
+        assert!(names.contains(&"feature-b"));
+        assert!(!names.contains(&"feature-a"), "current branch must be excluded");
+    }
+
+    #[test]
+    fn list_base_candidates_empty_single_branch_repo() {
+        let tmp = tempfile::tempdir().unwrap();
+        let p = tmp.path();
+        let g = |args: &[&str]| {
+            let status = std::process::Command::new("git")
+                .args(args)
+                .current_dir(p)
+                .env("GIT_AUTHOR_NAME", "t")
+                .env("GIT_AUTHOR_EMAIL", "t@t")
+                .env("GIT_COMMITTER_NAME", "t")
+                .env("GIT_COMMITTER_EMAIL", "t@t")
+                .status()
+                .expect("git must run");
+            assert!(status.success(), "git {:?} failed", args);
+        };
+        g(&["init", "-q", "-b", "main"]);
+        g(&["-c", "commit.gpgsign=false", "commit", "--allow-empty", "-q", "-m", "init"]);
+
+        let repo = GitRepo::new(p).unwrap();
+        assert!(repo.list_base_candidates("main").is_empty());
     }
 
     #[test]

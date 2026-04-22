@@ -503,6 +503,10 @@ impl AppState {
         self.merge_base = None;
         self.base_branch.clear();
         self.scroll_offset = 0;
+        self.current_diff = None;
+        self.diff_overlay_visible = false;
+        self.diff_scroll = 0;
+        self.pending_diff_token = self.pending_diff_token.wrapping_add(1);
     }
 
     /// Update the file list from a fresh git status computation.
@@ -1150,5 +1154,28 @@ mod tests {
         state.set_expanded_diff(diff);
         assert!(state.expanded_diff().is_some());
         assert_eq!(state.diff_scroll(), 0);
+    }
+
+    #[test]
+    fn test_reset_for_switch_clears_diff_overlay() {
+        let mut state = make_state();
+        state.show_diff_overlay();
+        state.set_expanded_diff(crate::git::FileDiff::default());
+        state.scroll_diff_down();
+        assert!(state.is_diff_overlay_visible());
+        assert!(state.expanded_diff().is_some());
+        assert_eq!(state.diff_scroll(), 1);
+
+        let before_token = state.pending_diff_token();
+        state.reset_for_switch(Vec::new(), String::new(), String::new(), String::new());
+
+        assert!(!state.is_diff_overlay_visible());
+        assert!(state.expanded_diff().is_none());
+        assert_eq!(state.diff_scroll(), 0);
+        assert_ne!(
+            state.pending_diff_token(),
+            before_token,
+            "token should advance"
+        );
     }
 }

@@ -1,8 +1,9 @@
-//! Full-screen diff overlay with delta-styled rendering.
+//! Full-screen diff overlay.
 //!
-//! Shown when the user presses Enter (in "overlay" mode) on a selected file.
-//! Displays a centred panel at ~85% of the terminal area with line-numbered,
-//! coloured diff output.  Dismissible with Esc / q / h.
+//! Rendered when the user activates diff view (Enter / d / Space / l / Right)
+//! on a selected file. Displays a centred 85% panel with line-numbered,
+//! coloured diff output. Scrollable with j / k / ↑ / ↓. Dismissible with
+//! Esc / q / d / Space / h / ←.
 
 use ratatui::{
     layout::Rect,

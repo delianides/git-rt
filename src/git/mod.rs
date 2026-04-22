@@ -182,6 +182,29 @@ pub fn main_worktree_path(repo_path: &Path) -> PathBuf {
         .unwrap_or_else(|| repo_path.to_path_buf())
 }
 
+/// A candidate that has been paired with the merge-base commit time
+/// (higher = more recent = closer to the branch tip).
+#[derive(Debug, Clone)]
+struct ScoredCandidate {
+    name: String,
+    is_local: bool,
+    /// Commit time (seconds since epoch) of the merge-base commit.
+    merge_base_time: i64,
+}
+
+/// Pick the best candidate by: (1) max `merge_base_time`, (2) local over
+/// remote, (3) shorter name, (4) alphabetical. Returns `None` for an
+/// empty input.
+fn pick_best_candidate(scored: Vec<ScoredCandidate>) -> Option<ScoredCandidate> {
+    scored.into_iter().max_by(|a, b| {
+        a.merge_base_time
+            .cmp(&b.merge_base_time)
+            .then_with(|| a.is_local.cmp(&b.is_local)) // true > false → local wins
+            .then_with(|| b.name.len().cmp(&a.name.len())) // shorter name wins → reverse cmp
+            .then_with(|| b.name.cmp(&a.name)) // alphabetical ascending → reverse cmp for max
+    })
+}
+
 /// A candidate ref for base-branch detection. `is_local` controls tie-break
 /// preference when two candidates share the same merge-base commit time.
 #[derive(Debug, Clone)]
@@ -1167,6 +1190,49 @@ mod tests {
 
         let repo = GitRepo::new(p).unwrap();
         assert!(repo.list_base_candidates("main").is_empty());
+    }
+
+    #[test]
+    fn pick_best_most_recent_merge_base_wins() {
+        let scored = vec![
+            ScoredCandidate { name: "main".into(), is_local: true, merge_base_time: 100 },
+            ScoredCandidate { name: "feature-a".into(), is_local: true, merge_base_time: 500 },
+            ScoredCandidate { name: "release-old".into(), is_local: true, merge_base_time: 10 },
+        ];
+        assert_eq!(pick_best_candidate(scored).map(|c| c.name), Some("feature-a".into()));
+    }
+
+    #[test]
+    fn pick_best_tie_prefers_local() {
+        let scored = vec![
+            ScoredCandidate { name: "develop".into(), is_local: false, merge_base_time: 500 },
+            ScoredCandidate { name: "develop".into(), is_local: true, merge_base_time: 500 },
+        ];
+        let picked = pick_best_candidate(scored).unwrap();
+        assert!(picked.is_local, "local should win tie with remote");
+    }
+
+    #[test]
+    fn pick_best_tie_prefers_shorter_name() {
+        let scored = vec![
+            ScoredCandidate { name: "release/2024-old".into(), is_local: true, merge_base_time: 500 },
+            ScoredCandidate { name: "main".into(), is_local: true, merge_base_time: 500 },
+        ];
+        assert_eq!(pick_best_candidate(scored).map(|c| c.name), Some("main".into()));
+    }
+
+    #[test]
+    fn pick_best_tie_alphabetical_final_tiebreak() {
+        let scored = vec![
+            ScoredCandidate { name: "bar".into(), is_local: true, merge_base_time: 500 },
+            ScoredCandidate { name: "aaa".into(), is_local: true, merge_base_time: 500 },
+        ];
+        assert_eq!(pick_best_candidate(scored).map(|c| c.name), Some("aaa".into()));
+    }
+
+    #[test]
+    fn pick_best_empty_returns_none() {
+        assert!(pick_best_candidate(Vec::new()).is_none());
     }
 
     #[test]

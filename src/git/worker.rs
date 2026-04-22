@@ -234,7 +234,7 @@ fn compute_status(
         tracing::debug!(
             target: "git_rt::git::base_detect",
             branch = %current_branch,
-            base = ?cached,
+            base = ?cached.as_deref(),
             "cache hit"
         );
         cached.clone()
@@ -245,8 +245,11 @@ fn compute_status(
             branch = %current_branch,
             "cache miss, detecting"
         );
-        let detected = git.detect_base_branch(&current_branch);
-        // Priority 5: resolve_base_branch fallback if detection gave up.
+        let detected = git
+            .detect_base_branch(&current_branch)
+            .filter(|s| !s.is_empty());
+        // Priority 5: resolve_base_branch fallback if detection gave up
+        // OR returned an empty string (defensive — should not happen).
         let final_base = detected.or_else(|| {
             tracing::debug!(
                 target: "git_rt::git::base_detect",

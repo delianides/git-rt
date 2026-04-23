@@ -1,5 +1,19 @@
 # Changelog
 
+## [1.1.0](https://github.com/delianides/git-rt/compare/v1.0.5...v1.1.0) (2026-04-23)
+
+
+### Features
+
+* bring in-app diff modal back, remove pager path ([#71](https://github.com/delianides/git-rt/issues/71)) ([ae9549a](https://github.com/delianides/git-rt/commit/ae9549a55c9f9bbb1cb52255dae4cecd74aa71a1))
+* **git:** per-branch base detection with reflog + merge-base heuristic ([#69](https://github.com/delianides/git-rt/issues/69)) ([2df6820](https://github.com/delianides/git-rt/commit/2df6820cbdcb99fa05b8e3a5b962d02d1f368758))
+* vim-style scroll_padding for file list ([#67](https://github.com/delianides/git-rt/issues/67)) ([779822d](https://github.com/delianides/git-rt/commit/779822d3371306e3269edf4c01c5f0359e675fb7))
+
+
+### Bug Fixes
+
+* **state:** suppress row flash on initial file-list populate ([#70](https://github.com/delianides/git-rt/issues/70)) ([cbd5cf2](https://github.com/delianides/git-rt/commit/cbd5cf2babf955122a06874425969f2f71a96cd0))
+
 ## [1.0.5](https://github.com/delianides/git-rt/compare/v1.0.4...v1.0.5) (2026-04-16)
 
 

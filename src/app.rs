@@ -433,6 +433,7 @@ impl App {
                     Response::Diff { path, token, diff } => {
                         if token == self.state.pending_diff_token() {
                             self.state.set_expanded_diff(diff);
+                            self.state.show_diff_overlay();
                         } else {
                             tracing::debug!(
                                 token,
@@ -679,9 +680,6 @@ impl App {
             }
         }
 
-        // Surface the overlay immediately so the user sees feedback; the
-        // diff will populate once the worker responds.
-        self.state.show_diff_overlay();
         Ok(())
     }
 

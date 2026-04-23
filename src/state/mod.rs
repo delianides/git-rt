@@ -89,6 +89,12 @@ pub enum ViewMode {
     Tree,
 }
 
+#[derive(Debug, Clone)]
+struct SelectionSnapshot {
+    row_id: Option<RowId>,
+    file_path: Option<String>,
+}
+
 /// The application's view model — what the UI renders from
 pub struct AppState {
     /// All changed files in the repo
@@ -229,20 +235,11 @@ impl AppState {
     }
 
     pub fn selected_file_path(&self) -> Option<String> {
-        match self.selected_row() {
-            Some(row) => match row.id() {
-                RowId::File(path) => Some(path.clone()),
-                RowId::Directory(_) => None,
-            },
-            None => None,
-        }
+        self.selection_snapshot().file_path
     }
 
     pub fn visible_rows(&self) -> Vec<VisibleRow> {
-        match self.view_mode {
-            ViewMode::Flat => self.files.iter().map(flat_row_from_file).collect(),
-            ViewMode::Tree => build_visible_rows(&self.files, &self.expanded_dirs),
-        }
+        self.rebuild_visible_rows()
     }
 
     pub fn scroll_offset(&self) -> usize {
@@ -502,27 +499,19 @@ impl AppState {
     // -- Navigation --
 
     pub fn select_next(&mut self) {
-        let rows = self.visible_rows();
+        let rows = self.rebuild_visible_rows();
         if !rows.is_empty() {
-            self.selected = (self.selected + 1).min(rows.len() - 1);
-            self.selected_row_id = rows.get(self.selected).map(|row| row.id().clone());
+            self.set_selection_from_rows(&rows, self.selected + 1);
         }
     }
 
     pub fn select_previous(&mut self) {
-        let rows = self.visible_rows();
-        if rows.is_empty() {
-            self.selected = 0;
-            self.selected_row_id = None;
-            return;
-        }
-
-        self.selected = self.selected.saturating_sub(1);
-        self.selected_row_id = rows.get(self.selected).map(|row| row.id().clone());
+        let rows = self.rebuild_visible_rows();
+        self.set_selection_from_rows(&rows, self.selected.saturating_sub(1));
     }
 
     pub fn cycle_view_mode(&mut self) {
-        let selected_file_path = self.selected_path();
+        let selection = self.selection_snapshot();
 
         self.view_mode = match self.view_mode {
             ViewMode::Flat => ViewMode::Tree,
@@ -531,16 +520,19 @@ impl AppState {
         self.scroll_offset = 0;
 
         if self.view_mode == ViewMode::Tree {
-            if let Some(path) = selected_file_path.as_deref() {
+            if let Some(path) = selection.file_path.as_deref() {
                 self.expand_ancestors_for_file(path);
             }
         }
 
-        self.sync_selection_after_mode_change(selected_file_path);
+        self.restore_selection(selection);
     }
 
     pub fn toggle_selected_directory(&mut self) -> bool {
-        let Some(RowId::Directory(path)) = self.selected_row().map(|row| row.id().clone()) else {
+        let rows = self.rebuild_visible_rows();
+        let Some(RowId::Directory(path)) =
+            Self::selected_row_from_rows(&rows, self.selected).map(|row| row.id().clone())
+        else {
             return false;
         };
 
@@ -548,9 +540,13 @@ impl AppState {
             self.expanded_dirs.remove(&path);
         }
 
-        let rows = self.visible_rows();
-        self.selected = self.selected.min(rows.len().saturating_sub(1));
-        self.selected_row_id = rows.get(self.selected).map(|row| row.id().clone());
+        let rows = self.rebuild_visible_rows();
+        let selected_directory = RowId::Directory(path);
+        if let Some(index) = rows.iter().position(|row| row.id() == &selected_directory) {
+            self.set_selection_from_rows(&rows, index);
+        } else {
+            self.set_selection_from_rows(&rows, self.selected);
+        }
         true
     }
 
@@ -598,8 +594,7 @@ impl AppState {
     /// Update the file list from a fresh git status computation.
     /// Preserves selection position and expanded state where possible.
     pub fn update_files(&mut self, new_files: Vec<FileEntry>) {
-        let selected_row_id = self.selected_row_id.clone();
-        let selected_path = self.selected_path();
+        let selection = self.selection_snapshot();
 
         let now = Instant::now();
 
@@ -639,12 +634,12 @@ impl AppState {
         self.last_refresh = now;
 
         if self.view_mode == ViewMode::Tree {
-            if let Some(path) = selected_path.as_deref() {
+            if let Some(path) = selection.file_path.as_deref() {
                 self.expand_ancestors_for_file(path);
             }
         }
 
-        self.restore_selection(selected_row_id, selected_path);
+        self.restore_selection(selection);
 
         // `scroll_offset` is intentionally not reset here. ratatui's
         // `get_items_bounds` clamps any stale offset against the new list
@@ -653,23 +648,48 @@ impl AppState {
         // a one-frame viewport jump on every FS recompute.
     }
 
-    fn selected_row(&self) -> Option<VisibleRow> {
-        let rows = self.visible_rows();
-        rows.get(self.selected).cloned()
-    }
-
-    fn sync_selection_after_mode_change(&mut self, selected_file_path: Option<String>) {
-        self.restore_selection(self.selected_row_id.clone(), selected_file_path);
-    }
-
-    fn restore_selection(
-        &mut self,
-        selected_row_id: Option<RowId>,
-        selected_file_path: Option<String>,
-    ) {
+    fn rebuild_visible_rows(&self) -> Vec<VisibleRow> {
         match self.view_mode {
-            ViewMode::Flat => self.restore_flat_selection(selected_file_path),
-            ViewMode::Tree => self.restore_tree_selection(selected_row_id),
+            ViewMode::Flat => self.files.iter().map(flat_row_from_file).collect(),
+            ViewMode::Tree => build_visible_rows(&self.files, &self.expanded_dirs),
+        }
+    }
+
+    fn selection_snapshot(&self) -> SelectionSnapshot {
+        let rows = self.rebuild_visible_rows();
+        Self::selection_snapshot_from_rows(&rows, self.selected)
+    }
+
+    fn selection_snapshot_from_rows(rows: &[VisibleRow], selected: usize) -> SelectionSnapshot {
+        let row = Self::selected_row_from_rows(rows, selected);
+        SelectionSnapshot {
+            row_id: row.map(|row| row.id().clone()),
+            file_path: row.and_then(|row| match row.id() {
+                RowId::File(path) => Some(path.clone()),
+                RowId::Directory(_) => None,
+            }),
+        }
+    }
+
+    fn selected_row_from_rows(rows: &[VisibleRow], selected: usize) -> Option<&VisibleRow> {
+        rows.get(selected)
+    }
+
+    fn set_selection_from_rows(&mut self, rows: &[VisibleRow], selected: usize) {
+        if rows.is_empty() {
+            self.selected = 0;
+            self.selected_row_id = None;
+            return;
+        }
+
+        self.selected = selected.min(rows.len() - 1);
+        self.selected_row_id = rows.get(self.selected).map(|row| row.id().clone());
+    }
+
+    fn restore_selection(&mut self, selection: SelectionSnapshot) {
+        match self.view_mode {
+            ViewMode::Flat => self.restore_flat_selection(selection.file_path),
+            ViewMode::Tree => self.restore_tree_selection(selection),
         }
     }
 
@@ -696,24 +716,25 @@ impl AppState {
             .map(|file| RowId::File(file.path.clone()));
     }
 
-    fn restore_tree_selection(&mut self, selected_row_id: Option<RowId>) {
-        let rows = self.visible_rows();
-        if rows.is_empty() {
-            self.selected = 0;
-            self.selected_row_id = None;
-            return;
-        }
+    fn restore_tree_selection(&mut self, selection: SelectionSnapshot) {
+        let rows = self.rebuild_visible_rows();
 
-        if let Some(selected_row_id) = selected_row_id {
-            if let Some(index) = rows.iter().position(|row| row.id() == &selected_row_id) {
-                self.selected = index;
-                self.selected_row_id = Some(selected_row_id);
+        if let Some(selected_row_id) = selection.row_id.as_ref() {
+            if let Some(index) = rows.iter().position(|row| row.id() == selected_row_id) {
+                self.set_selection_from_rows(&rows, index);
                 return;
             }
         }
 
-        self.selected = self.selected.min(rows.len() - 1);
-        self.selected_row_id = rows.get(self.selected).map(|row| row.id().clone());
+        if let Some(selected_file_path) = selection.file_path.as_ref() {
+            let file_id = RowId::File(selected_file_path.clone());
+            if let Some(index) = rows.iter().position(|row| row.id() == &file_id) {
+                self.set_selection_from_rows(&rows, index);
+                return;
+            }
+        }
+
+        self.set_selection_from_rows(&rows, self.selected);
     }
 
     fn expand_ancestors_for_file(&mut self, path: &str) {
@@ -812,11 +833,10 @@ mod tests {
     #[test]
     fn test_tree_mode_auto_expands_ancestors_for_selected_file() {
         let files = vec![
-            make_entry("src/ui/mod.rs", 1, 0),
             make_entry("src/ui/header.rs", 2, 0),
+            make_entry("src/ui/mod.rs", 1, 0),
         ];
         let mut state = AppState::new(files, Duration::from_millis(600), "main".to_string());
-        state.select_next();
         state.cycle_view_mode();
 
         assert!(state.expanded_dirs().contains("src"));
@@ -829,12 +849,56 @@ mod tests {
 
     #[test]
     fn test_toggle_selected_directory_collapses_visible_children() {
-        let files = vec![make_entry("src/ui/mod.rs", 1, 0)];
+        let files = vec![
+            make_entry("src/ui/header.rs", 2, 0),
+            make_entry("src/ui/mod.rs", 1, 0),
+        ];
         let mut state = AppState::new(files, Duration::from_millis(600), "main".to_string());
         state.cycle_view_mode();
-        state.select_next();
+
+        let expanded_labels = state
+            .visible_rows()
+            .into_iter()
+            .map(|row| row.label().to_string())
+            .collect::<Vec<_>>();
+        assert_eq!(expanded_labels, vec!["src/ui/", "header.rs", "mod.rs"]);
+
+        state.select_previous();
         assert!(state.toggle_selected_directory());
-        assert!(state.visible_rows().len() >= 1);
+        assert!(!state.expanded_dirs().contains("src/ui"));
+
+        let collapsed_labels = state
+            .visible_rows()
+            .into_iter()
+            .map(|row| row.label().to_string())
+            .collect::<Vec<_>>();
+        assert_eq!(collapsed_labels, vec!["src/ui/"]);
+        assert!(state.selected_file_path().is_none());
+    }
+
+    #[test]
+    fn test_tree_mode_update_preserves_selected_file_by_path() {
+        let files = vec![
+            make_entry("src/ui/header.rs", 2, 0),
+            make_entry("src/ui/mod.rs", 1, 0),
+        ];
+        let mut state = AppState::new(files, Duration::from_millis(600), "main".to_string());
+        state.cycle_view_mode();
+
+        let updated_files = vec![
+            make_entry("src/ui/footer.rs", 3, 0),
+            make_entry("src/ui/header.rs", 5, 1),
+            make_entry("src/ui/mod.rs", 1, 0),
+        ];
+        state.update_files(updated_files);
+
+        assert_eq!(
+            state.selected_file_path().as_deref(),
+            Some("src/ui/header.rs")
+        );
+        assert!(state.expanded_dirs().contains("src"));
+        assert!(state.expanded_dirs().contains("src/ui"));
+        assert_eq!(state.selected_index(), 2);
     }
 
     #[test]

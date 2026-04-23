@@ -117,6 +117,54 @@ fn test_merge_base_none_on_default_branch() {
 }
 
 #[test]
+fn test_branch_diff_file_shows_full_diff() {
+    let tmp = TempDir::new().unwrap();
+    let repo_path = tmp.path();
+
+    git_init(repo_path);
+    std::fs::write(repo_path.join("file.txt"), "line1\nline2\nline3\n").unwrap();
+    git(repo_path, &["add", "file.txt"]);
+    git(repo_path, &["commit", "-m", "initial"]);
+
+    git(repo_path, &["checkout", "-b", "feature"]);
+    std::fs::write(
+        repo_path.join("file.txt"),
+        "line1\nmodified\nline3\nnew_line\n",
+    )
+    .unwrap();
+    git(repo_path, &["add", "file.txt"]);
+    git(repo_path, &["commit", "-m", "modify file"]);
+
+    std::fs::write(
+        repo_path.join("file.txt"),
+        "line1\nmodified\nline3\nnew_line\nextra\n",
+    )
+    .unwrap();
+
+    let git_repo = git_rt::git::GitRepo::new(repo_path).unwrap();
+    let mb = git_repo.merge_base("main").unwrap().expect("merge base");
+    let diff = git_repo.branch_diff_file("file.txt", mb).unwrap();
+
+    assert!(!diff.hunks.is_empty(), "diff should have hunks");
+
+    let additions: usize = diff
+        .hunks
+        .iter()
+        .flat_map(|h| &h.lines)
+        .filter(|l| matches!(l.kind, git_rt::git::DiffLineKind::Addition))
+        .count();
+    let deletions: usize = diff
+        .hunks
+        .iter()
+        .flat_map(|h| &h.lines)
+        .filter(|l| matches!(l.kind, git_rt::git::DiffLineKind::Deletion))
+        .count();
+
+    assert!(additions >= 2, "should have additions");
+    assert!(deletions >= 1, "should have deletions");
+}
+
+#[test]
 fn test_branch_status_only_committed_changes() {
     let tmp = TempDir::new().unwrap();
     let repo_path = tmp.path();

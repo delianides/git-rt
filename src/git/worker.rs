@@ -12,7 +12,14 @@ use std::thread::{self, JoinHandle};
 
 use crossbeam_channel::{Receiver, Sender};
 
-use crate::git::{FileEntry, GitRepo};
+use crate::git::{FileDiff, FileEntry, GitRepo};
+
+/// Token used to discard stale diff results — `handle_expand` increments
+/// the next-token counter and stamps each `Request::Diff`. When the worker
+/// echoes the token back in `Response::Diff`, the main thread compares
+/// against the current pending token and drops any result that doesn't
+/// match (user moved selection, closed overlay, switched worktrees).
+pub type DiffToken = u64;
 
 /// Per-branch cache of detected base branch names. Owned by the worker
 /// run-loop; cleared on `SwitchRepo`. Stores `Option<String>` so a
@@ -55,6 +62,9 @@ pub enum Request {
     /// Recompute status + branch metadata. Coalesced — only the most recent
     /// pending Recompute is kept when the worker drains its channel.
     Recompute,
+    /// Compute the diff for a single file. `token` lets the receiver
+    /// discard stale results.
+    Diff { path: String, token: DiffToken },
     /// Re-open the worker's `GitRepo` against a new path.
     /// Worker replies with `Response::SwitchAck` once the new repo is open.
     SwitchRepo(PathBuf),
@@ -67,6 +77,12 @@ pub enum Request {
 pub enum Response {
     /// Result of a `Recompute` request.
     Status(Box<StatusBundle>),
+    /// Result of a `Diff` request. `token` echoes the request's token.
+    Diff {
+        path: String,
+        token: DiffToken,
+        diff: FileDiff,
+    },
     /// Sent after a `SwitchRepo` request finishes (success or failure).
     /// The bool is `true` on success, `false` on failure (worker keeps
     /// the previous repo so the app stays usable).
@@ -191,6 +207,22 @@ impl Worker {
                         );
                         let _ = resp_tx.send(Response::Status(Box::new(bundle)));
                     }
+                    Request::Diff { path, token } => {
+                        match compute_diff(
+                            &git,
+                            &path,
+                            base_override.as_deref(),
+                            config_base.as_deref(),
+                            &mut cache,
+                        ) {
+                            Ok(diff) => {
+                                let _ = resp_tx.send(Response::Diff { path, token, diff });
+                            }
+                            Err(e) => {
+                                let _ = resp_tx.send(Response::Error(format!("diff {path}: {e}")));
+                            }
+                        }
+                    }
                     Request::SwitchRepo(new_path) => match GitRepo::new(&new_path) {
                         Ok(new_git) => {
                             git = new_git;
@@ -300,6 +332,59 @@ fn compute_with_base(
     }
 }
 
+/// Resolve the base branch for the current HEAD, mirroring the priority
+/// chain in [`compute_status`]:
+///
+/// 1. explicit CLI override
+/// 2. config file override
+/// 3. cached detection result for the current branch
+/// 4. `detect_base_branch` fresh detection
+/// 5. `resolve_base_branch(None)` fallback
+///
+/// Explicit overrides short-circuit and bypass the cache.
+fn resolve_base_with_cache(
+    git: &GitRepo,
+    base_override: Option<&str>,
+    config_base: Option<&str>,
+    cache: &mut BaseCache,
+) -> Option<String> {
+    if let Some(explicit) = base_override.or(config_base) {
+        return Some(explicit.to_string());
+    }
+
+    let current_branch = git.branch_name().unwrap_or_else(|_| "HEAD".to_string());
+
+    if let Some(cached) = cache.get(&current_branch) {
+        return cached.clone();
+    }
+
+    let detected = git
+        .detect_base_branch(&current_branch)
+        .filter(|s| !s.is_empty());
+    let final_base = detected.or_else(|| git.resolve_base_branch(None));
+    cache.insert(current_branch, final_base.clone());
+    final_base
+}
+
+/// Compute a single-file diff. Uses branch diff if a merge base is available,
+/// otherwise falls back to working-tree diff. `cache` is consulted for base
+/// branch resolution so repeated Diff requests don't re-run detection.
+fn compute_diff(
+    git: &GitRepo,
+    path: &str,
+    base_override: Option<&str>,
+    config_base: Option<&str>,
+    cache: &mut BaseCache,
+) -> Result<FileDiff, crate::git::GitFailure> {
+    let resolved_base = resolve_base_with_cache(git, base_override, config_base, cache);
+    if let Some(base_name) = resolved_base {
+        if let Ok(Some(mb)) = git.merge_base(&base_name) {
+            return git.branch_diff_file(path, mb);
+        }
+    }
+    git.diff_file(path)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -308,10 +393,18 @@ mod tests {
         q.into_iter()
             .map(|r| match r {
                 Request::Recompute => "R",
+                Request::Diff { .. } => "D",
                 Request::SwitchRepo(_) => "S",
                 Request::Shutdown => "X",
             })
             .collect()
+    }
+
+    fn diff_req(token: u64) -> Request {
+        Request::Diff {
+            path: format!("p{}", token),
+            token,
+        }
     }
 
     #[test]
@@ -355,6 +448,27 @@ mod tests {
         assert!(out.contains(&"S"));
         let r_count = out.iter().filter(|s| **s == "R").count();
         assert_eq!(r_count, 1);
+    }
+
+    #[test]
+    fn coalesce_preserves_diffs_in_order() {
+        let mut q = VecDeque::new();
+        q.push_back(diff_req(1));
+        q.push_back(diff_req(2));
+        q.push_back(diff_req(3));
+        let out = coalesce(q);
+        assert_eq!(collect(out), vec!["D", "D", "D"]);
+    }
+
+    #[test]
+    fn coalesce_diff_then_recompute_orders_diff_first() {
+        let mut q = VecDeque::new();
+        q.push_back(Request::Recompute);
+        q.push_back(diff_req(1));
+        q.push_back(Request::Recompute);
+        let out = coalesce(q);
+        // All Diffs preserved; the single Recompute is appended at the end.
+        assert_eq!(collect(out), vec!["D", "R"]);
     }
 
     #[test]

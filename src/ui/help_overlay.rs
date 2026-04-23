@@ -43,20 +43,24 @@ pub fn build_help_lines(theme: &Theme) -> Vec<Line<'static>> {
             ],
         ),
         (
-            "Actions",
+            "Diff",
             &[
-                ("Enter", "Expand diff / open overlay"),
-                ("Space", "Toggle diff (expand/collapse)"),
-                ("l / →", "Expand diff"),
-                ("h / ←", "Collapse diff"),
-                ("r", "Refresh"),
+                ("Enter", "Open diff"),
+                ("d", "Toggle diff"),
+                ("Space", "Toggle diff"),
+                ("l / →", "Open diff"),
+                ("h / ←", "Close diff"),
+                ("j / k", "Scroll diff (inside modal)"),
             ],
         ),
         (
             "Other",
             &[
-                ("?", "Show this help"),
-                ("q / Esc", "Close overlay / quit"),
+                ("r", "Refresh"),
+                ("e", "Edit selected file"),
+                ("p", "Open PR in browser"),
+                ("?", "Toggle this help"),
+                ("q / Esc", "Dismiss overlay / quit"),
                 ("Ctrl+C", "Quit"),
             ],
         ),
@@ -132,7 +136,7 @@ mod tests {
         let lines = build_help_lines(&test_theme());
         let text = lines_text(&lines);
         assert!(text.contains("Navigation"), "missing Navigation section");
-        assert!(text.contains("Actions"), "missing Actions section");
+        assert!(text.contains("Diff"), "missing Diff section");
         assert!(text.contains("Other"), "missing Other section");
     }
 
@@ -143,6 +147,7 @@ mod tests {
         assert!(text.contains("j / ↓"), "missing j/down key");
         assert!(text.contains("Enter"), "missing Enter key");
         assert!(text.contains("Space"), "missing Space key");
+        assert!(text.contains("d "), "missing d key");
         assert!(text.contains("?"), "missing ? key");
         assert!(text.contains("Ctrl+C"), "missing Ctrl+C");
     }
@@ -153,6 +158,8 @@ mod tests {
         let text = lines_text(&lines);
         assert!(text.contains("Select next file"));
         assert!(text.contains("Toggle diff"));
-        assert!(text.contains("Show this help"));
+        assert!(text.contains("Open diff"));
+        assert!(text.contains("Close diff"));
+        assert!(text.contains("Show this help") || text.contains("Toggle this help"));
     }
 }

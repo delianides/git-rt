@@ -1,7 +1,7 @@
 use std::collections::HashMap;
 use std::time::{Duration, Instant};
 
-use crate::git::FileEntry;
+use crate::git::{FileDiff, FileEntry};
 
 /// State of the PR widget
 #[derive(Debug, Clone, Default)]
@@ -142,6 +142,16 @@ pub struct AppState {
     /// flashing every row, since there's nothing to meaningfully compare
     /// against.
     initial_seed_done: bool,
+    /// Diff for the currently expanded file (if any)
+    current_diff: Option<FileDiff>,
+    /// Vertical scroll offset inside the diff overlay, in lines
+    diff_scroll: usize,
+    /// Whether the diff overlay is currently shown
+    diff_overlay_visible: bool,
+    /// Monotonically-increasing counter. Bumped on each `Request::Diff`
+    /// so stale `Response::Diff` messages whose token doesn't match the
+    /// current one get dropped by the app event loop.
+    pending_diff_token: u64,
 }
 
 impl AppState {
@@ -173,6 +183,10 @@ impl AppState {
             base_branch: String::new(),
             scroll_offset: 0,
             initial_seed_done: false,
+            current_diff: None,
+            diff_scroll: 0,
+            diff_overlay_visible: false,
+            pending_diff_token: 0,
         }
     }
 
@@ -331,14 +345,76 @@ impl AppState {
         self.help_visible
     }
 
-    /// Show the help popup.
+    /// Show the help popup. Also hides the diff overlay to enforce the
+    /// "only one overlay at a time" rule.
     pub fn show_help(&mut self) {
         self.help_visible = true;
+        self.diff_overlay_visible = false;
+        self.diff_scroll = 0;
     }
 
     /// Hide the help popup
     pub fn hide_help(&mut self) {
         self.help_visible = false;
+    }
+
+    // -- Diff overlay --
+
+    /// Returns true if the diff overlay is currently visible.
+    pub fn is_diff_overlay_visible(&self) -> bool {
+        self.diff_overlay_visible
+    }
+
+    /// Show the diff overlay.
+    pub fn show_diff_overlay(&mut self) {
+        self.diff_overlay_visible = true;
+    }
+
+    /// Hide the diff overlay and reset diff scroll.
+    pub fn hide_diff_overlay(&mut self) {
+        self.diff_overlay_visible = false;
+        self.diff_scroll = 0;
+    }
+
+    /// Currently expanded diff, if any.
+    pub fn expanded_diff(&self) -> Option<&FileDiff> {
+        self.current_diff.as_ref()
+    }
+
+    /// Current scroll offset inside the diff overlay.
+    pub fn diff_scroll(&self) -> usize {
+        self.diff_scroll
+    }
+
+    /// Scroll the diff down by one line.
+    pub fn scroll_diff_down(&mut self) {
+        self.diff_scroll = self.diff_scroll.saturating_add(1);
+    }
+
+    /// Scroll the diff up by one line.
+    pub fn scroll_diff_up(&mut self) {
+        self.diff_scroll = self.diff_scroll.saturating_sub(1);
+    }
+
+    /// Bump the pending-diff token and return the new value. Stamp this
+    /// token on the outgoing `Request::Diff` so stale responses can be
+    /// filtered out.
+    pub fn advance_pending_diff_token(&mut self) -> u64 {
+        self.pending_diff_token = self.pending_diff_token.wrapping_add(1);
+        self.pending_diff_token
+    }
+
+    /// Current pending diff token. `Response::Diff` results with a different
+    /// token must be dropped by the caller.
+    pub fn pending_diff_token(&self) -> u64 {
+        self.pending_diff_token
+    }
+
+    /// Set the current diff (used when a Response::Diff arrives whose
+    /// token matches the pending token). Also resets scroll to top.
+    pub fn set_expanded_diff(&mut self, diff: FileDiff) {
+        self.current_diff = Some(diff);
+        self.diff_scroll = 0;
     }
 
     /// True when a recompute is in flight.
@@ -427,6 +503,10 @@ impl AppState {
         self.merge_base = None;
         self.base_branch.clear();
         self.scroll_offset = 0;
+        self.current_diff = None;
+        self.diff_overlay_visible = false;
+        self.diff_scroll = 0;
+        self.pending_diff_token = self.pending_diff_token.wrapping_add(1);
     }
 
     /// Update the file list from a fresh git status computation.
@@ -996,5 +1076,106 @@ mod tests {
         // That file must flash — this is the case that rules out the
         // "empty-list" shortcut alternative design.
         assert!(state.is_flashing("new.rs"));
+    }
+
+    fn make_state() -> AppState {
+        AppState::new(vec![], Duration::from_millis(600), "main".to_string())
+    }
+
+    #[test]
+    fn test_overlay_show_hide() {
+        let mut state = make_state();
+        assert!(!state.is_diff_overlay_visible());
+        state.show_diff_overlay();
+        assert!(state.is_diff_overlay_visible());
+        state.hide_diff_overlay();
+        assert!(!state.is_diff_overlay_visible());
+    }
+
+    #[test]
+    fn test_hide_overlay_resets_scroll() {
+        let mut state = make_state();
+        state.show_diff_overlay();
+        state.scroll_diff_down();
+        state.scroll_diff_down();
+        assert_eq!(state.diff_scroll(), 2);
+        state.hide_diff_overlay();
+        assert_eq!(state.diff_scroll(), 0);
+    }
+
+    #[test]
+    fn test_scroll_diff_saturates_at_zero() {
+        let mut state = make_state();
+        state.scroll_diff_up();
+        state.scroll_diff_up();
+        assert_eq!(state.diff_scroll(), 0, "should not underflow");
+    }
+
+    #[test]
+    fn test_scroll_diff_up_and_down() {
+        let mut state = make_state();
+        state.scroll_diff_down();
+        state.scroll_diff_down();
+        state.scroll_diff_down();
+        assert_eq!(state.diff_scroll(), 3);
+        state.scroll_diff_up();
+        assert_eq!(state.diff_scroll(), 2);
+    }
+
+    #[test]
+    fn test_pending_diff_token_increments_monotonically() {
+        let mut state = make_state();
+        let t0 = state.pending_diff_token();
+        let t1 = state.advance_pending_diff_token();
+        let t2 = state.advance_pending_diff_token();
+        assert!(t1 > t0);
+        assert!(t2 > t1);
+        assert_eq!(state.pending_diff_token(), t2);
+    }
+
+    #[test]
+    fn test_show_help_hides_diff_overlay() {
+        let mut state = make_state();
+        state.show_diff_overlay();
+        state.scroll_diff_down();
+        assert!(state.is_diff_overlay_visible());
+        state.show_help();
+        assert!(
+            !state.is_diff_overlay_visible(),
+            "help should close diff overlay"
+        );
+        assert_eq!(state.diff_scroll(), 0, "help should reset diff scroll");
+    }
+
+    #[test]
+    fn test_set_expanded_diff_sets_diff() {
+        let mut state = make_state();
+        let diff = FileDiff::default();
+        state.set_expanded_diff(diff);
+        assert!(state.expanded_diff().is_some());
+        assert_eq!(state.diff_scroll(), 0);
+    }
+
+    #[test]
+    fn test_reset_for_switch_clears_diff_overlay() {
+        let mut state = make_state();
+        state.show_diff_overlay();
+        state.set_expanded_diff(crate::git::FileDiff::default());
+        state.scroll_diff_down();
+        assert!(state.is_diff_overlay_visible());
+        assert!(state.expanded_diff().is_some());
+        assert_eq!(state.diff_scroll(), 1);
+
+        let before_token = state.pending_diff_token();
+        state.reset_for_switch(Vec::new(), String::new(), String::new(), String::new());
+
+        assert!(!state.is_diff_overlay_visible());
+        assert!(state.expanded_diff().is_none());
+        assert_eq!(state.diff_scroll(), 0);
+        assert_ne!(
+            state.pending_diff_token(),
+            before_token,
+            "token should advance"
+        );
     }
 }

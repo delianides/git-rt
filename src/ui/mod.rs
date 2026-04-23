@@ -6,6 +6,7 @@
 //! main pane only when a PR exists against the current branch; otherwise
 //! the main pane takes the full frame.
 
+pub mod diff_overlay;
 pub mod header;
 pub mod help_overlay;
 pub mod pr_line;
@@ -122,7 +123,27 @@ fn render(frame: &mut Frame, state: &mut AppState, config: &AppConfig, theme: &T
         pr_line::render_pr_line(frame, state, theme, bottom);
     }
 
-    // 3. Help overlay.
+    // 3. Diff overlay.
+    if state.is_diff_overlay_visible() {
+        if let (Some(diff), Some(path)) = (state.expanded_diff(), state.selected_path()) {
+            let (ins, del) = state
+                .files()
+                .get(state.selected_index())
+                .map(|f| (f.insertions, f.deletions))
+                .unwrap_or((0, 0));
+            diff_overlay::render_diff_overlay(
+                frame,
+                diff,
+                &path,
+                ins,
+                del,
+                state.diff_scroll(),
+                theme,
+            );
+        }
+    }
+
+    // 4. Help overlay.
     if state.is_help_visible() {
         help_overlay::render_help_overlay(frame, theme);
     }

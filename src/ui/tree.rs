@@ -8,24 +8,57 @@ pub enum RowId {
     File(String),
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum RowKind {
-    Directory { expanded: bool },
-    File,
-}
-
 #[derive(Debug, Clone)]
-pub struct VisibleRow {
-    pub id: RowId,
-    pub depth: usize,
-    pub label: String,
-    pub kind: RowKind,
-    pub file: Option<FileEntry>,
+pub enum VisibleRow {
+    Directory {
+        id: RowId,
+        depth: usize,
+        label: String,
+        expanded: bool,
+    },
+    File {
+        id: RowId,
+        depth: usize,
+        label: String,
+        file: FileEntry,
+    },
 }
 
 impl VisibleRow {
+    pub fn id(&self) -> &RowId {
+        match self {
+            VisibleRow::Directory { id, .. } | VisibleRow::File { id, .. } => id,
+        }
+    }
+
+    pub fn depth(&self) -> usize {
+        match self {
+            VisibleRow::Directory { depth, .. } | VisibleRow::File { depth, .. } => *depth,
+        }
+    }
+
+    pub fn label(&self) -> &str {
+        match self {
+            VisibleRow::Directory { label, .. } | VisibleRow::File { label, .. } => label,
+        }
+    }
+
     pub fn is_directory(&self) -> bool {
-        matches!(self.kind, RowKind::Directory { .. })
+        matches!(self, VisibleRow::Directory { .. })
+    }
+
+    pub fn directory_expanded(&self) -> Option<bool> {
+        match self {
+            VisibleRow::Directory { expanded, .. } => Some(*expanded),
+            VisibleRow::File { .. } => None,
+        }
+    }
+
+    pub fn file(&self) -> Option<&FileEntry> {
+        match self {
+            VisibleRow::Directory { .. } => None,
+            VisibleRow::File { file, .. } => Some(file),
+        }
     }
 }
 
@@ -46,14 +79,11 @@ pub fn build_visible_rows(files: &[FileEntry], expanded: &BTreeSet<String>) -> V
 
     if let Some(prefix) = shared_prefix.as_deref() {
         let is_expanded = expanded.contains(prefix);
-        rows.push(VisibleRow {
+        rows.push(VisibleRow::Directory {
             id: RowId::Directory(prefix.to_string()),
             depth: 0,
             label: format!("{prefix}/"),
-            kind: RowKind::Directory {
-                expanded: is_expanded,
-            },
-            file: None,
+            expanded: is_expanded,
         });
 
         if is_expanded {
@@ -143,28 +173,27 @@ fn flatten_children(
             format!("{current_path}/{name}")
         };
         let is_expanded = expanded.contains(&path);
-        out.push(VisibleRow {
+        out.push(VisibleRow::Directory {
             id: RowId::Directory(path.clone()),
             depth,
             label: format!("{name}/"),
-            kind: RowKind::Directory {
-                expanded: is_expanded,
-            },
-            file: None,
+            expanded: is_expanded,
         });
         if is_expanded {
             flatten_children(child, &path, depth + 1, expanded, out);
         }
     }
 
-    for file in &node.files {
+    let mut files: Vec<&FileEntry> = node.files.iter().collect();
+    files.sort_by(|a, b| a.path.cmp(&b.path));
+
+    for file in files {
         let label = file.path.rsplit('/').next().unwrap_or(&file.path).to_string();
-        out.push(VisibleRow {
+        out.push(VisibleRow::File {
             id: RowId::File(file.path.clone()),
             depth,
             label,
-            kind: RowKind::File,
-            file: Some(file.clone()),
+            file: file.clone(),
         });
     }
 }
@@ -193,10 +222,11 @@ mod tests {
 
         let rows = build_visible_rows(&files, &["src/ui".to_string()].into_iter().collect());
 
-        assert_eq!(rows[0].label, "src/ui/");
+        assert_eq!(rows[0].label(), "src/ui/");
         assert!(rows[0].is_directory());
-        assert_eq!(rows[1].label, "mod.rs");
-        assert_eq!(rows[2].label, "header.rs");
+        assert_eq!(rows[1].label(), "header.rs");
+        assert_eq!(rows[2].label(), "help_overlay.rs");
+        assert_eq!(rows[3].label(), "mod.rs");
     }
 
     #[test]
@@ -208,7 +238,7 @@ mod tests {
 
         let rows = build_visible_rows(&files, &std::collections::BTreeSet::new());
 
-        assert_eq!(rows.iter().map(|row| row.label.as_str()).collect::<Vec<_>>(), vec!["src/"]);
+        assert_eq!(rows.iter().map(|row| row.label()).collect::<Vec<_>>(), vec!["src/"]);
     }
 
     #[test]
@@ -216,6 +246,6 @@ mod tests {
         let files = vec![file("src/ui/mod.rs", 3, 1)];
         let rows = build_visible_rows(&files, &["src".to_string(), "src/ui".to_string()].into_iter().collect());
 
-        assert_eq!(rows[2].id, RowId::File("src/ui/mod.rs".to_string()));
+        assert_eq!(rows[2].id(), &RowId::File("src/ui/mod.rs".to_string()));
     }
 }

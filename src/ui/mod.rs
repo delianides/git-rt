@@ -203,6 +203,7 @@ fn render_flat_file_list(
             file.status.clone(),
             file.deletions,
             file.insertions,
+            area.width as usize,
             theme,
         );
 
@@ -377,27 +378,57 @@ fn file_line(
     status: FileStatus,
     deletions: usize,
     insertions: usize,
+    available_width: usize,
     theme: &Theme,
 ) -> Line<'static> {
     let status_char = file_status_char(status.clone());
     let status_color = file_status_color(status, theme);
 
-    Line::from(vec![
+    let stats_str = format!("-{deletions}/+{insertions}");
+    let stats_width = fit::display_width(&stats_str);
+    // Fixed cost with stats: leading space + status + space + path
+    // + space + stats + trailing margin. Excludes path and stats.
+    let fixed_with_stats = 1 + 1 + 1 + 1 + 1;
+    // Fixed cost without stats: leading space + status + space + path
+    // + trailing margin.
+    let fixed_no_stats = 1 + 1 + 1 + 1;
+
+    let path_width = fit::display_width(&label);
+    let elastic_full = available_width.saturating_sub(fixed_with_stats + stats_width);
+
+    let (path_display, include_stats) = if path_width <= elastic_full {
+        (label.clone(), true)
+    } else if elastic_full >= 20 {
+        (fit::middle_ellipsize(&label, elastic_full).into_owned(), true)
+    } else {
+        let elastic_no_stats = available_width.saturating_sub(fixed_no_stats);
+        (
+            fit::middle_ellipsize(&label, elastic_no_stats).into_owned(),
+            false,
+        )
+    };
+
+    let mut spans = vec![
         Span::raw(" "),
         Span::styled(status_char, Style::default().fg(status_color)),
         Span::raw(" "),
-        Span::styled(label, Style::default().fg(theme.file_path)),
-        Span::raw(" "),
-        Span::styled(
+        Span::styled(path_display, Style::default().fg(theme.file_path)),
+    ];
+
+    if include_stats {
+        spans.push(Span::raw(" "));
+        spans.push(Span::styled(
             format!("-{deletions}"),
             Style::default().fg(theme.file_deletions),
-        ),
-        Span::raw("/"),
-        Span::styled(
+        ));
+        spans.push(Span::styled("/", Style::default().fg(theme.file_path)));
+        spans.push(Span::styled(
             format!("+{insertions}"),
             Style::default().fg(theme.file_insertions),
-        ),
-    ])
+        ));
+    }
+
+    Line::from(spans)
 }
 
 fn file_status_char(status: FileStatus) -> &'static str {
@@ -467,6 +498,82 @@ mod tests {
             .iter()
             .map(|cell| cell.symbol())
             .collect::<String>()
+    }
+
+    /// Render to a `TestBackend` and return each row as its own string.
+    fn render_rows(
+        state: &mut AppState,
+        config: &AppConfig,
+        width: u16,
+        height: u16,
+    ) -> Vec<String> {
+        let backend = TestBackend::new(width, height);
+        let mut terminal = ratatui::Terminal::new(backend).unwrap();
+        terminal
+            .draw(|frame| {
+                render(
+                    frame,
+                    state,
+                    config,
+                    &load_theme(crate::theme::DEFAULT_THEME_NAME, None),
+                )
+            })
+            .unwrap();
+
+        let buf = terminal.backend().buffer().clone();
+        (0..height)
+            .map(|y| {
+                (0..width)
+                    .map(|x| buf[(x, y)].symbol().to_string())
+                    .collect::<Vec<_>>()
+                    .join("")
+            })
+            .collect()
+    }
+
+    #[test]
+    fn test_flat_row_mid_ellipsizes_path_at_narrow_width() {
+        let files = vec![FileEntry {
+            path: "src/very/deeply/nested/path/long_filename.rs".to_string(),
+            status: FileStatus::Modified,
+            insertions: 234,
+            deletions: 15,
+        }];
+        let mut state = AppState::new(files, Duration::from_millis(600), "main".to_string());
+        let rendered = render_to_string(&mut state, &AppConfig::default(), 50, 6);
+        assert!(rendered.contains("long_filename.rs"), "got: {rendered}");
+        assert!(rendered.contains("-15"), "got: {rendered}");
+        assert!(rendered.contains("+234"), "got: {rendered}");
+        assert!(rendered.contains('\u{2026}'), "got: {rendered}");
+    }
+
+    #[test]
+    fn test_flat_row_drops_stats_below_floor() {
+        let files = vec![FileEntry {
+            path: "src/a/b/c/d/really_long_filename.rs".to_string(),
+            status: FileStatus::Modified,
+            insertions: 234,
+            deletions: 15,
+        }];
+        let mut state = AppState::new(files, Duration::from_millis(600), "main".to_string());
+        // Width 24: with borders + padding the elastic budget drops
+        // under the 20-col floor, so stats should be dropped from the
+        // file row (the header title may still show aggregate stats).
+        let rendered_rows = render_rows(&mut state, &AppConfig::default(), 24, 6);
+        let file_row = rendered_rows
+            .iter()
+            .find(|r| r.contains(" M "))
+            .expect("file row present");
+        assert!(!file_row.contains("-15"), "stats should drop, got: {file_row}");
+        assert!(!file_row.contains("+234"), "stats should drop, got: {file_row}");
+        assert!(
+            file_row.contains(".rs"),
+            "filename extension should remain, got: {file_row}"
+        );
+        assert!(
+            file_row.contains('\u{2026}'),
+            "ellipsis expected, got: {file_row}"
+        );
     }
 
     #[test]

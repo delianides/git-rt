@@ -443,6 +443,40 @@ mod tests {
     }
 
     #[test]
+    fn test_header_drops_stash_first() {
+        let mut s = fresh_state();
+        s.set_ahead_behind(Some((2, 1)));
+        s.set_stash_count(3);
+        let full = line_text(&build_header_title(&s, &test_theme()));
+        let full_w = display_width(&full);
+        let line = build_header_title_with_width(&s, &test_theme(), full_w - 1);
+        let text = line_text(&line);
+        assert!(!text.contains("stash"), "stash should drop first, got: {text}");
+        assert!(text.contains("↑2 ↓1"), "ahead/behind should remain, got: {text}");
+    }
+
+    #[test]
+    fn test_header_drops_ahead_behind_second() {
+        let mut s = fresh_state();
+        s.set_ahead_behind(Some((2, 1)));
+        s.set_stash_count(3);
+        let line = build_header_title_with_width(&s, &test_theme(), 30);
+        let text = line_text(&line);
+        assert!(!text.contains("stash"), "got: {text}");
+        assert!(!text.contains('↑'), "got: {text}");
+    }
+
+    #[test]
+    fn test_header_keeps_view_mode_label_even_when_tight() {
+        let mut s = fresh_state();
+        s.set_ahead_behind(Some((2, 1)));
+        s.set_stash_count(3);
+        let line = build_header_title_with_width(&s, &test_theme(), 20);
+        let text = line_text(&line);
+        assert!(text.contains("flat"), "view-mode label must remain, got: {text}");
+    }
+
+    #[test]
     fn test_header_mid_ellipsizes_long_branch_at_narrow_width() {
         let mut s = fresh_state();
         s.set_branch("feat/very-long-branch-name-with-lots-of-words".to_string());

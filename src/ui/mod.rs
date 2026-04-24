@@ -291,7 +291,10 @@ fn render_tree_file_list(
                 let (label_display, include_stats) = if label_w <= elastic_full {
                     (label.clone(), true)
                 } else if elastic_full >= 20 {
-                    (fit::middle_ellipsize(label, elastic_full).into_owned(), true)
+                    (
+                        fit::middle_ellipsize(label, elastic_full).into_owned(),
+                        true,
+                    )
                 } else {
                     let elastic_no_stats = width.saturating_sub(fixed_no_stats + indent_cols);
                     (
@@ -437,7 +440,10 @@ fn file_line(
     let (path_display, include_stats) = if path_width <= elastic_full {
         (label.clone(), true)
     } else if elastic_full >= 20 {
-        (fit::middle_ellipsize(&label, elastic_full).into_owned(), true)
+        (
+            fit::middle_ellipsize(&label, elastic_full).into_owned(),
+            true,
+        )
     } else {
         let elastic_no_stats = available_width.saturating_sub(fixed_no_stats);
         (
@@ -611,7 +617,9 @@ mod tests {
                             &load_theme(crate::theme::DEFAULT_THEME_NAME, None),
                         )
                     })
-                    .expect(&format!("render must not panic at width {width} tree={tree}"));
+                    .unwrap_or_else(|e| {
+                        panic!("render must not panic at width {width} tree={tree}: {e}")
+                    });
             }
         }
     }
@@ -626,7 +634,10 @@ mod tests {
         state.cycle_view_mode();
 
         let rendered = render_to_string(&mut state, &AppConfig::default(), 28, 8);
-        assert!(rendered.contains('\u{2026}'), "expected ellipsis, got: {rendered}");
+        assert!(
+            rendered.contains('\u{2026}'),
+            "expected ellipsis, got: {rendered}"
+        );
         assert!(
             !rendered.contains("some/very/long/directory/path/"),
             "got: {rendered}"
@@ -643,7 +654,10 @@ mod tests {
         state.cycle_view_mode();
 
         let rendered = render_to_string(&mut state, &AppConfig::default(), 30, 8);
-        assert!(rendered.contains('\u{2026}'), "expected ellipsis, got: {rendered}");
+        assert!(
+            rendered.contains('\u{2026}'),
+            "expected ellipsis, got: {rendered}"
+        );
     }
 
     #[test]
@@ -679,8 +693,14 @@ mod tests {
             .iter()
             .find(|r| r.contains(" M "))
             .expect("file row present");
-        assert!(!file_row.contains("-15"), "stats should drop, got: {file_row}");
-        assert!(!file_row.contains("+234"), "stats should drop, got: {file_row}");
+        assert!(
+            !file_row.contains("-15"),
+            "stats should drop, got: {file_row}"
+        );
+        assert!(
+            !file_row.contains("+234"),
+            "stats should drop, got: {file_row}"
+        );
         assert!(
             file_row.contains(".rs"),
             "filename extension should remain, got: {file_row}"

@@ -278,14 +278,22 @@ mod tests {
         assert!(out.ends_with("file.rs"), "got: {out}");
         assert!(out.starts_with("src"), "got: {out}");
         assert!(out.contains('\u{2026}'), "got: {out}");
-        assert!(display_width(&out) <= 16, "got width: {}", display_width(&out));
+        assert!(
+            display_width(&out) <= 16,
+            "got width: {}",
+            display_width(&out)
+        );
     }
 
     #[test]
     fn middle_ellipsize_path_drops_interior_segments_from_middle() {
         let out = middle_ellipsize("src/ui/mod.rs", 12);
         assert!(out.ends_with("mod.rs"), "got: {out}");
-        assert!(display_width(&out) <= 12, "got width: {}", display_width(&out));
+        assert!(
+            display_width(&out) <= 12,
+            "got width: {}",
+            display_width(&out)
+        );
     }
 
     #[test]
@@ -293,7 +301,11 @@ mod tests {
         // "ab/c" (4 cols) at budget 3 — only 2 segments, path logic
         // returns None and char-level takes over.
         let out = middle_ellipsize("ab/c", 3);
-        assert!(display_width(&out) <= 3, "got width: {}", display_width(&out));
+        assert!(
+            display_width(&out) <= 3,
+            "got width: {}",
+            display_width(&out)
+        );
     }
 
     #[test]

@@ -179,9 +179,7 @@ fn mergeable_indicator(status: &MergeableStatus) -> Option<(&'static str, &'stat
 /// Callers must only invoke this when `has_bottom_bar(state)` returns
 /// `true`. The row is a single left-aligned PR status line.
 pub fn render_pr_line(frame: &mut Frame, state: &AppState, theme: &Theme, area: Rect) {
-    if let Some(line) =
-        build_pr_line_fitted(state.pr_state(), theme, area.width as usize)
-    {
+    if let Some(line) = build_pr_line_fitted(state.pr_state(), theme, area.width as usize) {
         frame.render_widget(Paragraph::new(line), area);
     }
 }

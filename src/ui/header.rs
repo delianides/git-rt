@@ -50,11 +50,7 @@ struct Segment {
 }
 
 impl Segment {
-    fn new(
-        kind: SegmentKind,
-        role: SegmentRole,
-        spans: Vec<Span<'static>>,
-    ) -> Self {
+    fn new(kind: SegmentKind, role: SegmentRole, spans: Vec<Span<'static>>) -> Self {
         let text_width: usize = spans
             .iter()
             .map(|s| fit::display_width(s.content.as_ref()))
@@ -105,12 +101,7 @@ pub fn build_header_title_with_width(
     Line::from(spans)
 }
 
-fn build_segments(
-    state: &AppState,
-    repo: &str,
-    branch: &str,
-    theme: &Theme,
-) -> Vec<Segment> {
+fn build_segments(state: &AppState, repo: &str, branch: &str, theme: &Theme) -> Vec<Segment> {
     let text_style = Style::default().fg(theme.header_text);
     let sep_style = Style::default().fg(theme.header_separator);
     let sep_span = || Span::styled(" ● ", sep_style);
@@ -168,9 +159,15 @@ fn build_segments(
             SegmentKind::Droppable(2),
             SegmentRole::Content,
             vec![
-                Span::styled(format!("-{total_del}"), Style::default().fg(theme.file_deletions)),
+                Span::styled(
+                    format!("-{total_del}"),
+                    Style::default().fg(theme.file_deletions),
+                ),
                 Span::styled("/", text_style),
-                Span::styled(format!("+{total_ins}"), Style::default().fg(theme.file_insertions)),
+                Span::styled(
+                    format!("+{total_ins}"),
+                    Style::default().fg(theme.file_insertions),
+                ),
             ],
         ));
     }
@@ -231,17 +228,19 @@ fn total_width(segs: &[Segment]) -> usize {
     segs.iter().map(|s| s.text_width).sum::<usize>() + 2 /* leading + trailing " " */
 }
 
-fn fit_segments(
-    mut segs: Vec<Segment>,
-    max_width: usize,
-    theme: &Theme,
-) -> Vec<Segment> {
+fn fit_segments(mut segs: Vec<Segment>, max_width: usize, theme: &Theme) -> Vec<Segment> {
     if total_width(&segs) <= max_width {
         return segs;
     }
 
     // Step 1: ellipsize branch down to BRANCH_FLOOR.
-    shrink_segment(&mut segs, SegmentRole::Branch, max_width, BRANCH_FLOOR, theme);
+    shrink_segment(
+        &mut segs,
+        SegmentRole::Branch,
+        max_width,
+        BRANCH_FLOOR,
+        theme,
+    );
     if total_width(&segs) <= max_width {
         return segs;
     }
@@ -451,8 +450,14 @@ mod tests {
         let full_w = display_width(&full);
         let line = build_header_title_with_width(&s, &test_theme(), full_w - 1);
         let text = line_text(&line);
-        assert!(!text.contains("stash"), "stash should drop first, got: {text}");
-        assert!(text.contains("↑2 ↓1"), "ahead/behind should remain, got: {text}");
+        assert!(
+            !text.contains("stash"),
+            "stash should drop first, got: {text}"
+        );
+        assert!(
+            text.contains("↑2 ↓1"),
+            "ahead/behind should remain, got: {text}"
+        );
     }
 
     #[test]
@@ -473,7 +478,10 @@ mod tests {
         s.set_stash_count(3);
         let line = build_header_title_with_width(&s, &test_theme(), 20);
         let text = line_text(&line);
-        assert!(text.contains("flat"), "view-mode label must remain, got: {text}");
+        assert!(
+            text.contains("flat"),
+            "view-mode label must remain, got: {text}"
+        );
     }
 
     #[test]

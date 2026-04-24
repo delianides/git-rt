@@ -6,7 +6,7 @@ A real-time terminal dashboard for git changes. Watch your working tree update l
 
 ## Overview
 
-Run `git-rt` in a terminal pane alongside your editor. It shows a live-updating list of changed files with insertion/deletion counts and — when the current branch has a PR open on GitHub — a compact PR status strip with review, check, and mergeability state. Press `Enter` (or `d` / `Space` / `l` / `→`) on a file to open its full diff in a centered in-app overlay. Updates are event-driven via filesystem watches; there is no polling of the working tree.
+Run `git-rt` in a terminal pane alongside your editor. It shows a live-updating list of changed files with insertion/deletion counts and — when the current branch has a PR open on GitHub — a compact PR status strip with review, check, and mergeability state. Press `m` to cycle between the flat file list and a tree view that groups changes by directory. Press `Enter` (or `d` / `Space` / `l` / `→`) on a file to open its full diff in a centered in-app overlay, or use those same keys to toggle directories in tree mode. Updates are event-driven via filesystem watches; there is no polling of the working tree.
 
 ## Install
 
@@ -50,7 +50,8 @@ git-rt can be launched from any directory inside a git working tree — the repo
 | --------------------- | ----------------------------------------------------- |
 | `j` / `↓`             | Select next file                                      |
 | `k` / `↑`             | Select previous file                                  |
-| `Enter` / `l` / `→` / `Space` / `d` | Open the selected file's diff in an in-app overlay    |
+| `m`                   | Cycle view mode (`flat` / `tree`)                     |
+| `Enter` / `l` / `→` / `Space` / `d` | Open diff for files, toggle directories in tree mode |
 | `r`                   | Refresh                                               |
 | `?`                   | Show the help popup                                   |
 | `q` / `Ctrl+C`        | Quit                                                  |

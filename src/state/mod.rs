@@ -1,7 +1,8 @@
-use std::collections::HashMap;
+use std::collections::{BTreeSet, HashMap};
 use std::time::{Duration, Instant};
 
 use crate::git::{FileDiff, FileEntry};
+use crate::ui::tree::{build_visible_rows, RowId, VisibleRow};
 
 /// State of the PR widget
 #[derive(Debug, Clone, Default)]
@@ -82,12 +83,38 @@ pub enum MergeableStatus {
     Unknown,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ViewMode {
+    Flat,
+    Tree,
+}
+
+#[derive(Debug, Clone)]
+struct SelectionSnapshot {
+    row_id: Option<RowId>,
+    file_path: Option<String>,
+}
+
+#[derive(Debug, Clone)]
+struct ExpandedDiff {
+    path: String,
+    insertions: usize,
+    deletions: usize,
+    diff: FileDiff,
+}
+
 /// The application's view model — what the UI renders from
 pub struct AppState {
     /// All changed files in the repo
     files: Vec<FileEntry>,
-    /// Currently selected index in the file list
+    /// Currently selected index in the active visible rows
     selected: usize,
+    /// Current list presentation mode
+    view_mode: ViewMode,
+    /// Expanded directories while in tree mode
+    expanded_dirs: BTreeSet<String>,
+    /// Stable identity for the selected row when one has been established
+    selected_row_id: Option<RowId>,
     /// Number of times the file list has been refreshed
     refresh_count: usize,
     /// When the app started (for computing "last updated N seconds ago")
@@ -143,7 +170,7 @@ pub struct AppState {
     /// against.
     initial_seed_done: bool,
     /// Diff for the currently expanded file (if any)
-    current_diff: Option<FileDiff>,
+    current_diff: Option<ExpandedDiff>,
     /// Vertical scroll offset inside the diff overlay, in lines
     diff_scroll: usize,
     /// Whether the diff overlay is currently shown
@@ -160,6 +187,9 @@ impl AppState {
         Self {
             files,
             selected: 0,
+            view_mode: ViewMode::Flat,
+            expanded_dirs: BTreeSet::new(),
+            selected_row_id: None,
             refresh_count: 0,
             start_time: now,
             last_refresh: now,
@@ -200,8 +230,24 @@ impl AppState {
         self.selected
     }
 
+    pub fn view_mode(&self) -> ViewMode {
+        self.view_mode
+    }
+
+    pub fn expanded_dirs(&self) -> &BTreeSet<String> {
+        &self.expanded_dirs
+    }
+
     pub fn selected_path(&self) -> Option<String> {
-        self.files.get(self.selected).map(|f| f.path.clone())
+        self.selected_file_path()
+    }
+
+    pub fn selected_file_path(&self) -> Option<String> {
+        self.selection_snapshot().file_path
+    }
+
+    pub fn visible_rows(&self) -> Vec<VisibleRow> {
+        self.rebuild_visible_rows()
     }
 
     pub fn scroll_offset(&self) -> usize {
@@ -378,7 +424,19 @@ impl AppState {
 
     /// Currently expanded diff, if any.
     pub fn expanded_diff(&self) -> Option<&FileDiff> {
-        self.current_diff.as_ref()
+        self.current_diff.as_ref().map(|diff| &diff.diff)
+    }
+
+    /// File path associated with the currently expanded diff.
+    pub fn expanded_diff_path(&self) -> Option<&str> {
+        self.current_diff.as_ref().map(|diff| diff.path.as_str())
+    }
+
+    /// Insertions/deletions associated with the currently expanded diff.
+    pub fn expanded_diff_stats(&self) -> Option<(usize, usize)> {
+        self.current_diff
+            .as_ref()
+            .map(|diff| (diff.insertions, diff.deletions))
     }
 
     /// Current scroll offset inside the diff overlay.
@@ -412,8 +470,19 @@ impl AppState {
 
     /// Set the current diff (used when a Response::Diff arrives whose
     /// token matches the pending token). Also resets scroll to top.
-    pub fn set_expanded_diff(&mut self, diff: FileDiff) {
-        self.current_diff = Some(diff);
+    pub fn set_expanded_diff(&mut self, path: String, diff: FileDiff) {
+        let (insertions, deletions) = self
+            .files
+            .iter()
+            .find(|file| file.path == path)
+            .map(|file| (file.insertions, file.deletions))
+            .unwrap_or((0, 0));
+        self.current_diff = Some(ExpandedDiff {
+            path,
+            insertions,
+            deletions,
+            diff,
+        });
         self.diff_scroll = 0;
     }
 
@@ -461,13 +530,55 @@ impl AppState {
     // -- Navigation --
 
     pub fn select_next(&mut self) {
-        if !self.files.is_empty() {
-            self.selected = (self.selected + 1).min(self.files.len() - 1);
+        let rows = self.rebuild_visible_rows();
+        if !rows.is_empty() {
+            self.set_selection_from_rows(&rows, self.selected + 1);
         }
     }
 
     pub fn select_previous(&mut self) {
-        self.selected = self.selected.saturating_sub(1);
+        let rows = self.rebuild_visible_rows();
+        self.set_selection_from_rows(&rows, self.selected.saturating_sub(1));
+    }
+
+    pub fn cycle_view_mode(&mut self) {
+        let selection = self.selection_snapshot();
+
+        self.view_mode = match self.view_mode {
+            ViewMode::Flat => ViewMode::Tree,
+            ViewMode::Tree => ViewMode::Flat,
+        };
+        self.scroll_offset = 0;
+
+        if self.view_mode == ViewMode::Tree {
+            if let Some(path) = selection.file_path.as_deref() {
+                self.expand_ancestors_for_file(path);
+            }
+        }
+
+        self.restore_selection(selection);
+    }
+
+    pub fn toggle_selected_directory(&mut self) -> bool {
+        let rows = self.rebuild_visible_rows();
+        let Some(RowId::Directory(path)) =
+            Self::selected_row_from_rows(&rows, self.selected).map(|row| row.id().clone())
+        else {
+            return false;
+        };
+
+        if !self.expanded_dirs.insert(path.clone()) {
+            self.expanded_dirs.remove(&path);
+        }
+
+        let rows = self.rebuild_visible_rows();
+        let selected_directory = RowId::Directory(path);
+        if let Some(index) = rows.iter().position(|row| row.id() == &selected_directory) {
+            self.set_selection_from_rows(&rows, index);
+        } else {
+            self.set_selection_from_rows(&rows, self.selected);
+        }
+        true
     }
 
     // -- State updates --
@@ -484,6 +595,8 @@ impl AppState {
     ) {
         self.files = files;
         self.selected = 0;
+        self.expanded_dirs.clear();
+        self.selected_row_id = None;
         self.refresh_count = 0;
         self.last_refresh = Instant::now();
         self.flash_times.clear();
@@ -512,8 +625,7 @@ impl AppState {
     /// Update the file list from a fresh git status computation.
     /// Preserves selection position and expanded state where possible.
     pub fn update_files(&mut self, new_files: Vec<FileEntry>) {
-        // Try to preserve the selected file by path
-        let selected_path = self.selected_path();
+        let selection = self.selection_snapshot();
 
         let now = Instant::now();
 
@@ -552,22 +664,135 @@ impl AppState {
         self.refresh_count += 1;
         self.last_refresh = now;
 
-        // Restore selection by path, or clamp to valid range
-        if let Some(prev_path) = selected_path {
-            self.selected = self
-                .files
-                .iter()
-                .position(|f| f.path == prev_path)
-                .unwrap_or(self.selected.min(self.files.len().saturating_sub(1)));
-        } else {
-            self.selected = self.selected.min(self.files.len().saturating_sub(1));
+        if self.view_mode == ViewMode::Tree {
+            if let Some(path) = selection.file_path.as_deref() {
+                self.expand_ancestors_for_file(path);
+            }
         }
+
+        self.restore_selection(selection);
 
         // `scroll_offset` is intentionally not reset here. ratatui's
         // `get_items_bounds` clamps any stale offset against the new list
         // length on the next render, and the render path writes the corrected
         // value back via `set_scroll_offset`. Resetting to 0 here would cause
         // a one-frame viewport jump on every FS recompute.
+    }
+
+    fn rebuild_visible_rows(&self) -> Vec<VisibleRow> {
+        match self.view_mode {
+            ViewMode::Flat => self.files.iter().map(flat_row_from_file).collect(),
+            ViewMode::Tree => build_visible_rows(&self.files, &self.expanded_dirs),
+        }
+    }
+
+    fn selection_snapshot(&self) -> SelectionSnapshot {
+        let rows = self.rebuild_visible_rows();
+        Self::selection_snapshot_from_rows(&rows, self.selected)
+    }
+
+    fn selection_snapshot_from_rows(rows: &[VisibleRow], selected: usize) -> SelectionSnapshot {
+        let row = Self::selected_row_from_rows(rows, selected);
+        SelectionSnapshot {
+            row_id: row.map(|row| row.id().clone()),
+            file_path: row.and_then(|row| match row.id() {
+                RowId::File(path) => Some(path.clone()),
+                RowId::Directory(_) => None,
+            }),
+        }
+    }
+
+    fn selected_row_from_rows(rows: &[VisibleRow], selected: usize) -> Option<&VisibleRow> {
+        rows.get(selected)
+    }
+
+    fn set_selection_from_rows(&mut self, rows: &[VisibleRow], selected: usize) {
+        if rows.is_empty() {
+            self.selected = 0;
+            self.selected_row_id = None;
+            return;
+        }
+
+        self.selected = selected.min(rows.len() - 1);
+        self.selected_row_id = rows.get(self.selected).map(|row| row.id().clone());
+    }
+
+    fn restore_selection(&mut self, selection: SelectionSnapshot) {
+        match self.view_mode {
+            ViewMode::Flat => self.restore_flat_selection(selection.file_path),
+            ViewMode::Tree => self.restore_tree_selection(selection),
+        }
+    }
+
+    fn restore_flat_selection(&mut self, selected_file_path: Option<String>) {
+        if self.files.is_empty() {
+            self.selected = 0;
+            self.selected_row_id = None;
+            return;
+        }
+
+        if let Some(path) = selected_file_path {
+            self.selected = self
+                .files
+                .iter()
+                .position(|file| file.path == path)
+                .unwrap_or(self.selected.min(self.files.len() - 1));
+        } else {
+            self.selected = self.selected.min(self.files.len() - 1);
+        }
+
+        self.selected_row_id = self
+            .files
+            .get(self.selected)
+            .map(|file| RowId::File(file.path.clone()));
+    }
+
+    fn restore_tree_selection(&mut self, selection: SelectionSnapshot) {
+        let rows = self.rebuild_visible_rows();
+
+        if let Some(selected_row_id) = selection.row_id.as_ref() {
+            if let Some(index) = rows.iter().position(|row| row.id() == selected_row_id) {
+                self.set_selection_from_rows(&rows, index);
+                return;
+            }
+        }
+
+        if let Some(selected_file_path) = selection.file_path.as_ref() {
+            let file_id = RowId::File(selected_file_path.clone());
+            if let Some(index) = rows.iter().position(|row| row.id() == &file_id) {
+                self.set_selection_from_rows(&rows, index);
+                return;
+            }
+        }
+
+        self.set_selection_from_rows(&rows, self.selected);
+    }
+
+    fn expand_ancestors_for_file(&mut self, path: &str) {
+        let mut parts: Vec<&str> = path.split('/').collect();
+        if parts.len() <= 1 {
+            return;
+        }
+
+        parts.pop();
+
+        let mut current = String::new();
+        for segment in parts {
+            if !current.is_empty() {
+                current.push('/');
+            }
+            current.push_str(segment);
+            self.expanded_dirs.insert(current.clone());
+        }
+    }
+}
+
+fn flat_row_from_file(file: &FileEntry) -> VisibleRow {
+    VisibleRow::File {
+        id: RowId::File(file.path.clone()),
+        depth: 0,
+        label: file.path.clone(),
+        file: file.clone(),
     }
 }
 
@@ -624,6 +849,87 @@ mod tests {
 
         // Should still have b.rs selected
         assert_eq!(state.selected_path().unwrap(), "b.rs");
+    }
+
+    #[test]
+    fn test_cycle_view_mode_toggles_flat_and_tree() {
+        let mut state = AppState::new(vec![], Duration::from_millis(600), "main".to_string());
+        assert_eq!(state.view_mode(), ViewMode::Flat);
+        state.cycle_view_mode();
+        assert_eq!(state.view_mode(), ViewMode::Tree);
+        state.cycle_view_mode();
+        assert_eq!(state.view_mode(), ViewMode::Flat);
+    }
+
+    #[test]
+    fn test_tree_mode_auto_expands_ancestors_for_selected_file() {
+        let files = vec![
+            make_entry("src/ui/header.rs", 2, 0),
+            make_entry("src/ui/mod.rs", 1, 0),
+        ];
+        let mut state = AppState::new(files, Duration::from_millis(600), "main".to_string());
+        state.cycle_view_mode();
+
+        assert!(state.expanded_dirs().contains("src"));
+        assert!(state.expanded_dirs().contains("src/ui"));
+        assert_eq!(
+            state.selected_file_path().as_deref(),
+            Some("src/ui/header.rs")
+        );
+    }
+
+    #[test]
+    fn test_toggle_selected_directory_collapses_visible_children() {
+        let files = vec![
+            make_entry("src/ui/header.rs", 2, 0),
+            make_entry("src/ui/mod.rs", 1, 0),
+        ];
+        let mut state = AppState::new(files, Duration::from_millis(600), "main".to_string());
+        state.cycle_view_mode();
+
+        let expanded_labels = state
+            .visible_rows()
+            .into_iter()
+            .map(|row| row.label().to_string())
+            .collect::<Vec<_>>();
+        assert_eq!(expanded_labels, vec!["src/ui/", "header.rs", "mod.rs"]);
+
+        state.select_previous();
+        assert!(state.toggle_selected_directory());
+        assert!(!state.expanded_dirs().contains("src/ui"));
+
+        let collapsed_labels = state
+            .visible_rows()
+            .into_iter()
+            .map(|row| row.label().to_string())
+            .collect::<Vec<_>>();
+        assert_eq!(collapsed_labels, vec!["src/ui/"]);
+        assert!(state.selected_file_path().is_none());
+    }
+
+    #[test]
+    fn test_tree_mode_update_preserves_selected_file_by_path() {
+        let files = vec![
+            make_entry("src/ui/header.rs", 2, 0),
+            make_entry("src/ui/mod.rs", 1, 0),
+        ];
+        let mut state = AppState::new(files, Duration::from_millis(600), "main".to_string());
+        state.cycle_view_mode();
+
+        let updated_files = vec![
+            make_entry("src/ui/footer.rs", 3, 0),
+            make_entry("src/ui/header.rs", 5, 1),
+            make_entry("src/ui/mod.rs", 1, 0),
+        ];
+        state.update_files(updated_files);
+
+        assert_eq!(
+            state.selected_file_path().as_deref(),
+            Some("src/ui/header.rs")
+        );
+        assert!(state.expanded_dirs().contains("src"));
+        assert!(state.expanded_dirs().contains("src/ui"));
+        assert_eq!(state.selected_index(), 2);
     }
 
     #[test]
@@ -1149,10 +1455,16 @@ mod tests {
 
     #[test]
     fn test_set_expanded_diff_sets_diff() {
-        let mut state = make_state();
+        let mut state = AppState::new(
+            vec![make_entry("src/ui/mod.rs", 7, 3)],
+            Duration::from_millis(600),
+            "main".to_string(),
+        );
         let diff = FileDiff::default();
-        state.set_expanded_diff(diff);
+        state.set_expanded_diff("src/ui/mod.rs".to_string(), diff);
         assert!(state.expanded_diff().is_some());
+        assert_eq!(state.expanded_diff_path(), Some("src/ui/mod.rs"));
+        assert_eq!(state.expanded_diff_stats(), Some((7, 3)));
         assert_eq!(state.diff_scroll(), 0);
     }
 
@@ -1160,7 +1472,7 @@ mod tests {
     fn test_reset_for_switch_clears_diff_overlay() {
         let mut state = make_state();
         state.show_diff_overlay();
-        state.set_expanded_diff(crate::git::FileDiff::default());
+        state.set_expanded_diff("src/ui/mod.rs".to_string(), crate::git::FileDiff::default());
         state.scroll_diff_down();
         assert!(state.is_diff_overlay_visible());
         assert!(state.expanded_diff().is_some());

@@ -10,6 +10,7 @@ pub mod diff_overlay;
 pub mod header;
 pub mod help_overlay;
 pub mod pr_line;
+pub mod tree;
 
 use anyhow::Result;
 use crossterm::{
@@ -29,8 +30,9 @@ use std::io;
 
 use crate::config::AppConfig;
 use crate::git::FileStatus;
-use crate::state::AppState;
+use crate::state::{AppState, ViewMode};
 use crate::theme::Theme;
+use crate::ui::tree::VisibleRow;
 
 /// Wrapper around the ratatui terminal.
 pub struct Terminal {
@@ -125,16 +127,12 @@ fn render(frame: &mut Frame, state: &mut AppState, config: &AppConfig, theme: &T
 
     // 3. Diff overlay.
     if state.is_diff_overlay_visible() {
-        if let (Some(diff), Some(path)) = (state.expanded_diff(), state.selected_path()) {
-            let (ins, del) = state
-                .files()
-                .get(state.selected_index())
-                .map(|f| (f.insertions, f.deletions))
-                .unwrap_or((0, 0));
+        if let (Some(diff), Some(path)) = (state.expanded_diff(), state.expanded_diff_path()) {
+            let (ins, del) = state.expanded_diff_stats().unwrap_or((0, 0));
             diff_overlay::render_diff_overlay(
                 frame,
                 diff,
-                &path,
+                path,
                 ins,
                 del,
                 state.diff_scroll(),
@@ -173,89 +171,183 @@ fn render_file_list(
     theme: &Theme,
     area: Rect,
 ) {
+    match state.view_mode() {
+        ViewMode::Flat => render_flat_file_list(frame, state, config, theme, area),
+        ViewMode::Tree => render_tree_file_list(frame, state, config, theme, area),
+    }
+}
+
+fn render_flat_file_list(
+    frame: &mut Frame,
+    state: &mut AppState,
+    config: &AppConfig,
+    theme: &Theme,
+    area: Rect,
+) {
     // Add a 1-row top padding inside the pane
-    let area = Rect {
-        x: area.x,
-        y: area.y + 1,
-        width: area.width,
-        height: area.height.saturating_sub(1),
-    };
+    let area = inset_file_list_area(area);
 
     let files = state.files();
 
     if files.is_empty() {
-        state.set_scroll_offset(0);
-        if area.height < 2 || area.width < 20 {
-            return;
-        }
-        if state.is_computing() {
-            use ratatui::layout::Alignment;
-            let loading = Paragraph::new("Loading\u{2026}")
-                .style(Style::default().add_modifier(ratatui::style::Modifier::DIM))
-                .alignment(Alignment::Center);
-            frame.render_widget(loading, area);
-            return;
-        }
-        let msg = Paragraph::new("  No changes detected. Watching for file changes...")
-            .style(Style::default().fg(theme.empty_text));
-        frame.render_widget(msg, area);
+        render_empty_or_loading_state(frame, state, theme, area);
         return;
     }
 
     let mut items: Vec<ListItem> = Vec::new();
-    let mut list_index_to_file_index: Vec<Option<usize>> = Vec::new();
 
-    for (i, file) in files.iter().enumerate() {
-        // Status character
-        let status_char = match file.status {
-            FileStatus::Modified => "M",
-            FileStatus::Added => "A",
-            FileStatus::Deleted => "D",
-            FileStatus::Renamed => "R",
-            FileStatus::Untracked => "?",
-            FileStatus::Staged => "S",
-            FileStatus::Conflicted => "C",
-        };
-
-        let status_color = match file.status {
-            FileStatus::Modified => theme.status_modified,
-            FileStatus::Added => theme.status_added,
-            FileStatus::Deleted => theme.status_deleted,
-            FileStatus::Renamed => theme.status_renamed,
-            FileStatus::Untracked => theme.status_untracked,
-            FileStatus::Staged => theme.status_staged,
-            FileStatus::Conflicted => theme.status_conflicted,
-        };
-
-        let line = Line::from(vec![
-            Span::raw(" "),
-            Span::styled(status_char, Style::default().fg(status_color)),
-            Span::raw(" "),
-            Span::styled(file.path.clone(), Style::default().fg(theme.file_path)),
-            Span::raw(" "),
-            Span::styled(
-                format!("-{}", file.deletions),
-                Style::default().fg(theme.file_deletions),
-            ),
-            Span::raw("/"),
-            Span::styled(
-                format!("+{}", file.insertions),
-                Style::default().fg(theme.file_insertions),
-            ),
-        ]);
+    for file in files {
+        let line = file_line(
+            file.path.clone(),
+            file.status.clone(),
+            file.deletions,
+            file.insertions,
+            theme,
+        );
 
         let mut item = ListItem::new(line);
         if config.display.flash_on_change && state.is_flashing(&file.path) {
             item = item.style(Style::default().bg(theme.flash_bg));
         }
         items.push(item);
-        list_index_to_file_index.push(Some(i));
     }
 
-    let selected_list_index = list_index_to_file_index
-        .iter()
-        .position(|idx| *idx == Some(state.selected_index()))
-        .unwrap_or(0);
+    render_list(
+        frame,
+        state,
+        config,
+        theme,
+        area,
+        items,
+        state.selected_index(),
+    );
+}
+
+fn render_tree_file_list(
+    frame: &mut Frame,
+    state: &mut AppState,
+    config: &AppConfig,
+    theme: &Theme,
+    area: Rect,
+) {
+    let area = inset_file_list_area(area);
+    let rows = state.visible_rows();
+
+    if rows.is_empty() {
+        render_empty_or_loading_state(frame, state, theme, area);
+        return;
+    }
+
+    let mut items = Vec::with_capacity(rows.len());
+
+    for row in &rows {
+        let line = match row {
+            VisibleRow::Directory {
+                depth,
+                label,
+                expanded,
+                ..
+            } => {
+                let indent = "  ".repeat(*depth);
+                let arrow = if *expanded { "▼" } else { "▶" };
+                Line::from(vec![
+                    Span::raw(" "),
+                    Span::raw(indent),
+                    Span::styled(arrow, Style::default().fg(theme.file_path)),
+                    Span::raw(" "),
+                    Span::styled(label.clone(), Style::default().fg(theme.file_path)),
+                ])
+            }
+            VisibleRow::File {
+                depth, label, file, ..
+            } => {
+                let indent = "  ".repeat(*depth);
+                let status_char = file_status_char(file.status.clone());
+                let status_color = file_status_color(file.status.clone(), theme);
+                Line::from(vec![
+                    Span::raw(" "),
+                    Span::raw(indent),
+                    Span::raw(" "),
+                    Span::raw(" "),
+                    Span::styled(status_char, Style::default().fg(status_color)),
+                    Span::raw(" "),
+                    Span::styled(label.clone(), Style::default().fg(theme.file_path)),
+                    Span::raw(" "),
+                    Span::styled(
+                        format!("-{}", file.deletions),
+                        Style::default().fg(theme.file_deletions),
+                    ),
+                    Span::raw("/"),
+                    Span::styled(
+                        format!("+{}", file.insertions),
+                        Style::default().fg(theme.file_insertions),
+                    ),
+                ])
+            }
+        };
+
+        let mut item = ListItem::new(line);
+        if let Some(file) = row.file() {
+            if config.display.flash_on_change && state.is_flashing(&file.path) {
+                item = item.style(Style::default().bg(theme.flash_bg));
+            }
+        }
+        items.push(item);
+    }
+
+    render_list(
+        frame,
+        state,
+        config,
+        theme,
+        area,
+        items,
+        state.selected_index(),
+    );
+}
+
+fn inset_file_list_area(area: Rect) -> Rect {
+    Rect {
+        x: area.x,
+        y: area.y + 1,
+        width: area.width,
+        height: area.height.saturating_sub(1),
+    }
+}
+
+fn render_empty_or_loading_state(
+    frame: &mut Frame,
+    state: &mut AppState,
+    theme: &Theme,
+    area: Rect,
+) {
+    state.set_scroll_offset(0);
+    if area.height < 2 || area.width < 20 {
+        return;
+    }
+    if state.is_computing() {
+        use ratatui::layout::Alignment;
+        let loading = Paragraph::new("Loading\u{2026}")
+            .style(Style::default().add_modifier(ratatui::style::Modifier::DIM))
+            .alignment(Alignment::Center);
+        frame.render_widget(loading, area);
+        return;
+    }
+    let msg = Paragraph::new("  No changes detected. Watching for file changes...")
+        .style(Style::default().fg(theme.empty_text));
+    frame.render_widget(msg, area);
+}
+
+fn render_list(
+    frame: &mut Frame,
+    state: &mut AppState,
+    config: &AppConfig,
+    theme: &Theme,
+    area: Rect,
+    items: Vec<ListItem<'static>>,
+    selected_index: usize,
+) {
+    let max_selected_index = selected_index.min(items.len().saturating_sub(1));
 
     let highlight = if state.is_focused() {
         // Only change bg so per-span fg colors (diff counts, status chars)
@@ -272,11 +364,63 @@ fn render_file_list(
 
     let mut list_state = ListState::default()
         .with_offset(state.scroll_offset())
-        .with_selected(Some(selected_list_index));
+        .with_selected(Some(max_selected_index));
 
     frame.render_stateful_widget(list, area, &mut list_state);
 
     state.set_scroll_offset(list_state.offset());
+}
+
+fn file_line(
+    label: String,
+    status: FileStatus,
+    deletions: usize,
+    insertions: usize,
+    theme: &Theme,
+) -> Line<'static> {
+    let status_char = file_status_char(status.clone());
+    let status_color = file_status_color(status, theme);
+
+    Line::from(vec![
+        Span::raw(" "),
+        Span::styled(status_char, Style::default().fg(status_color)),
+        Span::raw(" "),
+        Span::styled(label, Style::default().fg(theme.file_path)),
+        Span::raw(" "),
+        Span::styled(
+            format!("-{deletions}"),
+            Style::default().fg(theme.file_deletions),
+        ),
+        Span::raw("/"),
+        Span::styled(
+            format!("+{insertions}"),
+            Style::default().fg(theme.file_insertions),
+        ),
+    ])
+}
+
+fn file_status_char(status: FileStatus) -> &'static str {
+    match status {
+        FileStatus::Modified => "M",
+        FileStatus::Added => "A",
+        FileStatus::Deleted => "D",
+        FileStatus::Renamed => "R",
+        FileStatus::Untracked => "?",
+        FileStatus::Staged => "S",
+        FileStatus::Conflicted => "C",
+    }
+}
+
+fn file_status_color(status: FileStatus, theme: &Theme) -> ratatui::style::Color {
+    match status {
+        FileStatus::Modified => theme.status_modified,
+        FileStatus::Added => theme.status_added,
+        FileStatus::Deleted => theme.status_deleted,
+        FileStatus::Renamed => theme.status_renamed,
+        FileStatus::Untracked => theme.status_untracked,
+        FileStatus::Staged => theme.status_staged,
+        FileStatus::Conflicted => theme.status_conflicted,
+    }
 }
 
 #[cfg(test)]
@@ -294,6 +438,34 @@ mod tests {
             insertions: 1,
             deletions: 1,
         }
+    }
+
+    fn render_to_string(
+        state: &mut AppState,
+        config: &AppConfig,
+        width: u16,
+        height: u16,
+    ) -> String {
+        let backend = TestBackend::new(width, height);
+        let mut terminal = ratatui::Terminal::new(backend).unwrap();
+        terminal
+            .draw(|frame| {
+                render(
+                    frame,
+                    state,
+                    config,
+                    &load_theme(crate::theme::DEFAULT_THEME_NAME, None),
+                )
+            })
+            .unwrap();
+
+        terminal
+            .backend()
+            .buffer()
+            .content()
+            .iter()
+            .map(|cell| cell.symbol())
+            .collect::<String>()
     }
 
     #[test]
@@ -328,5 +500,62 @@ mod tests {
             offset >= 30,
             "offset must keep selection+padding visible, got {offset}"
         );
+    }
+
+    #[test]
+    fn test_render_tree_mode_shows_directory_arrows_and_filename_only_rows() {
+        let files = vec![make_entry("src/ui/mod.rs"), make_entry("src/ui/header.rs")];
+        let mut state = AppState::new(files, Duration::from_millis(600), "main".to_string());
+        state.cycle_view_mode();
+
+        let rendered = render_to_string(&mut state, &AppConfig::default(), 50, 12);
+        assert!(rendered.contains("▼ src/ui/"));
+        assert!(rendered.contains("mod.rs"));
+        assert!(!rendered.contains("src/ui/mod.rs"));
+    }
+
+    #[test]
+    fn test_render_tree_mode_shows_loading_state_when_no_rows() {
+        let mut state = AppState::new(vec![], Duration::from_millis(600), "main".to_string());
+        state.cycle_view_mode();
+        state.set_computing(true);
+
+        let rendered = render_to_string(&mut state, &AppConfig::default(), 50, 12);
+        assert!(rendered.contains("Loading…"));
+    }
+
+    #[test]
+    fn test_render_tree_mode_shows_empty_state_when_no_rows() {
+        let mut state = AppState::new(vec![], Duration::from_millis(600), "main".to_string());
+        state.cycle_view_mode();
+
+        let rendered = render_to_string(&mut state, &AppConfig::default(), 60, 12);
+        assert!(rendered.contains("No changes detected. Watching for file changes..."));
+    }
+
+    #[test]
+    fn test_render_diff_overlay_uses_stored_diff_file_metadata() {
+        let files = vec![
+            FileEntry {
+                path: "src/ui/mod.rs".to_string(),
+                status: FileStatus::Modified,
+                insertions: 7,
+                deletions: 3,
+            },
+            FileEntry {
+                path: "src/ui/header.rs".to_string(),
+                status: FileStatus::Modified,
+                insertions: 2,
+                deletions: 1,
+            },
+        ];
+        let mut state = AppState::new(files, Duration::from_millis(600), "main".to_string());
+        state.set_expanded_diff("src/ui/mod.rs".to_string(), crate::git::FileDiff::default());
+        state.show_diff_overlay();
+        state.select_next();
+
+        let rendered = render_to_string(&mut state, &AppConfig::default(), 60, 16);
+        assert!(rendered.contains("src/ui/mod.rs +7 -3"));
+        assert!(!rendered.contains("src/ui/header.rs +2 -1"));
     }
 }

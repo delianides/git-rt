@@ -4,7 +4,8 @@ use std::time::{Duration, Instant};
 use anyhow::{Context, Result};
 use crossbeam_channel::{bounded, Receiver, Sender};
 use crossterm::event::{
-    self, DisableFocusChange, EnableFocusChange, Event as TermEvent, KeyCode, KeyModifiers,
+    self, DisableFocusChange, EnableFocusChange, Event as TermEvent, KeyCode, KeyEvent,
+    KeyModifiers,
 };
 use crossterm::execute;
 use crossterm::terminal::{
@@ -194,6 +195,40 @@ fn open_url(url: &str) -> Result<()> {
         .spawn()
         .with_context(|| format!("failed to launch browser via {program}"))?;
     Ok(())
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum MainAction {
+    Quit,
+    MoveDown,
+    MoveUp,
+    Primary,
+    Refresh,
+    Edit,
+    OpenPr,
+    Help,
+    CycleMode,
+    None,
+}
+
+fn interpret_main_key(modifiers: KeyModifiers, code: KeyCode) -> MainAction {
+    match (modifiers, code) {
+        (_, KeyCode::Char('q')) => MainAction::Quit,
+        (KeyModifiers::CONTROL, KeyCode::Char('c')) => MainAction::Quit,
+        (_, KeyCode::Char('j')) | (_, KeyCode::Down) => MainAction::MoveDown,
+        (_, KeyCode::Char('k')) | (_, KeyCode::Up) => MainAction::MoveUp,
+        (_, KeyCode::Enter)
+        | (_, KeyCode::Char('l'))
+        | (_, KeyCode::Right)
+        | (_, KeyCode::Char(' '))
+        | (_, KeyCode::Char('d')) => MainAction::Primary,
+        (_, KeyCode::Char('m')) => MainAction::CycleMode,
+        (_, KeyCode::Char('r')) => MainAction::Refresh,
+        (_, KeyCode::Char('e')) => MainAction::Edit,
+        (_, KeyCode::Char('p')) => MainAction::OpenPr,
+        (_, KeyCode::Char('?')) => MainAction::Help,
+        _ => MainAction::None,
+    }
 }
 
 /// RAII guard around a foreground child process. Suspend() leaves raw mode and
@@ -428,29 +463,7 @@ impl App {
 
             // Drain worker responses
             while let Ok(resp) = self.worker_rx.try_recv() {
-                match resp {
-                    Response::Status(bundle) => self.apply_status(*bundle),
-                    Response::Diff { path, token, diff } => {
-                        if token == self.state.pending_diff_token() {
-                            self.state.set_expanded_diff(diff);
-                            self.state.show_diff_overlay();
-                        } else {
-                            tracing::debug!(
-                                token,
-                                current = self.state.pending_diff_token(),
-                                ?path,
-                                "Discarding stale diff response"
-                            );
-                        }
-                    }
-                    Response::SwitchAck(_) => {
-                        // Handled inline by the SwitchRepo caller in Task 7.
-                    }
-                    Response::Error(msg) => {
-                        tracing::warn!(error = %msg, "Worker error");
-                        self.state.set_computing(false);
-                    }
-                }
+                self.handle_worker_response(resp);
             }
 
             // Handle GitHub PR events
@@ -496,94 +509,71 @@ impl App {
     /// Handle terminal input events. Returns true if the app should quit.
     fn handle_terminal_event(&mut self, event: TermEvent, terminal: &mut Terminal) -> Result<bool> {
         match event {
-            TermEvent::Key(key) => {
-                // Help overlay mode: intercept keys before anything else.
-                if self.state.is_help_visible() {
-                    match (key.modifiers, key.code) {
-                        (KeyModifiers::CONTROL, KeyCode::Char('c')) => return Ok(true),
-                        (_, KeyCode::Esc)
-                        | (_, KeyCode::Char('q'))
-                        | (_, KeyCode::Char('?'))
-                        | (_, KeyCode::Char(' ')) => self.state.hide_help(),
-                        _ => {}
-                    }
-                    return Ok(false);
-                }
-
-                // Diff overlay mode: intercept keys before normal handling.
-                if self.state.is_diff_overlay_visible() {
-                    match (key.modifiers, key.code) {
-                        (KeyModifiers::CONTROL, KeyCode::Char('c')) => return Ok(true),
-                        (_, KeyCode::Esc)
-                        | (_, KeyCode::Char('q'))
-                        | (_, KeyCode::Char('h'))
-                        | (_, KeyCode::Left)
-                        | (_, KeyCode::Char(' '))
-                        | (_, KeyCode::Char('d')) => self.state.hide_diff_overlay(),
-                        (_, KeyCode::Char('j')) | (_, KeyCode::Down) => {
-                            self.state.scroll_diff_down()
-                        }
-                        (_, KeyCode::Char('k')) | (_, KeyCode::Up) => self.state.scroll_diff_up(),
-                        _ => {}
-                    }
-                    return Ok(false);
-                }
-
-                match (key.modifiers, key.code) {
-                    // Quit
-                    (_, KeyCode::Char('q')) => return Ok(true),
-                    (KeyModifiers::CONTROL, KeyCode::Char('c')) => return Ok(true),
-
-                    // Navigation
-                    (_, KeyCode::Char('j')) | (_, KeyCode::Down) => {
-                        self.state.select_next();
-                    }
-                    (_, KeyCode::Char('k')) | (_, KeyCode::Up) => {
-                        self.state.select_previous();
-                    }
-
-                    // Open / toggle diff overlay
-                    (_, KeyCode::Enter)
-                    | (_, KeyCode::Char('l'))
-                    | (_, KeyCode::Right)
-                    | (_, KeyCode::Char(' '))
-                    | (_, KeyCode::Char('d')) => {
-                        self.handle_expand()?;
-                    }
-
-                    // Refresh manually
-                    (_, KeyCode::Char('r')) => {
-                        self.handle_fs_change()?;
-                    }
-
-                    // Edit selected file
-                    (_, KeyCode::Char('e')) => {
-                        self.edit_selected_file(terminal)?;
-                    }
-
-                    // Open detected PR in browser
-                    (_, KeyCode::Char('p')) => {
-                        self.open_pr()?;
-                    }
-
-                    // Help popup
-                    (_, KeyCode::Char('?')) => {
-                        self.state.show_help();
-                    }
-
-                    _ => {}
-                }
-            }
+            TermEvent::Key(key) => self.handle_key_event(key, Some(terminal)),
             TermEvent::FocusGained => {
                 self.state.set_focused(true);
+                Ok(false)
             }
             TermEvent::FocusLost => {
                 self.state.set_focused(false);
+                Ok(false)
             }
             TermEvent::Resize(_, _) => {
                 // ratatui handles resize automatically on next draw
+                Ok(false)
             }
-            _ => {}
+            _ => Ok(false),
+        }
+    }
+
+    /// Dispatch a key event. `terminal` is required for actions that suspend
+    /// the UI (currently only `Edit`); when `None`, such actions are ignored.
+    fn handle_key_event(&mut self, key: KeyEvent, terminal: Option<&mut Terminal>) -> Result<bool> {
+        // Help overlay mode: intercept keys before anything else.
+        if self.state.is_help_visible() {
+            match (key.modifiers, key.code) {
+                (KeyModifiers::CONTROL, KeyCode::Char('c')) => return Ok(true),
+                (_, KeyCode::Esc)
+                | (_, KeyCode::Char('q'))
+                | (_, KeyCode::Char('?'))
+                | (_, KeyCode::Char(' ')) => self.state.hide_help(),
+                _ => {}
+            }
+            return Ok(false);
+        }
+
+        // Diff overlay mode: intercept keys before normal handling.
+        if self.state.is_diff_overlay_visible() {
+            match (key.modifiers, key.code) {
+                (KeyModifiers::CONTROL, KeyCode::Char('c')) => return Ok(true),
+                (_, KeyCode::Esc)
+                | (_, KeyCode::Char('q'))
+                | (_, KeyCode::Char('h'))
+                | (_, KeyCode::Left)
+                | (_, KeyCode::Char(' '))
+                | (_, KeyCode::Char('d')) => self.state.hide_diff_overlay(),
+                (_, KeyCode::Char('j')) | (_, KeyCode::Down) => self.state.scroll_diff_down(),
+                (_, KeyCode::Char('k')) | (_, KeyCode::Up) => self.state.scroll_diff_up(),
+                _ => {}
+            }
+            return Ok(false);
+        }
+
+        match interpret_main_key(key.modifiers, key.code) {
+            MainAction::Quit => return Ok(true),
+            MainAction::MoveDown => self.state.select_next(),
+            MainAction::MoveUp => self.state.select_previous(),
+            MainAction::Primary => self.handle_activate()?,
+            MainAction::Refresh => self.handle_fs_change()?,
+            MainAction::Edit => {
+                if let Some(term) = terminal {
+                    self.edit_selected_file(term)?;
+                }
+            }
+            MainAction::OpenPr => self.open_pr()?,
+            MainAction::Help => self.state.show_help(),
+            MainAction::CycleMode => self.state.cycle_view_mode(),
+            MainAction::None => {}
         }
         Ok(false)
     }
@@ -633,6 +623,32 @@ impl App {
         self.state.set_computing(false);
     }
 
+    fn handle_worker_response(&mut self, resp: Response) {
+        match resp {
+            Response::Status(bundle) => self.apply_status(*bundle),
+            Response::Diff { path, token, diff } => {
+                if token == self.state.pending_diff_token() {
+                    self.state.set_expanded_diff(path, diff);
+                    self.state.show_diff_overlay();
+                } else {
+                    tracing::debug!(
+                        token,
+                        current = self.state.pending_diff_token(),
+                        ?path,
+                        "Discarding stale diff response"
+                    );
+                }
+            }
+            Response::SwitchAck(_) => {
+                // Handled inline by the SwitchRepo caller in Task 7.
+            }
+            Response::Error(msg) => {
+                tracing::warn!(error = %msg, "Worker error");
+                self.state.set_computing(false);
+            }
+        }
+    }
+
     /// Open the currently selected file in an editor. No-op when no file is selected.
     fn edit_selected_file(&mut self, terminal: &mut Terminal) -> Result<()> {
         let Some(path) = self.state.selected_path() else {
@@ -658,10 +674,20 @@ impl App {
         Ok(())
     }
 
+    /// Activate the selected row. Tree directories toggle open/closed;
+    /// file rows request their diff.
+    fn handle_activate(&mut self) -> Result<()> {
+        if self.state.toggle_selected_directory() {
+            return Ok(());
+        }
+
+        self.handle_expand()
+    }
+
     /// Send a Diff request to the worker for the currently selected file.
     /// The response is applied later when `worker_rx` is drained.
     fn handle_expand(&mut self) -> Result<()> {
-        let Some(path) = self.state.selected_path() else {
+        let Some(path) = self.state.selected_file_path() else {
             return Ok(());
         };
 
@@ -1034,5 +1060,245 @@ mod editor_tests {
     #[test]
     fn quote_empty() {
         assert_eq!(shell_single_quote(""), "''");
+    }
+}
+
+#[cfg(test)]
+mod input_tests {
+    use super::*;
+    use crate::config::AppConfig;
+    use crate::git::{FileDiff, FileEntry, FileStatus};
+    use crossbeam_channel::Receiver;
+    use crossterm::event::KeyEvent;
+
+    fn make_entry(path: &str) -> FileEntry {
+        FileEntry {
+            path: path.to_string(),
+            status: FileStatus::Modified,
+            insertions: 1,
+            deletions: 1,
+        }
+    }
+
+    fn make_app(files: Vec<FileEntry>) -> App {
+        make_app_with_requests(files).0
+    }
+
+    fn make_app_with_requests(files: Vec<FileEntry>) -> (App, Receiver<Request>) {
+        let flash_duration = Duration::from_millis(AppConfig::default().display.flash_duration_ms);
+        let (worker_tx, worker_req_rx) = bounded::<Request>(8);
+        let (_worker_resp_tx, worker_rx) = bounded::<Response>(8);
+
+        (
+            App {
+                state: AppState::new(files, flash_duration, "main".to_string()),
+                _watcher: None,
+                fs_rx: None,
+                watcher_pending_rx: None,
+                config: AppConfig::default(),
+                theme: crate::theme::load_theme(crate::theme::DEFAULT_THEME_NAME, None),
+                tick_rate: TICK_RATE,
+                repo_path: PathBuf::new(),
+                watch_path: PathBuf::new(),
+                main_worktree_path: PathBuf::new(),
+                main_missing_warned: false,
+                auto_follow: false,
+                gh_rx: None,
+                base_override: None,
+                worker_tx,
+                worker_rx,
+                worker_handle: None,
+            },
+            worker_req_rx,
+        )
+    }
+
+    fn expect_diff_request(worker_req_rx: &Receiver<Request>) -> (String, u64) {
+        match worker_req_rx.try_recv().expect("expected diff request") {
+            Request::Diff { path, token } => (path, token),
+            other => panic!("expected diff request, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_m_key_cycles_view_mode() {
+        let mut app = make_app(vec![make_entry("src/ui/mod.rs")]);
+
+        let should_quit = app
+            .handle_key_event(KeyEvent::new(KeyCode::Char('m'), KeyModifiers::NONE), None)
+            .unwrap();
+
+        assert!(!should_quit);
+        assert_eq!(app.state.view_mode(), crate::state::ViewMode::Tree);
+    }
+
+    #[test]
+    fn test_interpret_main_key_maps_expected_actions() {
+        assert_eq!(
+            interpret_main_key(KeyModifiers::NONE, KeyCode::Char('q')),
+            MainAction::Quit
+        );
+        assert_eq!(
+            interpret_main_key(KeyModifiers::CONTROL, KeyCode::Char('c')),
+            MainAction::Quit
+        );
+        assert_eq!(
+            interpret_main_key(KeyModifiers::NONE, KeyCode::Down),
+            MainAction::MoveDown
+        );
+        assert_eq!(
+            interpret_main_key(KeyModifiers::NONE, KeyCode::Char('k')),
+            MainAction::MoveUp
+        );
+        assert_eq!(
+            interpret_main_key(KeyModifiers::NONE, KeyCode::Enter),
+            MainAction::Primary
+        );
+        assert_eq!(
+            interpret_main_key(KeyModifiers::NONE, KeyCode::Char('d')),
+            MainAction::Primary
+        );
+        assert_eq!(
+            interpret_main_key(KeyModifiers::NONE, KeyCode::Char('m')),
+            MainAction::CycleMode
+        );
+        assert_eq!(
+            interpret_main_key(KeyModifiers::NONE, KeyCode::Char('?')),
+            MainAction::Help
+        );
+        assert_eq!(
+            interpret_main_key(KeyModifiers::NONE, KeyCode::Esc),
+            MainAction::None
+        );
+    }
+
+    #[test]
+    fn test_enter_on_tree_directory_toggles_directory() {
+        let mut app = make_app(vec![
+            make_entry("src/ui/mod.rs"),
+            make_entry("src/ui/header.rs"),
+        ]);
+        app.state.cycle_view_mode();
+        app.state.select_previous();
+        app.state.select_previous();
+
+        assert_eq!(app.state.visible_rows().len(), 3);
+        assert!(app.state.selected_path().is_none());
+
+        let should_quit = app
+            .handle_key_event(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE), None)
+            .unwrap();
+
+        assert!(!should_quit);
+        assert_eq!(app.state.visible_rows().len(), 1);
+        assert!(!app.state.expanded_dirs().contains("src/ui"));
+    }
+
+    #[test]
+    fn test_d_on_tree_directory_toggles_directory() {
+        let mut app = make_app(vec![
+            make_entry("src/ui/mod.rs"),
+            make_entry("src/ui/header.rs"),
+        ]);
+        app.state.cycle_view_mode();
+        app.state.select_previous();
+        app.state.select_previous();
+
+        assert_eq!(app.state.visible_rows().len(), 3);
+        assert!(app.state.selected_path().is_none());
+
+        let should_quit = app
+            .handle_key_event(KeyEvent::new(KeyCode::Char('d'), KeyModifiers::NONE), None)
+            .unwrap();
+
+        assert!(!should_quit);
+        assert_eq!(app.state.visible_rows().len(), 1);
+        assert!(!app.state.expanded_dirs().contains("src/ui"));
+    }
+
+    #[test]
+    fn test_primary_key_on_tree_file_requests_diff() {
+        let (mut app, worker_req_rx) = make_app_with_requests(vec![
+            make_entry("src/ui/header.rs"),
+            make_entry("src/ui/mod.rs"),
+        ]);
+        app.state.cycle_view_mode();
+
+        let should_quit = app
+            .handle_key_event(KeyEvent::new(KeyCode::Char('d'), KeyModifiers::NONE), None)
+            .unwrap();
+
+        assert!(!should_quit);
+        let (path, token) = expect_diff_request(&worker_req_rx);
+        assert_eq!(path, "src/ui/header.rs");
+        assert_eq!(token, app.state.pending_diff_token());
+    }
+
+    #[test]
+    fn test_expand_ignores_tree_directory_selection() {
+        let (mut app, worker_req_rx) = make_app_with_requests(vec![
+            make_entry("src/ui/header.rs"),
+            make_entry("src/ui/mod.rs"),
+        ]);
+        app.state.cycle_view_mode();
+        app.state.select_previous();
+        let token_before = app.state.pending_diff_token();
+
+        app.handle_expand().unwrap();
+
+        assert_eq!(app.state.pending_diff_token(), token_before);
+        assert!(worker_req_rx.try_recv().is_err());
+    }
+
+    #[test]
+    fn test_diff_response_stays_bound_to_requested_file_after_selection_moves() {
+        let (mut app, worker_req_rx) = make_app_with_requests(vec![
+            FileEntry {
+                path: "src/ui/header.rs".to_string(),
+                status: FileStatus::Modified,
+                insertions: 7,
+                deletions: 3,
+            },
+            FileEntry {
+                path: "src/ui/mod.rs".to_string(),
+                status: FileStatus::Modified,
+                insertions: 2,
+                deletions: 1,
+            },
+        ]);
+
+        app.handle_expand().unwrap();
+        let (requested_path, token) = expect_diff_request(&worker_req_rx);
+        assert_eq!(requested_path, "src/ui/header.rs");
+
+        app.state.select_next();
+        assert_eq!(app.state.selected_path().as_deref(), Some("src/ui/mod.rs"));
+
+        app.handle_worker_response(Response::Diff {
+            path: requested_path.clone(),
+            token,
+            diff: FileDiff::default(),
+        });
+
+        assert!(app.state.is_diff_overlay_visible());
+        assert_eq!(
+            app.state.expanded_diff_path(),
+            Some(requested_path.as_str())
+        );
+        assert_eq!(app.state.expanded_diff_stats(), Some((7, 3)));
+    }
+
+    #[test]
+    fn test_help_overlay_still_intercepts_main_keys() {
+        let mut app = make_app(vec![make_entry("src/ui/mod.rs")]);
+        app.state.show_help();
+
+        let should_quit = app
+            .handle_key_event(KeyEvent::new(KeyCode::Char('m'), KeyModifiers::NONE), None)
+            .unwrap();
+
+        assert!(!should_quit);
+        assert!(app.state.is_help_visible());
+        assert_eq!(app.state.view_mode(), crate::state::ViewMode::Flat);
     }
 }

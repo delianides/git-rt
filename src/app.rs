@@ -462,29 +462,7 @@ impl App {
 
             // Drain worker responses
             while let Ok(resp) = self.worker_rx.try_recv() {
-                match resp {
-                    Response::Status(bundle) => self.apply_status(*bundle),
-                    Response::Diff { path, token, diff } => {
-                        if token == self.state.pending_diff_token() {
-                            self.state.set_expanded_diff(diff);
-                            self.state.show_diff_overlay();
-                        } else {
-                            tracing::debug!(
-                                token,
-                                current = self.state.pending_diff_token(),
-                                ?path,
-                                "Discarding stale diff response"
-                            );
-                        }
-                    }
-                    Response::SwitchAck(_) => {
-                        // Handled inline by the SwitchRepo caller in Task 7.
-                    }
-                    Response::Error(msg) => {
-                        tracing::warn!(error = %msg, "Worker error");
-                        self.state.set_computing(false);
-                    }
-                }
+                self.handle_worker_response(resp);
             }
 
             // Handle GitHub PR events
@@ -633,6 +611,32 @@ impl App {
         self.state.set_repo_name(bundle.repo_name);
         self.state.set_worktree_name(bundle.worktree_name);
         self.state.set_computing(false);
+    }
+
+    fn handle_worker_response(&mut self, resp: Response) {
+        match resp {
+            Response::Status(bundle) => self.apply_status(*bundle),
+            Response::Diff { path, token, diff } => {
+                if token == self.state.pending_diff_token() {
+                    self.state.set_expanded_diff(path, diff);
+                    self.state.show_diff_overlay();
+                } else {
+                    tracing::debug!(
+                        token,
+                        current = self.state.pending_diff_token(),
+                        ?path,
+                        "Discarding stale diff response"
+                    );
+                }
+            }
+            Response::SwitchAck(_) => {
+                // Handled inline by the SwitchRepo caller in Task 7.
+            }
+            Response::Error(msg) => {
+                tracing::warn!(error = %msg, "Worker error");
+                self.state.set_computing(false);
+            }
+        }
     }
 
     /// Open the currently selected file in an editor. No-op when no file is selected.
@@ -1053,7 +1057,7 @@ mod editor_tests {
 mod input_tests {
     use super::*;
     use crate::config::AppConfig;
-    use crate::git::{FileEntry, FileStatus};
+    use crate::git::{FileDiff, FileEntry, FileStatus};
     use crossbeam_channel::Receiver;
     use crossterm::event::KeyEvent;
 
@@ -1250,6 +1254,44 @@ mod input_tests {
 
         assert_eq!(app.state.pending_diff_token(), token_before);
         assert!(worker_req_rx.try_recv().is_err());
+    }
+
+    #[test]
+    fn test_diff_response_stays_bound_to_requested_file_after_selection_moves() {
+        let (mut app, worker_req_rx) = make_app_with_requests(vec![
+            FileEntry {
+                path: "src/ui/header.rs".to_string(),
+                status: FileStatus::Modified,
+                insertions: 7,
+                deletions: 3,
+            },
+            FileEntry {
+                path: "src/ui/mod.rs".to_string(),
+                status: FileStatus::Modified,
+                insertions: 2,
+                deletions: 1,
+            },
+        ]);
+
+        app.handle_expand().unwrap();
+        let (requested_path, token) = expect_diff_request(&worker_req_rx);
+        assert_eq!(requested_path, "src/ui/header.rs");
+
+        app.state.select_next();
+        assert_eq!(app.state.selected_path().as_deref(), Some("src/ui/mod.rs"));
+
+        app.handle_worker_response(Response::Diff {
+            path: requested_path.clone(),
+            token,
+            diff: FileDiff::default(),
+        });
+
+        assert!(app.state.is_diff_overlay_visible());
+        assert_eq!(
+            app.state.expanded_diff_path(),
+            Some(requested_path.as_str())
+        );
+        assert_eq!(app.state.expanded_diff_stats(), Some((7, 3)));
     }
 
     #[test]

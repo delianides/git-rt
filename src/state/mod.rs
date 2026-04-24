@@ -95,6 +95,14 @@ struct SelectionSnapshot {
     file_path: Option<String>,
 }
 
+#[derive(Debug, Clone)]
+struct ExpandedDiff {
+    path: String,
+    insertions: usize,
+    deletions: usize,
+    diff: FileDiff,
+}
+
 /// The application's view model — what the UI renders from
 pub struct AppState {
     /// All changed files in the repo
@@ -162,7 +170,7 @@ pub struct AppState {
     /// against.
     initial_seed_done: bool,
     /// Diff for the currently expanded file (if any)
-    current_diff: Option<FileDiff>,
+    current_diff: Option<ExpandedDiff>,
     /// Vertical scroll offset inside the diff overlay, in lines
     diff_scroll: usize,
     /// Whether the diff overlay is currently shown
@@ -416,7 +424,19 @@ impl AppState {
 
     /// Currently expanded diff, if any.
     pub fn expanded_diff(&self) -> Option<&FileDiff> {
-        self.current_diff.as_ref()
+        self.current_diff.as_ref().map(|diff| &diff.diff)
+    }
+
+    /// File path associated with the currently expanded diff.
+    pub fn expanded_diff_path(&self) -> Option<&str> {
+        self.current_diff.as_ref().map(|diff| diff.path.as_str())
+    }
+
+    /// Insertions/deletions associated with the currently expanded diff.
+    pub fn expanded_diff_stats(&self) -> Option<(usize, usize)> {
+        self.current_diff
+            .as_ref()
+            .map(|diff| (diff.insertions, diff.deletions))
     }
 
     /// Current scroll offset inside the diff overlay.
@@ -450,8 +470,19 @@ impl AppState {
 
     /// Set the current diff (used when a Response::Diff arrives whose
     /// token matches the pending token). Also resets scroll to top.
-    pub fn set_expanded_diff(&mut self, diff: FileDiff) {
-        self.current_diff = Some(diff);
+    pub fn set_expanded_diff(&mut self, path: String, diff: FileDiff) {
+        let (insertions, deletions) = self
+            .files
+            .iter()
+            .find(|file| file.path == path)
+            .map(|file| (file.insertions, file.deletions))
+            .unwrap_or((0, 0));
+        self.current_diff = Some(ExpandedDiff {
+            path,
+            insertions,
+            deletions,
+            diff,
+        });
         self.diff_scroll = 0;
     }
 
@@ -1424,10 +1455,16 @@ mod tests {
 
     #[test]
     fn test_set_expanded_diff_sets_diff() {
-        let mut state = make_state();
+        let mut state = AppState::new(
+            vec![make_entry("src/ui/mod.rs", 7, 3)],
+            Duration::from_millis(600),
+            "main".to_string(),
+        );
         let diff = FileDiff::default();
-        state.set_expanded_diff(diff);
+        state.set_expanded_diff("src/ui/mod.rs".to_string(), diff);
         assert!(state.expanded_diff().is_some());
+        assert_eq!(state.expanded_diff_path(), Some("src/ui/mod.rs"));
+        assert_eq!(state.expanded_diff_stats(), Some((7, 3)));
         assert_eq!(state.diff_scroll(), 0);
     }
 
@@ -1435,7 +1472,7 @@ mod tests {
     fn test_reset_for_switch_clears_diff_overlay() {
         let mut state = make_state();
         state.show_diff_overlay();
-        state.set_expanded_diff(crate::git::FileDiff::default());
+        state.set_expanded_diff("src/ui/mod.rs".to_string(), crate::git::FileDiff::default());
         state.scroll_diff_down();
         assert!(state.is_diff_overlay_visible());
         assert!(state.expanded_diff().is_some());

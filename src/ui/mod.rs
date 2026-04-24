@@ -127,8 +127,8 @@ fn render(frame: &mut Frame, state: &mut AppState, config: &AppConfig, theme: &T
 
     // 3. Diff overlay.
     if state.is_diff_overlay_visible() {
-        if let (Some(diff), Some(path)) = (state.expanded_diff(), state.selected_path()) {
-            let (ins, del) = selected_file_stats(state).unwrap_or((0, 0));
+        if let (Some(diff), Some(path)) = (state.expanded_diff(), state.expanded_diff_path()) {
+            let (ins, del) = state.expanded_diff_stats().unwrap_or((0, 0));
             diff_overlay::render_diff_overlay(
                 frame,
                 diff,
@@ -371,14 +371,6 @@ fn render_list(
     state.set_scroll_offset(list_state.offset());
 }
 
-fn selected_file_stats(state: &AppState) -> Option<(usize, usize)> {
-    state
-        .visible_rows()
-        .get(state.selected_index())
-        .and_then(|row| row.file())
-        .map(|file| (file.insertions, file.deletions))
-}
-
 fn file_line(
     label: String,
     status: FileStatus,
@@ -542,7 +534,7 @@ mod tests {
     }
 
     #[test]
-    fn test_selected_file_stats_uses_tree_selected_file_row() {
+    fn test_render_diff_overlay_uses_stored_diff_file_metadata() {
         let files = vec![
             FileEntry {
                 path: "src/ui/mod.rs".to_string(),
@@ -558,9 +550,12 @@ mod tests {
             },
         ];
         let mut state = AppState::new(files, Duration::from_millis(600), "main".to_string());
-        state.cycle_view_mode();
-        state.select_previous();
+        state.set_expanded_diff("src/ui/mod.rs".to_string(), crate::git::FileDiff::default());
+        state.show_diff_overlay();
+        state.select_next();
 
-        assert_eq!(selected_file_stats(&state), Some((2, 1)));
+        let rendered = render_to_string(&mut state, &AppConfig::default(), 60, 16);
+        assert!(rendered.contains("src/ui/mod.rs +7 -3"));
+        assert!(!rendered.contains("src/ui/header.rs +2 -1"));
     }
 }

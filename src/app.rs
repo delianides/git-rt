@@ -567,13 +567,7 @@ impl App {
                     MainAction::Quit => return Ok(true),
                     MainAction::MoveDown => self.state.select_next(),
                     MainAction::MoveUp => self.state.select_previous(),
-                    MainAction::Primary => {
-                        if matches!(key.code, KeyCode::Char(' ') | KeyCode::Char('d')) {
-                            self.handle_expand()?;
-                        } else {
-                            self.handle_activate()?;
-                        }
-                    }
+                    MainAction::Primary => self.handle_activate()?,
                     MainAction::Refresh => self.handle_fs_change()?,
                     MainAction::Edit => self.edit_selected_file(terminal)?,
                     MainAction::OpenPr => self.open_pr()?,
@@ -1185,6 +1179,32 @@ mod input_tests {
         let should_quit = app
             .handle_terminal_event(
                 TermEvent::Key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE)),
+                &mut terminal,
+            )
+            .unwrap();
+
+        assert!(!should_quit);
+        assert_eq!(app.state.visible_rows().len(), 1);
+        assert!(!app.state.expanded_dirs().contains("src/ui"));
+    }
+
+    #[test]
+    fn test_d_on_tree_directory_toggles_directory() {
+        let mut app = make_app(vec![
+            make_entry("src/ui/mod.rs"),
+            make_entry("src/ui/header.rs"),
+        ]);
+        app.state.cycle_view_mode();
+        app.state.select_previous();
+        app.state.select_previous();
+        let mut terminal = Terminal::new().unwrap();
+
+        assert_eq!(app.state.visible_rows().len(), 3);
+        assert!(app.state.selected_path().is_none());
+
+        let should_quit = app
+            .handle_terminal_event(
+                TermEvent::Key(KeyEvent::new(KeyCode::Char('d'), KeyModifiers::NONE)),
                 &mut terminal,
             )
             .unwrap();

@@ -1,5 +1,13 @@
 # Changelog
 
+## [1.2.0](https://github.com/delianides/git-rt/compare/v1.1.0...v1.2.0) (2026-04-24)
+
+
+### Features
+
+* add tree view mode for file pane ([#72](https://github.com/delianides/git-rt/issues/72)) ([88ba463](https://github.com/delianides/git-rt/commit/88ba463d36da907bee59a5c41987be16b48032b6))
+* **ui:** narrow-terminal adaptive rendering ([#74](https://github.com/delianides/git-rt/issues/74)) ([88b2656](https://github.com/delianides/git-rt/commit/88b265659f76a45187b8707fcfee1546036b5cf9))
+
 ## [1.1.0](https://github.com/delianides/git-rt/compare/v1.0.5...v1.1.0) (2026-04-23)
 
 

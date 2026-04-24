@@ -250,14 +250,21 @@ fn render_tree_file_list(
                 expanded,
                 ..
             } => {
-                let indent = "  ".repeat(*depth);
+                let indent_cols = 2 * depth;
                 let arrow = if *expanded { "▼" } else { "▶" };
+                // leading space + indent + arrow (1) + " " + label + trailing margin
+                let fixed = 1 + 1 + 1 + 1;
+                let width = area.width as usize;
+                let elastic = width.saturating_sub(fixed + indent_cols);
+                let label_display = fit::middle_ellipsize(label, elastic).into_owned();
+
+                let indent = "  ".repeat(*depth);
                 Line::from(vec![
                     Span::raw(" "),
                     Span::raw(indent),
                     Span::styled(arrow, Style::default().fg(theme.file_path)),
                     Span::raw(" "),
-                    Span::styled(label.clone(), Style::default().fg(theme.file_path)),
+                    Span::styled(label_display, Style::default().fg(theme.file_path)),
                 ])
             }
             VisibleRow::File {
@@ -556,6 +563,23 @@ mod tests {
                     .join("")
             })
             .collect()
+    }
+
+    #[test]
+    fn test_tree_directory_row_ellipsizes_label_at_narrow_width() {
+        let files = vec![
+            make_entry("some/very/long/directory/path/a.rs"),
+            make_entry("some/very/long/directory/path/b.rs"),
+        ];
+        let mut state = AppState::new(files, Duration::from_millis(600), "main".to_string());
+        state.cycle_view_mode();
+
+        let rendered = render_to_string(&mut state, &AppConfig::default(), 28, 8);
+        assert!(rendered.contains('\u{2026}'), "expected ellipsis, got: {rendered}");
+        assert!(
+            !rendered.contains("some/very/long/directory/path/"),
+            "got: {rendered}"
+        );
     }
 
     #[test]

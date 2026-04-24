@@ -534,6 +534,11 @@ impl App {
                     (_, KeyCode::Char('q')) => return Ok(true),
                     (KeyModifiers::CONTROL, KeyCode::Char('c')) => return Ok(true),
 
+                    // View mode
+                    (_, KeyCode::Char('m')) => {
+                        self.state.cycle_view_mode();
+                    }
+
                     // Navigation
                     (_, KeyCode::Char('j')) | (_, KeyCode::Down) => {
                         self.state.select_next();
@@ -542,12 +547,15 @@ impl App {
                         self.state.select_previous();
                     }
 
-                    // Open / toggle diff overlay
+                    // Activate selected row. In tree mode, directories toggle open/closed.
                     (_, KeyCode::Enter)
                     | (_, KeyCode::Char('l'))
-                    | (_, KeyCode::Right)
-                    | (_, KeyCode::Char(' '))
-                    | (_, KeyCode::Char('d')) => {
+                    | (_, KeyCode::Right) => {
+                        self.handle_activate()?;
+                    }
+
+                    // Open / toggle diff overlay
+                    (_, KeyCode::Char(' ')) | (_, KeyCode::Char('d')) => {
                         self.handle_expand()?;
                     }
 
@@ -656,6 +664,16 @@ impl App {
             tracing::info!(?status, "Editor exited non-zero");
         }
         Ok(())
+    }
+
+    /// Activate the selected row. Tree directories toggle open/closed;
+    /// file rows request their diff.
+    fn handle_activate(&mut self) -> Result<()> {
+        if self.state.toggle_selected_directory() {
+            return Ok(());
+        }
+
+        self.handle_expand()
     }
 
     /// Send a Diff request to the worker for the currently selected file.
@@ -1034,5 +1052,87 @@ mod editor_tests {
     #[test]
     fn quote_empty() {
         assert_eq!(shell_single_quote(""), "''");
+    }
+}
+
+#[cfg(test)]
+mod input_tests {
+    use super::*;
+    use crate::config::AppConfig;
+    use crate::git::{FileEntry, FileStatus};
+    use crossterm::event::KeyEvent;
+
+    fn make_entry(path: &str) -> FileEntry {
+        FileEntry {
+            path: path.to_string(),
+            status: FileStatus::Modified,
+            insertions: 1,
+            deletions: 1,
+        }
+    }
+
+    fn make_app(files: Vec<FileEntry>) -> App {
+        let flash_duration = Duration::from_millis(AppConfig::default().display.flash_duration_ms);
+        let (worker_tx, _worker_req_rx) = bounded::<Request>(8);
+        let (_worker_resp_tx, worker_rx) = bounded::<Response>(8);
+
+        App {
+            state: AppState::new(files, flash_duration, "main".to_string()),
+            _watcher: None,
+            fs_rx: None,
+            watcher_pending_rx: None,
+            config: AppConfig::default(),
+            theme: crate::theme::load_theme(crate::theme::DEFAULT_THEME_NAME, None),
+            tick_rate: TICK_RATE,
+            repo_path: PathBuf::new(),
+            watch_path: PathBuf::new(),
+            main_worktree_path: PathBuf::new(),
+            main_missing_warned: false,
+            auto_follow: false,
+            gh_rx: None,
+            base_override: None,
+            worker_tx,
+            worker_rx,
+            worker_handle: None,
+        }
+    }
+
+    #[test]
+    fn test_m_key_cycles_view_mode() {
+        let mut app = make_app(vec![make_entry("src/ui/mod.rs")]);
+        let mut terminal = Terminal::new().unwrap();
+
+        let should_quit = app
+            .handle_terminal_event(
+                TermEvent::Key(KeyEvent::new(KeyCode::Char('m'), KeyModifiers::NONE)),
+                &mut terminal,
+            )
+            .unwrap();
+
+        assert!(!should_quit);
+        assert_eq!(app.state.view_mode(), crate::state::ViewMode::Tree);
+    }
+
+    #[test]
+    fn test_enter_on_tree_directory_toggles_directory() {
+        let mut app = make_app(vec![make_entry("src/ui/mod.rs"), make_entry("src/ui/header.rs")]);
+        app.state.cycle_view_mode();
+        app.state.select_previous();
+        app.state.select_previous();
+        let mut terminal = Terminal::new().unwrap();
+
+        assert_eq!(app.state.visible_rows().len(), 3);
+        assert!(app.state.selected_path().is_none());
+
+        let should_quit = app
+            .handle_terminal_event(
+                TermEvent::Key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE)),
+                &mut terminal,
+            )
+            .unwrap();
+
+        assert!(!should_quit);
+        assert_eq!(app.state.visible_rows().len(), 1);
+        assert!(!app.state.expanded_dirs().contains("src/ui"));
     }
 }

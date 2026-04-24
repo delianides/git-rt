@@ -49,6 +49,7 @@ pub fn build_help_lines(theme: &Theme) -> Vec<Line<'static>> {
                 ("d", "Toggle diff"),
                 ("Space", "Toggle diff"),
                 ("l / →", "Open diff"),
+                ("Enter / l / →", "Tree: toggle dir, File: open diff"),
                 ("h / ←", "Close diff"),
                 ("j / k", "Scroll diff (inside modal)"),
             ],
@@ -56,6 +57,7 @@ pub fn build_help_lines(theme: &Theme) -> Vec<Line<'static>> {
         (
             "Other",
             &[
+                ("m", "Cycle view mode"),
                 ("r", "Refresh"),
                 ("e", "Edit selected file"),
                 ("p", "Open PR in browser"),
@@ -118,15 +120,17 @@ mod tests {
         crate::theme::load_theme(crate::theme::DEFAULT_THEME_NAME, None)
     }
 
+    fn line_text(line: &Line<'_>) -> String {
+        line.spans
+            .iter()
+            .map(|s| s.content.as_ref())
+            .collect::<String>()
+    }
+
     fn lines_text(lines: &[Line<'_>]) -> String {
         lines
             .iter()
-            .map(|l| {
-                l.spans
-                    .iter()
-                    .map(|s| s.content.as_ref())
-                    .collect::<String>()
-            })
+            .map(line_text)
             .collect::<Vec<_>>()
             .join("\n")
     }
@@ -161,5 +165,14 @@ mod tests {
         assert!(text.contains("Open diff"));
         assert!(text.contains("Close diff"));
         assert!(text.contains("Show this help") || text.contains("Toggle this help"));
+    }
+
+    #[test]
+    fn test_help_lines_contain_mode_key() {
+        let lines = build_help_lines(&test_theme());
+        assert!(lines.iter().any(|line| {
+            let text = line_text(line);
+            text.starts_with("    m") && text.contains("Cycle view mode")
+        }));
     }
 }

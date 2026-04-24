@@ -114,7 +114,11 @@ fn render(frame: &mut Frame, state: &mut AppState, config: &AppConfig, theme: &T
         .borders(Borders::ALL)
         .border_type(BorderType::Rounded)
         .border_style(Style::default().fg(border_color))
-        .title(header::build_header_title(state, theme));
+        .title(header::build_header_title_with_width(
+            state,
+            theme,
+            (main_area.width as usize).saturating_sub(2),
+        ));
 
     let inner = block.inner(main_area);
     frame.render_widget(block, main_area);

@@ -132,7 +132,7 @@ fn render(frame: &mut Frame, state: &mut AppState, config: &AppConfig, theme: &T
             diff_overlay::render_diff_overlay(
                 frame,
                 diff,
-                &path,
+                path,
                 ins,
                 del,
                 state.diff_scroll(),

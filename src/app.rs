@@ -4,7 +4,8 @@ use std::time::{Duration, Instant};
 use anyhow::{Context, Result};
 use crossbeam_channel::{bounded, Receiver, Sender};
 use crossterm::event::{
-    self, DisableFocusChange, EnableFocusChange, Event as TermEvent, KeyCode, KeyModifiers,
+    self, DisableFocusChange, EnableFocusChange, Event as TermEvent, KeyCode, KeyEvent,
+    KeyModifiers,
 };
 use crossterm::execute;
 use crossterm::terminal::{
@@ -508,62 +509,71 @@ impl App {
     /// Handle terminal input events. Returns true if the app should quit.
     fn handle_terminal_event(&mut self, event: TermEvent, terminal: &mut Terminal) -> Result<bool> {
         match event {
-            TermEvent::Key(key) => {
-                // Help overlay mode: intercept keys before anything else.
-                if self.state.is_help_visible() {
-                    match (key.modifiers, key.code) {
-                        (KeyModifiers::CONTROL, KeyCode::Char('c')) => return Ok(true),
-                        (_, KeyCode::Esc)
-                        | (_, KeyCode::Char('q'))
-                        | (_, KeyCode::Char('?'))
-                        | (_, KeyCode::Char(' ')) => self.state.hide_help(),
-                        _ => {}
-                    }
-                    return Ok(false);
-                }
-
-                // Diff overlay mode: intercept keys before normal handling.
-                if self.state.is_diff_overlay_visible() {
-                    match (key.modifiers, key.code) {
-                        (KeyModifiers::CONTROL, KeyCode::Char('c')) => return Ok(true),
-                        (_, KeyCode::Esc)
-                        | (_, KeyCode::Char('q'))
-                        | (_, KeyCode::Char('h'))
-                        | (_, KeyCode::Left)
-                        | (_, KeyCode::Char(' '))
-                        | (_, KeyCode::Char('d')) => self.state.hide_diff_overlay(),
-                        (_, KeyCode::Char('j')) | (_, KeyCode::Down) => {
-                            self.state.scroll_diff_down()
-                        }
-                        (_, KeyCode::Char('k')) | (_, KeyCode::Up) => self.state.scroll_diff_up(),
-                        _ => {}
-                    }
-                    return Ok(false);
-                }
-
-                match interpret_main_key(key.modifiers, key.code) {
-                    MainAction::Quit => return Ok(true),
-                    MainAction::MoveDown => self.state.select_next(),
-                    MainAction::MoveUp => self.state.select_previous(),
-                    MainAction::Primary => self.handle_activate()?,
-                    MainAction::Refresh => self.handle_fs_change()?,
-                    MainAction::Edit => self.edit_selected_file(terminal)?,
-                    MainAction::OpenPr => self.open_pr()?,
-                    MainAction::Help => self.state.show_help(),
-                    MainAction::CycleMode => self.state.cycle_view_mode(),
-                    MainAction::None => {}
-                }
-            }
+            TermEvent::Key(key) => self.handle_key_event(key, Some(terminal)),
             TermEvent::FocusGained => {
                 self.state.set_focused(true);
+                Ok(false)
             }
             TermEvent::FocusLost => {
                 self.state.set_focused(false);
+                Ok(false)
             }
             TermEvent::Resize(_, _) => {
                 // ratatui handles resize automatically on next draw
+                Ok(false)
             }
-            _ => {}
+            _ => Ok(false),
+        }
+    }
+
+    /// Dispatch a key event. `terminal` is required for actions that suspend
+    /// the UI (currently only `Edit`); when `None`, such actions are ignored.
+    fn handle_key_event(&mut self, key: KeyEvent, terminal: Option<&mut Terminal>) -> Result<bool> {
+        // Help overlay mode: intercept keys before anything else.
+        if self.state.is_help_visible() {
+            match (key.modifiers, key.code) {
+                (KeyModifiers::CONTROL, KeyCode::Char('c')) => return Ok(true),
+                (_, KeyCode::Esc)
+                | (_, KeyCode::Char('q'))
+                | (_, KeyCode::Char('?'))
+                | (_, KeyCode::Char(' ')) => self.state.hide_help(),
+                _ => {}
+            }
+            return Ok(false);
+        }
+
+        // Diff overlay mode: intercept keys before normal handling.
+        if self.state.is_diff_overlay_visible() {
+            match (key.modifiers, key.code) {
+                (KeyModifiers::CONTROL, KeyCode::Char('c')) => return Ok(true),
+                (_, KeyCode::Esc)
+                | (_, KeyCode::Char('q'))
+                | (_, KeyCode::Char('h'))
+                | (_, KeyCode::Left)
+                | (_, KeyCode::Char(' '))
+                | (_, KeyCode::Char('d')) => self.state.hide_diff_overlay(),
+                (_, KeyCode::Char('j')) | (_, KeyCode::Down) => self.state.scroll_diff_down(),
+                (_, KeyCode::Char('k')) | (_, KeyCode::Up) => self.state.scroll_diff_up(),
+                _ => {}
+            }
+            return Ok(false);
+        }
+
+        match interpret_main_key(key.modifiers, key.code) {
+            MainAction::Quit => return Ok(true),
+            MainAction::MoveDown => self.state.select_next(),
+            MainAction::MoveUp => self.state.select_previous(),
+            MainAction::Primary => self.handle_activate()?,
+            MainAction::Refresh => self.handle_fs_change()?,
+            MainAction::Edit => {
+                if let Some(term) = terminal {
+                    self.edit_selected_file(term)?;
+                }
+            }
+            MainAction::OpenPr => self.open_pr()?,
+            MainAction::Help => self.state.show_help(),
+            MainAction::CycleMode => self.state.cycle_view_mode(),
+            MainAction::None => {}
         }
         Ok(false)
     }
@@ -1113,13 +1123,9 @@ mod input_tests {
     #[test]
     fn test_m_key_cycles_view_mode() {
         let mut app = make_app(vec![make_entry("src/ui/mod.rs")]);
-        let mut terminal = Terminal::new().unwrap();
 
         let should_quit = app
-            .handle_terminal_event(
-                TermEvent::Key(KeyEvent::new(KeyCode::Char('m'), KeyModifiers::NONE)),
-                &mut terminal,
-            )
+            .handle_key_event(KeyEvent::new(KeyCode::Char('m'), KeyModifiers::NONE), None)
             .unwrap();
 
         assert!(!should_quit);
@@ -1175,16 +1181,12 @@ mod input_tests {
         app.state.cycle_view_mode();
         app.state.select_previous();
         app.state.select_previous();
-        let mut terminal = Terminal::new().unwrap();
 
         assert_eq!(app.state.visible_rows().len(), 3);
         assert!(app.state.selected_path().is_none());
 
         let should_quit = app
-            .handle_terminal_event(
-                TermEvent::Key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE)),
-                &mut terminal,
-            )
+            .handle_key_event(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE), None)
             .unwrap();
 
         assert!(!should_quit);
@@ -1201,16 +1203,12 @@ mod input_tests {
         app.state.cycle_view_mode();
         app.state.select_previous();
         app.state.select_previous();
-        let mut terminal = Terminal::new().unwrap();
 
         assert_eq!(app.state.visible_rows().len(), 3);
         assert!(app.state.selected_path().is_none());
 
         let should_quit = app
-            .handle_terminal_event(
-                TermEvent::Key(KeyEvent::new(KeyCode::Char('d'), KeyModifiers::NONE)),
-                &mut terminal,
-            )
+            .handle_key_event(KeyEvent::new(KeyCode::Char('d'), KeyModifiers::NONE), None)
             .unwrap();
 
         assert!(!should_quit);
@@ -1225,13 +1223,9 @@ mod input_tests {
             make_entry("src/ui/mod.rs"),
         ]);
         app.state.cycle_view_mode();
-        let mut terminal = Terminal::new().unwrap();
 
         let should_quit = app
-            .handle_terminal_event(
-                TermEvent::Key(KeyEvent::new(KeyCode::Char('d'), KeyModifiers::NONE)),
-                &mut terminal,
-            )
+            .handle_key_event(KeyEvent::new(KeyCode::Char('d'), KeyModifiers::NONE), None)
             .unwrap();
 
         assert!(!should_quit);
@@ -1297,14 +1291,10 @@ mod input_tests {
     #[test]
     fn test_help_overlay_still_intercepts_main_keys() {
         let mut app = make_app(vec![make_entry("src/ui/mod.rs")]);
-        let mut terminal = Terminal::new().unwrap();
         app.state.show_help();
 
         let should_quit = app
-            .handle_terminal_event(
-                TermEvent::Key(KeyEvent::new(KeyCode::Char('m'), KeyModifiers::NONE)),
-                &mut terminal,
-            )
+            .handle_key_event(KeyEvent::new(KeyCode::Char('m'), KeyModifiers::NONE), None)
             .unwrap();
 
         assert!(!should_quit);

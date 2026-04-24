@@ -337,6 +337,28 @@ mod tests {
     }
 
     #[test]
+    fn test_pr_line_tier_2_compacts_check_breakdown() {
+        let info = make_info(MergeableStatus::Clean, 9, 2, 1);
+        let pr = pr_state_with(info);
+        // Full tier-0 is quite wide. At 14 cols we should reach tier 2
+        // (compact fraction) or beyond — breakdown must be gone.
+        let line = build_pr_line_fitted(&pr, &test_theme(), 14).unwrap();
+        let text = line_text(&line);
+        assert!(!text.contains("✓ 9"), "got: {text}");
+        assert!(!text.contains("✗ 2"), "got: {text}");
+    }
+
+    #[test]
+    fn test_pr_line_tier_3_drops_pr_prefix() {
+        let info = make_info(MergeableStatus::Clean, 12, 0, 0);
+        let pr = pr_state_with(info);
+        let line = build_pr_line_fitted(&pr, &test_theme(), 8).unwrap();
+        let text = line_text(&line);
+        assert!(!text.contains("PR "), "got: {text}");
+        assert!(text.contains("#142"), "got: {text}");
+    }
+
+    #[test]
     fn test_pr_line_drops_mergeable_text_on_narrow_width() {
         let info = make_info(MergeableStatus::Clean, 12, 0, 0);
         let pr = pr_state_with(info);

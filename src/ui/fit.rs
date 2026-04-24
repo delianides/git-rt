@@ -33,6 +33,16 @@ pub fn middle_ellipsize(s: &str, max_cols: usize) -> Cow<'_, str> {
         return Cow::Owned(ELLIPSIS.to_string());
     }
 
+    if s.contains('/') {
+        if let Some(path_fit) = ellipsize_path(s, max_cols) {
+            return Cow::Owned(path_fit);
+        }
+    }
+
+    Cow::Owned(char_level_middle(s, max_cols))
+}
+
+fn char_level_middle(s: &str, max_cols: usize) -> String {
     // Reserve one column for the ellipsis; split remaining budget
     // between head and tail with a tail bias (favour filename).
     let available = max_cols - ELLIPSIS_WIDTH;
@@ -46,7 +56,64 @@ pub fn middle_ellipsize(s: &str, max_cols: usize) -> Cow<'_, str> {
     out.push_str(head);
     out.push_str(ELLIPSIS);
     out.push_str(tail);
-    Cow::Owned(out)
+    out
+}
+
+/// Try to fit a path by dropping interior directory segments first.
+/// Returns `None` when the head+tail+separators can't fit — caller
+/// should fall back to char-level.
+fn ellipsize_path(s: &str, max_cols: usize) -> Option<String> {
+    let segments: Vec<&str> = s.split('/').collect();
+    if segments.len() < 3 {
+        return None;
+    }
+    let first = segments[0];
+    let last = *segments.last().unwrap();
+
+    // Minimum viable: "<first>/…/<last>"
+    let minimal = build_path_with_keep(&segments, 1, 1);
+    if display_width(&minimal) > max_cols {
+        return None;
+    }
+
+    // Greedily re-add interior segments from the outside inward.
+    let mut left_keep = 1usize;
+    let mut right_keep = 1usize;
+    loop {
+        let mut progress = false;
+
+        let proposed_left = left_keep + 1;
+        if proposed_left + right_keep < segments.len() {
+            let candidate = build_path_with_keep(&segments, proposed_left, right_keep);
+            if display_width(&candidate) <= max_cols {
+                left_keep = proposed_left;
+                progress = true;
+            }
+        }
+
+        let proposed_right = right_keep + 1;
+        if left_keep + proposed_right < segments.len() {
+            let candidate = build_path_with_keep(&segments, left_keep, proposed_right);
+            if display_width(&candidate) <= max_cols {
+                right_keep = proposed_right;
+                progress = true;
+            }
+        }
+
+        if !progress {
+            break;
+        }
+    }
+
+    // Silence unused-var lints on `first`/`last` (they were informational).
+    let _ = (first, last);
+    Some(build_path_with_keep(&segments, left_keep, right_keep))
+}
+
+fn build_path_with_keep(segments: &[&str], left: usize, right: usize) -> String {
+    let left_part = segments[..left].join("/");
+    let right_part = segments[segments.len() - right..].join("/");
+    format!("{left_part}/{ELLIPSIS}/{right_part}")
 }
 
 fn take_prefix_cols(s: &str, budget: usize) -> &str {
@@ -201,5 +268,36 @@ mod tests {
     fn middle_ellipsize_budget_two_returns_tail_char_plus_ellipsis() {
         // Budget 2: "…" + tail char (1 col) = 2 cols. Head gets 0.
         assert_eq!(middle_ellipsize("abcdef", 2), "\u{2026}f");
+    }
+
+    #[test]
+    fn middle_ellipsize_path_preserves_filename_tail() {
+        // "src/ui/deep/nested/file.rs" is 25 cols; budget 16 should
+        // keep "file.rs" at the tail and "src" at the head.
+        let out = middle_ellipsize("src/ui/deep/nested/file.rs", 16);
+        assert!(out.ends_with("file.rs"), "got: {out}");
+        assert!(out.starts_with("src"), "got: {out}");
+        assert!(out.contains('\u{2026}'), "got: {out}");
+        assert!(display_width(&out) <= 16, "got width: {}", display_width(&out));
+    }
+
+    #[test]
+    fn middle_ellipsize_path_drops_interior_segments_from_middle() {
+        let out = middle_ellipsize("src/ui/mod.rs", 12);
+        assert!(out.ends_with("mod.rs"), "got: {out}");
+        assert!(display_width(&out) <= 12, "got width: {}", display_width(&out));
+    }
+
+    #[test]
+    fn middle_ellipsize_path_falls_back_to_char_level_when_no_interior_fits() {
+        // "ab/c" (4 cols) at budget 3 — only 2 segments, path logic
+        // returns None and char-level takes over.
+        let out = middle_ellipsize("ab/c", 3);
+        assert!(display_width(&out) <= 3, "got width: {}", display_width(&out));
+    }
+
+    #[test]
+    fn middle_ellipsize_non_path_input_uses_char_level() {
+        assert_eq!(middle_ellipsize("abcdefghij", 7), "abc\u{2026}hij");
     }
 }

@@ -42,6 +42,9 @@ clap = { version = "4", features = ["derive"] }
 anyhow = "1"
 thiserror = "2"
 
+# Unicode display-width math for narrow-terminal adaptive rendering
+unicode-width = "0.2"
+
 # HTTP client for GitHub API
 ureq = { version = "3", features = ["json"] }
 

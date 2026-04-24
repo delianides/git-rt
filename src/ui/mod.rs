@@ -7,6 +7,7 @@
 //! the main pane takes the full frame.
 
 pub mod diff_overlay;
+pub mod fit;
 pub mod header;
 pub mod help_overlay;
 pub mod pr_line;

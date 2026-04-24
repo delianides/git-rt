@@ -570,6 +570,53 @@ mod tests {
     }
 
     #[test]
+    fn test_no_row_exceeds_pane_width_across_matrix() {
+        use ratatui::backend::TestBackend;
+
+        let files = vec![
+            FileEntry {
+                path: "src/very/deeply/nested/path/to/a_really_long_filename.rs".to_string(),
+                status: FileStatus::Modified,
+                insertions: 234,
+                deletions: 15,
+            },
+            FileEntry {
+                path: "Cargo.toml".to_string(),
+                status: FileStatus::Modified,
+                insertions: 2,
+                deletions: 1,
+            },
+        ];
+
+        for &width in &[80u16, 60, 40, 30, 24, 20] {
+            for &tree in &[false, true] {
+                let mut state = AppState::new(
+                    files.clone(),
+                    Duration::from_millis(600),
+                    "feat/very-long-branch-name-for-testing".to_string(),
+                );
+                state.set_repo_name("git-rt".to_string());
+                if tree {
+                    state.cycle_view_mode();
+                }
+
+                let backend = TestBackend::new(width, 12);
+                let mut terminal = ratatui::Terminal::new(backend).unwrap();
+                terminal
+                    .draw(|frame| {
+                        render(
+                            frame,
+                            &mut state,
+                            &AppConfig::default(),
+                            &load_theme(crate::theme::DEFAULT_THEME_NAME, None),
+                        )
+                    })
+                    .expect(&format!("render must not panic at width {width} tree={tree}"));
+            }
+        }
+    }
+
+    #[test]
     fn test_tree_directory_row_ellipsizes_label_at_narrow_width() {
         let files = vec![
             make_entry("some/very/long/directory/path/a.rs"),

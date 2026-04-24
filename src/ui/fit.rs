@@ -16,6 +16,73 @@ pub fn display_width(s: &str) -> usize {
     UnicodeWidthStr::width(s)
 }
 
+/// Mid-ellipsis shrinking. Returns `s` unchanged when it fits.
+/// Otherwise produces `head…tail` with total display width ≤ `max_cols`.
+///
+/// This char-level version biases toward preserving the tail (often
+/// the most-identifying substring — e.g. a filename). Task 4 layers
+/// path-segment awareness on top of this for inputs containing `/`.
+pub fn middle_ellipsize(s: &str, max_cols: usize) -> Cow<'_, str> {
+    if max_cols == 0 {
+        return Cow::Borrowed("");
+    }
+    if display_width(s) <= max_cols {
+        return Cow::Borrowed(s);
+    }
+    if max_cols <= ELLIPSIS_WIDTH {
+        return Cow::Owned(ELLIPSIS.to_string());
+    }
+
+    // Reserve one column for the ellipsis; split remaining budget
+    // between head and tail with a tail bias (favour filename).
+    let available = max_cols - ELLIPSIS_WIDTH;
+    let tail_budget = available.div_ceil(2);
+    let head_budget = available - tail_budget;
+
+    let head = take_prefix_cols(s, head_budget);
+    let tail = take_suffix_cols(s, tail_budget);
+
+    let mut out = String::with_capacity(head.len() + ELLIPSIS.len() + tail.len());
+    out.push_str(head);
+    out.push_str(ELLIPSIS);
+    out.push_str(tail);
+    Cow::Owned(out)
+}
+
+fn take_prefix_cols(s: &str, budget: usize) -> &str {
+    if budget == 0 {
+        return "";
+    }
+    let mut used = 0usize;
+    let mut end = 0usize;
+    for (idx, ch) in s.char_indices() {
+        let w = UnicodeWidthChar::width(ch).unwrap_or(0);
+        if used + w > budget {
+            break;
+        }
+        used += w;
+        end = idx + ch.len_utf8();
+    }
+    &s[..end]
+}
+
+fn take_suffix_cols(s: &str, budget: usize) -> &str {
+    if budget == 0 {
+        return "";
+    }
+    let mut used = 0usize;
+    let mut start = s.len();
+    for (idx, ch) in s.char_indices().rev() {
+        let w = UnicodeWidthChar::width(ch).unwrap_or(0);
+        if used + w > budget {
+            break;
+        }
+        used += w;
+        start = idx;
+    }
+    &s[start..]
+}
+
 /// End-ellipsis truncation. Returns `s` unchanged when it fits.
 /// Otherwise returns `"<head>…"` with total display width ≤ `max_cols`.
 /// Never splits inside a multi-byte char.
@@ -96,5 +163,43 @@ mod tests {
     #[test]
     fn truncate_end_max_cols_one_returns_ellipsis_if_input_wider() {
         assert_eq!(truncate_end("hello", 1), "\u{2026}");
+    }
+
+    #[test]
+    fn middle_ellipsize_already_fits_returns_unchanged() {
+        assert_eq!(middle_ellipsize("abc", 5), "abc");
+    }
+
+    #[test]
+    fn middle_ellipsize_exact_fit_returns_unchanged() {
+        assert_eq!(middle_ellipsize("abcdef", 6), "abcdef");
+    }
+
+    #[test]
+    fn middle_ellipsize_char_level_balances_head_and_tail() {
+        // "abcdefghij" (10 cols) to budget 7 -> 3 head + "…" + 3 tail = 7.
+        assert_eq!(middle_ellipsize("abcdefghij", 7), "abc\u{2026}hij");
+    }
+
+    #[test]
+    fn middle_ellipsize_char_level_odd_budget_biases_tail() {
+        // Budget 6, input 10 cols. Available = 5 → tail gets 3, head gets 2.
+        assert_eq!(middle_ellipsize("abcdefghij", 6), "ab\u{2026}hij");
+    }
+
+    #[test]
+    fn middle_ellipsize_budget_zero_returns_empty() {
+        assert_eq!(middle_ellipsize("abc", 0), "");
+    }
+
+    #[test]
+    fn middle_ellipsize_budget_one_returns_ellipsis() {
+        assert_eq!(middle_ellipsize("abcdef", 1), "\u{2026}");
+    }
+
+    #[test]
+    fn middle_ellipsize_budget_two_returns_tail_char_plus_ellipsis() {
+        // Budget 2: "…" + tail char (1 col) = 2 cols. Head gets 0.
+        assert_eq!(middle_ellipsize("abcdef", 2), "\u{2026}f");
     }
 }

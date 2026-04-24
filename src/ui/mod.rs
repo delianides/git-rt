@@ -263,28 +263,55 @@ fn render_tree_file_list(
             VisibleRow::File {
                 depth, label, file, ..
             } => {
-                let indent = "  ".repeat(*depth);
+                let indent_cols = 2 * depth;
                 let status_char = file_status_char(file.status.clone());
                 let status_color = file_status_color(file.status.clone(), theme);
-                Line::from(vec![
+                let stats_str = format!("-{}/+{}", file.deletions, file.insertions);
+                let stats_width = fit::display_width(&stats_str);
+                // leading space + indent + " " + " " + status + " "
+                //   + label + " " + stats + trailing margin
+                let fixed_with_stats = 1 + 1 + 1 + 1 + 1 + 1 + 1;
+                let fixed_no_stats = 1 + 1 + 1 + 1 + 1 + 1;
+                let label_w = fit::display_width(label);
+                let width = area.width as usize;
+                let elastic_full =
+                    width.saturating_sub(fixed_with_stats + indent_cols + stats_width);
+
+                let (label_display, include_stats) = if label_w <= elastic_full {
+                    (label.clone(), true)
+                } else if elastic_full >= 20 {
+                    (fit::middle_ellipsize(label, elastic_full).into_owned(), true)
+                } else {
+                    let elastic_no_stats = width.saturating_sub(fixed_no_stats + indent_cols);
+                    (
+                        fit::middle_ellipsize(label, elastic_no_stats).into_owned(),
+                        false,
+                    )
+                };
+
+                let indent = "  ".repeat(*depth);
+                let mut spans = vec![
                     Span::raw(" "),
                     Span::raw(indent),
                     Span::raw(" "),
                     Span::raw(" "),
                     Span::styled(status_char, Style::default().fg(status_color)),
                     Span::raw(" "),
-                    Span::styled(label.clone(), Style::default().fg(theme.file_path)),
-                    Span::raw(" "),
-                    Span::styled(
+                    Span::styled(label_display, Style::default().fg(theme.file_path)),
+                ];
+                if include_stats {
+                    spans.push(Span::raw(" "));
+                    spans.push(Span::styled(
                         format!("-{}", file.deletions),
                         Style::default().fg(theme.file_deletions),
-                    ),
-                    Span::raw("/"),
-                    Span::styled(
+                    ));
+                    spans.push(Span::raw("/"));
+                    spans.push(Span::styled(
                         format!("+{}", file.insertions),
                         Style::default().fg(theme.file_insertions),
-                    ),
-                ])
+                    ));
+                }
+                Line::from(spans)
             }
         };
 
@@ -529,6 +556,19 @@ mod tests {
                     .join("")
             })
             .collect()
+    }
+
+    #[test]
+    fn test_tree_file_row_ellipsizes_label_at_narrow_width() {
+        let files = vec![
+            make_entry("src/ui/really_long_filename_here.rs"),
+            make_entry("src/ui/mod.rs"),
+        ];
+        let mut state = AppState::new(files, Duration::from_millis(600), "main".to_string());
+        state.cycle_view_mode();
+
+        let rendered = render_to_string(&mut state, &AppConfig::default(), 30, 8);
+        assert!(rendered.contains('\u{2026}'), "expected ellipsis, got: {rendered}");
     }
 
     #[test]

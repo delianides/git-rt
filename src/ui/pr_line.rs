@@ -24,6 +24,7 @@ use ratatui::{
 
 use crate::state::{AppState, MergeableStatus, PrDisplayInfo, PrState, PrStatus};
 use crate::theme::Theme;
+use crate::ui::fit;
 
 /// The bottom bar is only rendered when a PR exists against the current
 /// branch. When no PR is present the row is reclaimed by the main pane.
@@ -46,41 +47,79 @@ pub fn pr_state_color(status: &PrStatus) -> Color {
 /// Returns `None` when there is no PR data to render, in which case the
 /// caller should skip rendering the row entirely.
 pub fn build_pr_line(pr_state: &PrState, theme: &Theme) -> Option<Line<'static>> {
-    let info = pr_state.info.as_ref()?;
-    Some(build_line_from_info(info, theme))
+    build_pr_line_fitted(pr_state, theme, u16::MAX as usize)
 }
 
-fn build_line_from_info(info: &PrDisplayInfo, theme: &Theme) -> Line<'static> {
+/// Width-aware variant of [`build_pr_line`]. Tries progressively
+/// compact renditions until one fits `max_width`, falling back to the
+/// most compact form if none fits.
+pub fn build_pr_line_fitted(
+    pr_state: &PrState,
+    theme: &Theme,
+    max_width: usize,
+) -> Option<Line<'static>> {
+    let info = pr_state.info.as_ref()?;
+    for tier in 0..=3u8 {
+        let line = render_tier(info, theme, tier);
+        let w = line_width(&line);
+        if w <= max_width {
+            return Some(line);
+        }
+    }
+    Some(render_tier(info, theme, 3))
+}
+
+fn line_width(line: &Line<'_>) -> usize {
+    line.spans
+        .iter()
+        .map(|s| fit::display_width(s.content.as_ref()))
+        .sum()
+}
+
+fn render_tier(info: &PrDisplayInfo, theme: &Theme, tier: u8) -> Line<'static> {
     let state_color = pr_state_color(&info.state);
     let sep_style = Style::default().fg(theme.header_separator);
 
     let mut spans: Vec<Span<'static>> = Vec::new();
     spans.push(Span::raw(" "));
 
-    // PR number in state color + bold.
+    // PR prefix: drop "PR " at tier ≥ 3.
+    let pr_label = if tier >= 3 { "#" } else { "PR #" };
     spans.push(Span::styled(
-        format!("PR #{}", info.number),
+        format!("{pr_label}{}", info.number),
         Style::default()
             .fg(state_color)
             .add_modifier(Modifier::BOLD),
     ));
 
-    // Mergeable indicator.
+    // Mergeable indicator: icon always (when known); drop text at tier ≥ 1.
     if let Some((icon, label, color)) = mergeable_indicator(&info.mergeable) {
         spans.push(Span::styled("  ", sep_style));
         spans.push(Span::styled(icon.to_string(), Style::default().fg(color)));
-        spans.push(Span::raw(" "));
-        spans.push(Span::styled(label.to_string(), Style::default().fg(color)));
+        if tier < 1 {
+            spans.push(Span::raw(" "));
+            spans.push(Span::styled(label.to_string(), Style::default().fg(color)));
+        }
     }
 
-    // Check counts — hybrid display:
-    // - failures present → per-category breakdown (passed/failed/pending)
-    // - pending, no failures → yellow fraction (completed/total)
-    // - all passed → green fraction (passed/total)
+    // Checks.
     let checks = &info.checks;
     if checks.total > 0 {
-        if checks.failed > 0 {
-            // Failure mode: per-category breakdown
+        if tier >= 2 {
+            // Compact: single colored fraction.
+            let (icon, color) = if checks.failed > 0 {
+                ("✗", Color::Red)
+            } else if checks.pending > 0 {
+                ("◐", Color::Yellow)
+            } else {
+                ("✓", Color::Green)
+            };
+            spans.push(Span::styled("  ", sep_style));
+            spans.push(Span::styled(
+                format!("{icon} {}/{}", checks.passed, checks.total),
+                Style::default().fg(color),
+            ));
+        } else if checks.failed > 0 {
             if checks.passed > 0 {
                 spans.push(Span::styled("  ", sep_style));
                 spans.push(Span::styled("✓ ", Style::default().fg(Color::Green)));
@@ -104,7 +143,6 @@ fn build_line_from_info(info: &PrDisplayInfo, theme: &Theme) -> Line<'static> {
                 ));
             }
         } else if checks.pending > 0 {
-            // In progress: yellow fraction
             let completed = checks.passed + checks.skipped;
             spans.push(Span::styled("  ", sep_style));
             spans.push(Span::styled("◐ ", Style::default().fg(Color::Yellow)));
@@ -113,7 +151,6 @@ fn build_line_from_info(info: &PrDisplayInfo, theme: &Theme) -> Line<'static> {
                 Style::default().fg(Color::Yellow),
             ));
         } else {
-            // All passed: green fraction
             spans.push(Span::styled("  ", sep_style));
             spans.push(Span::styled("✓ ", Style::default().fg(Color::Green)));
             spans.push(Span::styled(
@@ -142,7 +179,7 @@ fn mergeable_indicator(status: &MergeableStatus) -> Option<(&'static str, &'stat
 /// Callers must only invoke this when `has_bottom_bar(state)` returns
 /// `true`. The row is a single left-aligned PR status line.
 pub fn render_pr_line(frame: &mut Frame, state: &AppState, theme: &Theme, area: Rect) {
-    if let Some(line) = build_pr_line(state.pr_state(), theme) {
+    if let Some(line) = build_pr_line_fitted(state.pr_state(), theme, area.width as usize) {
         frame.render_widget(Paragraph::new(line), area);
     }
 }
@@ -295,6 +332,39 @@ mod tests {
         let info = make_info(MergeableStatus::Clean, 12, 0, 0);
         let line = build_pr_line(&pr_state_with(info), &test_theme()).unwrap();
         assert_eq!(line_text(&line), " PR #142  ✓ clean  ✓ 12/12");
+    }
+
+    #[test]
+    fn test_pr_line_tier_2_compacts_check_breakdown() {
+        let info = make_info(MergeableStatus::Clean, 9, 2, 1);
+        let pr = pr_state_with(info);
+        // Full tier-0 is quite wide. At 14 cols we should reach tier 2
+        // (compact fraction) or beyond — breakdown must be gone.
+        let line = build_pr_line_fitted(&pr, &test_theme(), 14).unwrap();
+        let text = line_text(&line);
+        assert!(!text.contains("✓ 9"), "got: {text}");
+        assert!(!text.contains("✗ 2"), "got: {text}");
+    }
+
+    #[test]
+    fn test_pr_line_tier_3_drops_pr_prefix() {
+        let info = make_info(MergeableStatus::Clean, 12, 0, 0);
+        let pr = pr_state_with(info);
+        let line = build_pr_line_fitted(&pr, &test_theme(), 8).unwrap();
+        let text = line_text(&line);
+        assert!(!text.contains("PR "), "got: {text}");
+        assert!(text.contains("#142"), "got: {text}");
+    }
+
+    #[test]
+    fn test_pr_line_drops_mergeable_text_on_narrow_width() {
+        let info = make_info(MergeableStatus::Clean, 12, 0, 0);
+        let pr = pr_state_with(info);
+        let line = build_pr_line_fitted(&pr, &test_theme(), 20).unwrap();
+        let text = line_text(&line);
+        assert!(!text.contains(" clean"), "got: {text}");
+        assert!(text.contains('✓'), "icon should remain, got: {text}");
+        assert!(text.contains("12/12"), "got: {text}");
     }
 
     /// Helper: make a `PrState` containing the given display info.

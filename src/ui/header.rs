@@ -1,10 +1,11 @@
 //! Main pane title header — the compact `repo/branch ● N files ● -del/+ins ●
-//! ↑↓ ● stash` line that lives in the rounded top border via
+//! ↑↓ ● stash ● <mode>` line that lives in the rounded top border via
 //! `Block::title`.
 //!
-//! When a flash message is active (e.g., "Switched to worktree: X"),
-//! the title is replaced with the flash text for the flash duration so
-//! the message is visible against the pane border.
+//! When the pane is too narrow for the full title, long branch and repo
+//! names are mid-ellipsized first (down to a per-part floor), then
+//! lower-priority segments are dropped along with their preceding
+//! separator.
 
 use ratatui::{
     style::Style,
@@ -13,93 +14,318 @@ use ratatui::{
 
 use crate::state::{AppState, ViewMode};
 use crate::theme::Theme;
+use crate::ui::fit;
 
-/// Build the main pane's title `Line`.
+/// Minimum display width to keep after mid-ellipsizing a branch name.
+const BRANCH_FLOOR: usize = 12;
+/// Minimum display width for the `repo/` prefix (includes the trailing `/`).
+const REPO_PREFIX_FLOOR: usize = 9;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum SegmentKind {
+    /// Always kept. Never dropped.
+    Fixed,
+    /// Droppable; lower priority number = dropped first.
+    Droppable(u8),
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum SegmentRole {
+    /// A separator that belongs before a content segment.
+    Separator,
+    /// The `<repo>/` prefix of the repo/branch pair.
+    RepoPrefix,
+    /// The branch name.
+    Branch,
+    /// Any other content segment.
+    Content,
+}
+
+#[derive(Debug, Clone)]
+struct Segment {
+    kind: SegmentKind,
+    role: SegmentRole,
+    spans: Vec<Span<'static>>,
+    text_width: usize,
+}
+
+impl Segment {
+    fn new(kind: SegmentKind, role: SegmentRole, spans: Vec<Span<'static>>) -> Self {
+        let text_width: usize = spans
+            .iter()
+            .map(|s| fit::display_width(s.content.as_ref()))
+            .sum();
+        Self {
+            kind,
+            role,
+            spans,
+            text_width,
+        }
+    }
+}
+
+/// Back-compat entry point for callers that don't know the available width.
 pub fn build_header_title(state: &AppState, theme: &Theme) -> Line<'static> {
-    // Flash message takes over the title for its duration.
+    build_header_title_with_width(state, theme, u16::MAX as usize)
+}
+
+/// Width-aware builder. `max_width` is the inner budget available for
+/// the title content (caller should pass
+/// `main_area.width.saturating_sub(2)` to leave room for rounded-border
+/// decorations).
+pub fn build_header_title_with_width(
+    state: &AppState,
+    theme: &Theme,
+    max_width: usize,
+) -> Line<'static> {
     if let Some(msg) = state.flash_message() {
+        let inner_budget = max_width.saturating_sub(2);
+        let clipped = fit::truncate_end(msg, inner_budget);
         return Line::from(vec![
             Span::raw(" "),
-            Span::styled(msg.to_string(), Style::default().fg(theme.header_text)),
+            Span::styled(clipped.into_owned(), Style::default().fg(theme.header_text)),
             Span::raw(" "),
         ]);
     }
+
+    let repo = state.repo_name().to_string();
+    let branch = state.branch().to_string();
+    let segments = build_segments(state, &repo, &branch, theme);
+    let fitted = fit_segments(segments, max_width, theme);
+
+    let mut spans: Vec<Span<'static>> = vec![Span::raw(" ")];
+    for seg in fitted {
+        spans.extend(seg.spans);
+    }
+    spans.push(Span::raw(" "));
+    Line::from(spans)
+}
+
+fn build_segments(state: &AppState, repo: &str, branch: &str, theme: &Theme) -> Vec<Segment> {
+    let text_style = Style::default().fg(theme.header_text);
+    let sep_style = Style::default().fg(theme.header_separator);
+    let sep_span = || Span::styled(" ● ", sep_style);
 
     let files = state.files();
     let file_count = files.len();
     let total_ins: usize = files.iter().map(|f| f.insertions).sum();
     let total_del: usize = files.iter().map(|f| f.deletions).sum();
 
-    let repo = state.repo_name();
-    let branch = state.branch();
+    let mut out: Vec<Segment> = Vec::new();
 
-    let text_style = Style::default().fg(theme.header_text);
-    let sep_style = Style::default().fg(theme.header_separator);
-
-    let sep = " ● ";
-
-    let mut spans: Vec<Span<'static>> = vec![Span::raw(" ")];
-
-    // Leading `repo/branch` segment (with graceful fallbacks).
-    let leading = match (repo.is_empty(), branch.is_empty()) {
-        (false, false) => Some(format!("{repo}/{branch}")),
-        (true, false) => Some(branch.to_string()),
-        (false, true) => Some(repo.to_string()),
-        (true, true) => None,
-    };
-    if let Some(text) = leading {
-        spans.push(Span::styled(text, text_style));
-        spans.push(Span::styled(sep, sep_style));
+    // Leading "repo/branch" segment.
+    match (repo.is_empty(), branch.is_empty()) {
+        (false, false) => {
+            // "repo/" is droppable; the branch name itself is Fixed.
+            let repo_prefix = format!("{repo}/");
+            out.push(Segment::new(
+                SegmentKind::Droppable(3),
+                SegmentRole::RepoPrefix,
+                vec![Span::styled(repo_prefix, text_style)],
+            ));
+            out.push(Segment::new(
+                SegmentKind::Fixed,
+                SegmentRole::Branch,
+                vec![Span::styled(branch.to_string(), text_style)],
+            ));
+        }
+        (true, false) => {
+            out.push(Segment::new(
+                SegmentKind::Fixed,
+                SegmentRole::Branch,
+                vec![Span::styled(branch.to_string(), text_style)],
+            ));
+        }
+        (false, true) => {
+            out.push(Segment::new(
+                SegmentKind::Fixed,
+                SegmentRole::Content,
+                vec![Span::styled(repo.to_string(), text_style)],
+            ));
+        }
+        (true, true) => {}
     }
 
-    // File count (always shown).
-    spans.push(Span::styled(format!("{file_count} files"), text_style));
+    push_sep(&mut out, sep_span());
+    out.push(Segment::new(
+        SegmentKind::Droppable(4),
+        SegmentRole::Content,
+        vec![Span::styled(format!("{file_count} files"), text_style)],
+    ));
 
-    // Diff stats as their own segment: `-del/+ins` (only when non-zero).
     if total_ins > 0 || total_del > 0 {
-        spans.push(Span::styled(sep, sep_style));
-        spans.push(Span::styled(
-            format!("-{total_del}"),
-            Style::default().fg(theme.file_deletions),
-        ));
-        spans.push(Span::styled("/", text_style));
-        spans.push(Span::styled(
-            format!("+{total_ins}"),
-            Style::default().fg(theme.file_insertions),
+        push_sep(&mut out, sep_span());
+        out.push(Segment::new(
+            SegmentKind::Droppable(2),
+            SegmentRole::Content,
+            vec![
+                Span::styled(
+                    format!("-{total_del}"),
+                    Style::default().fg(theme.file_deletions),
+                ),
+                Span::styled("/", text_style),
+                Span::styled(
+                    format!("+{total_ins}"),
+                    Style::default().fg(theme.file_insertions),
+                ),
+            ],
         ));
     }
 
-    // ahead/behind (only when non-zero)
     if let Some((ahead, behind)) = state.ahead_behind() {
         if ahead > 0 || behind > 0 {
-            spans.push(Span::styled(sep, sep_style));
-            spans.push(Span::styled(format!("↑{ahead} ↓{behind}"), text_style));
+            push_sep(&mut out, sep_span());
+            out.push(Segment::new(
+                SegmentKind::Droppable(1),
+                SegmentRole::Content,
+                vec![Span::styled(format!("↑{ahead} ↓{behind}"), text_style)],
+            ));
         }
     }
 
-    // stash count (only when > 0)
     let stash = state.stash_count();
     if stash > 0 {
-        spans.push(Span::styled(sep, sep_style));
-        spans.push(Span::styled(format!("{stash} stash"), text_style));
+        push_sep(&mut out, sep_span());
+        out.push(Segment::new(
+            SegmentKind::Droppable(0),
+            SegmentRole::Content,
+            vec![Span::styled(format!("{stash} stash"), text_style)],
+        ));
     }
 
-    spans.push(Span::styled(sep, sep_style));
-    spans.push(Span::styled(
-        match state.view_mode() {
-            ViewMode::Flat => "flat",
-            ViewMode::Tree => "tree",
-        },
-        text_style,
+    push_sep(&mut out, sep_span());
+    out.push(Segment::new(
+        SegmentKind::Fixed,
+        SegmentRole::Content,
+        vec![Span::styled(
+            match state.view_mode() {
+                ViewMode::Flat => "flat",
+                ViewMode::Tree => "tree",
+            },
+            text_style,
+        )],
     ));
 
-    spans.push(Span::raw(" "));
-    Line::from(spans)
+    out
+}
+
+fn push_sep(segs: &mut Vec<Segment>, sep: Span<'static>) {
+    // Only emit a separator when there's already content to separate
+    // from, and the previous segment isn't itself a separator.
+    match segs.last() {
+        None => return,
+        Some(last) if last.role == SegmentRole::Separator => return,
+        _ => {}
+    }
+    segs.push(Segment::new(
+        SegmentKind::Fixed,
+        SegmentRole::Separator,
+        vec![sep],
+    ));
+}
+
+fn total_width(segs: &[Segment]) -> usize {
+    segs.iter().map(|s| s.text_width).sum::<usize>() + 2 /* leading + trailing " " */
+}
+
+fn fit_segments(mut segs: Vec<Segment>, max_width: usize, theme: &Theme) -> Vec<Segment> {
+    if total_width(&segs) <= max_width {
+        return segs;
+    }
+
+    // Step 1: ellipsize branch down to BRANCH_FLOOR.
+    shrink_segment(
+        &mut segs,
+        SegmentRole::Branch,
+        max_width,
+        BRANCH_FLOOR,
+        theme,
+    );
+    if total_width(&segs) <= max_width {
+        return segs;
+    }
+
+    // Step 2: ellipsize "repo/" prefix down to REPO_PREFIX_FLOOR.
+    shrink_segment(
+        &mut segs,
+        SegmentRole::RepoPrefix,
+        max_width,
+        REPO_PREFIX_FLOOR,
+        theme,
+    );
+    if total_width(&segs) <= max_width {
+        return segs;
+    }
+
+    // Step 3: drop droppable segments in ascending priority order, along
+    // with their preceding separator.
+    for priority in 0..=4 {
+        drop_segment_with_priority(&mut segs, priority);
+        if total_width(&segs) <= max_width {
+            return segs;
+        }
+    }
+    segs
+}
+
+fn shrink_segment(
+    segs: &mut [Segment],
+    role: SegmentRole,
+    max_width: usize,
+    floor: usize,
+    theme: &Theme,
+) {
+    let current_total = total_width(segs);
+    if current_total <= max_width {
+        return;
+    }
+    let Some(idx) = segs.iter().position(|s| s.role == role) else {
+        return;
+    };
+    let seg_width = segs[idx].text_width;
+    if seg_width <= floor {
+        return;
+    }
+
+    let over = current_total - max_width;
+    let desired = seg_width.saturating_sub(over).max(floor);
+
+    // Segment spans contain plain text — join and re-ellipsize.
+    let original: String = segs[idx]
+        .spans
+        .iter()
+        .map(|s| s.content.as_ref())
+        .collect::<String>();
+    let ellipsized = fit::middle_ellipsize(&original, desired);
+    if ellipsized.as_ref() == original {
+        return;
+    }
+    let new_text = ellipsized.into_owned();
+    let new_width = fit::display_width(&new_text);
+    let style = Style::default().fg(theme.header_text);
+    segs[idx].spans = vec![Span::styled(new_text, style)];
+    segs[idx].text_width = new_width;
+}
+
+fn drop_segment_with_priority(segs: &mut Vec<Segment>, priority: u8) {
+    let Some(idx) = segs
+        .iter()
+        .position(|s| s.kind == SegmentKind::Droppable(priority))
+    else {
+        return;
+    };
+    // Drop the segment itself.
+    segs.remove(idx);
+    // Drop the preceding separator if present.
+    if idx > 0 && segs[idx - 1].role == SegmentRole::Separator {
+        segs.remove(idx - 1);
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::ui::fit::display_width;
     use std::time::Duration;
 
     fn line_text(line: &Line<'_>) -> String {
@@ -188,7 +414,6 @@ mod tests {
     #[test]
     fn test_header_title_empty_repo_name_shows_branch_only() {
         let s = AppState::new(vec![], Duration::from_millis(600), "main".to_string());
-        // repo_name left empty
         let line = build_header_title(&s, &test_theme());
         assert_eq!(line_text(&line), " main ● 0 files ● flat ");
     }
@@ -214,5 +439,63 @@ mod tests {
         s.cycle_view_mode();
         let line = build_header_title(&s, &test_theme());
         assert!(line_text(&line).contains("tree"));
+    }
+
+    #[test]
+    fn test_header_drops_stash_first() {
+        let mut s = fresh_state();
+        s.set_ahead_behind(Some((2, 1)));
+        s.set_stash_count(3);
+        let full = line_text(&build_header_title(&s, &test_theme()));
+        let full_w = display_width(&full);
+        let line = build_header_title_with_width(&s, &test_theme(), full_w - 1);
+        let text = line_text(&line);
+        assert!(
+            !text.contains("stash"),
+            "stash should drop first, got: {text}"
+        );
+        assert!(
+            text.contains("↑2 ↓1"),
+            "ahead/behind should remain, got: {text}"
+        );
+    }
+
+    #[test]
+    fn test_header_drops_ahead_behind_second() {
+        let mut s = fresh_state();
+        s.set_ahead_behind(Some((2, 1)));
+        s.set_stash_count(3);
+        let line = build_header_title_with_width(&s, &test_theme(), 30);
+        let text = line_text(&line);
+        assert!(!text.contains("stash"), "got: {text}");
+        assert!(!text.contains('↑'), "got: {text}");
+    }
+
+    #[test]
+    fn test_header_keeps_view_mode_label_even_when_tight() {
+        let mut s = fresh_state();
+        s.set_ahead_behind(Some((2, 1)));
+        s.set_stash_count(3);
+        let line = build_header_title_with_width(&s, &test_theme(), 20);
+        let text = line_text(&line);
+        assert!(
+            text.contains("flat"),
+            "view-mode label must remain, got: {text}"
+        );
+    }
+
+    #[test]
+    fn test_header_mid_ellipsizes_long_branch_at_narrow_width() {
+        let mut s = fresh_state();
+        s.set_branch("feat/very-long-branch-name-with-lots-of-words".to_string());
+        let line = build_header_title_with_width(&s, &test_theme(), 40);
+        let text = line_text(&line);
+        assert!(text.contains('\u{2026}'), "expected ellipsis, got: {text}");
+        assert!(text.contains("git-rt"), "got: {text}");
+        assert!(
+            display_width(&text) <= 40,
+            "got width {}: {text}",
+            display_width(&text)
+        );
     }
 }

@@ -7,6 +7,7 @@
 //! the main pane takes the full frame.
 
 pub mod diff_overlay;
+pub mod fit;
 pub mod header;
 pub mod help_overlay;
 pub mod pr_line;
@@ -113,7 +114,11 @@ fn render(frame: &mut Frame, state: &mut AppState, config: &AppConfig, theme: &T
         .borders(Borders::ALL)
         .border_type(BorderType::Rounded)
         .border_style(Style::default().fg(border_color))
-        .title(header::build_header_title(state, theme));
+        .title(header::build_header_title_with_width(
+            state,
+            theme,
+            (main_area.width as usize).saturating_sub(2),
+        ));
 
     let inner = block.inner(main_area);
     frame.render_widget(block, main_area);
@@ -202,6 +207,7 @@ fn render_flat_file_list(
             file.status.clone(),
             file.deletions,
             file.insertions,
+            area.width as usize,
             theme,
         );
 
@@ -248,41 +254,78 @@ fn render_tree_file_list(
                 expanded,
                 ..
             } => {
-                let indent = "  ".repeat(*depth);
+                let indent_cols = 2 * depth;
                 let arrow = if *expanded { "▼" } else { "▶" };
+                // leading space + indent + arrow (1) + " " + label + trailing margin
+                let fixed = 1 + 1 + 1 + 1;
+                let width = area.width as usize;
+                let elastic = width.saturating_sub(fixed + indent_cols);
+                let label_display = fit::middle_ellipsize(label, elastic).into_owned();
+
+                let indent = "  ".repeat(*depth);
                 Line::from(vec![
                     Span::raw(" "),
                     Span::raw(indent),
                     Span::styled(arrow, Style::default().fg(theme.file_path)),
                     Span::raw(" "),
-                    Span::styled(label.clone(), Style::default().fg(theme.file_path)),
+                    Span::styled(label_display, Style::default().fg(theme.file_path)),
                 ])
             }
             VisibleRow::File {
                 depth, label, file, ..
             } => {
-                let indent = "  ".repeat(*depth);
+                let indent_cols = 2 * depth;
                 let status_char = file_status_char(file.status.clone());
                 let status_color = file_status_color(file.status.clone(), theme);
-                Line::from(vec![
+                let stats_str = format!("-{}/+{}", file.deletions, file.insertions);
+                let stats_width = fit::display_width(&stats_str);
+                // leading space + indent + " " + " " + status + " "
+                //   + label + " " + stats + trailing margin
+                let fixed_with_stats = 1 + 1 + 1 + 1 + 1 + 1 + 1;
+                let fixed_no_stats = 1 + 1 + 1 + 1 + 1 + 1;
+                let label_w = fit::display_width(label);
+                let width = area.width as usize;
+                let elastic_full =
+                    width.saturating_sub(fixed_with_stats + indent_cols + stats_width);
+
+                let (label_display, include_stats) = if label_w <= elastic_full {
+                    (label.clone(), true)
+                } else if elastic_full >= 20 {
+                    (
+                        fit::middle_ellipsize(label, elastic_full).into_owned(),
+                        true,
+                    )
+                } else {
+                    let elastic_no_stats = width.saturating_sub(fixed_no_stats + indent_cols);
+                    (
+                        fit::middle_ellipsize(label, elastic_no_stats).into_owned(),
+                        false,
+                    )
+                };
+
+                let indent = "  ".repeat(*depth);
+                let mut spans = vec![
                     Span::raw(" "),
                     Span::raw(indent),
                     Span::raw(" "),
                     Span::raw(" "),
                     Span::styled(status_char, Style::default().fg(status_color)),
                     Span::raw(" "),
-                    Span::styled(label.clone(), Style::default().fg(theme.file_path)),
-                    Span::raw(" "),
-                    Span::styled(
+                    Span::styled(label_display, Style::default().fg(theme.file_path)),
+                ];
+                if include_stats {
+                    spans.push(Span::raw(" "));
+                    spans.push(Span::styled(
                         format!("-{}", file.deletions),
                         Style::default().fg(theme.file_deletions),
-                    ),
-                    Span::raw("/"),
-                    Span::styled(
+                    ));
+                    spans.push(Span::raw("/"));
+                    spans.push(Span::styled(
                         format!("+{}", file.insertions),
                         Style::default().fg(theme.file_insertions),
-                    ),
-                ])
+                    ));
+                }
+                Line::from(spans)
             }
         };
 
@@ -376,27 +419,60 @@ fn file_line(
     status: FileStatus,
     deletions: usize,
     insertions: usize,
+    available_width: usize,
     theme: &Theme,
 ) -> Line<'static> {
     let status_char = file_status_char(status.clone());
     let status_color = file_status_color(status, theme);
 
-    Line::from(vec![
+    let stats_str = format!("-{deletions}/+{insertions}");
+    let stats_width = fit::display_width(&stats_str);
+    // Fixed cost with stats: leading space + status + space + path
+    // + space + stats + trailing margin. Excludes path and stats.
+    let fixed_with_stats = 1 + 1 + 1 + 1 + 1;
+    // Fixed cost without stats: leading space + status + space + path
+    // + trailing margin.
+    let fixed_no_stats = 1 + 1 + 1 + 1;
+
+    let path_width = fit::display_width(&label);
+    let elastic_full = available_width.saturating_sub(fixed_with_stats + stats_width);
+
+    let (path_display, include_stats) = if path_width <= elastic_full {
+        (label.clone(), true)
+    } else if elastic_full >= 20 {
+        (
+            fit::middle_ellipsize(&label, elastic_full).into_owned(),
+            true,
+        )
+    } else {
+        let elastic_no_stats = available_width.saturating_sub(fixed_no_stats);
+        (
+            fit::middle_ellipsize(&label, elastic_no_stats).into_owned(),
+            false,
+        )
+    };
+
+    let mut spans = vec![
         Span::raw(" "),
         Span::styled(status_char, Style::default().fg(status_color)),
         Span::raw(" "),
-        Span::styled(label, Style::default().fg(theme.file_path)),
-        Span::raw(" "),
-        Span::styled(
+        Span::styled(path_display, Style::default().fg(theme.file_path)),
+    ];
+
+    if include_stats {
+        spans.push(Span::raw(" "));
+        spans.push(Span::styled(
             format!("-{deletions}"),
             Style::default().fg(theme.file_deletions),
-        ),
-        Span::raw("/"),
-        Span::styled(
+        ));
+        spans.push(Span::styled("/", Style::default().fg(theme.file_path)));
+        spans.push(Span::styled(
             format!("+{insertions}"),
             Style::default().fg(theme.file_insertions),
-        ),
-    ])
+        ));
+    }
+
+    Line::from(spans)
 }
 
 fn file_status_char(status: FileStatus) -> &'static str {
@@ -466,6 +542,173 @@ mod tests {
             .iter()
             .map(|cell| cell.symbol())
             .collect::<String>()
+    }
+
+    /// Render to a `TestBackend` and return each row as its own string.
+    fn render_rows(
+        state: &mut AppState,
+        config: &AppConfig,
+        width: u16,
+        height: u16,
+    ) -> Vec<String> {
+        let backend = TestBackend::new(width, height);
+        let mut terminal = ratatui::Terminal::new(backend).unwrap();
+        terminal
+            .draw(|frame| {
+                render(
+                    frame,
+                    state,
+                    config,
+                    &load_theme(crate::theme::DEFAULT_THEME_NAME, None),
+                )
+            })
+            .unwrap();
+
+        let buf = terminal.backend().buffer().clone();
+        (0..height)
+            .map(|y| {
+                (0..width)
+                    .map(|x| buf[(x, y)].symbol().to_string())
+                    .collect::<Vec<_>>()
+                    .join("")
+            })
+            .collect()
+    }
+
+    #[test]
+    fn test_no_row_exceeds_pane_width_across_matrix() {
+        use ratatui::backend::TestBackend;
+
+        let files = vec![
+            FileEntry {
+                path: "src/very/deeply/nested/path/to/a_really_long_filename.rs".to_string(),
+                status: FileStatus::Modified,
+                insertions: 234,
+                deletions: 15,
+            },
+            FileEntry {
+                path: "Cargo.toml".to_string(),
+                status: FileStatus::Modified,
+                insertions: 2,
+                deletions: 1,
+            },
+        ];
+
+        for &width in &[80u16, 60, 40, 30, 24, 20] {
+            for &tree in &[false, true] {
+                let mut state = AppState::new(
+                    files.clone(),
+                    Duration::from_millis(600),
+                    "feat/very-long-branch-name-for-testing".to_string(),
+                );
+                state.set_repo_name("git-rt".to_string());
+                if tree {
+                    state.cycle_view_mode();
+                }
+
+                let backend = TestBackend::new(width, 12);
+                let mut terminal = ratatui::Terminal::new(backend).unwrap();
+                terminal
+                    .draw(|frame| {
+                        render(
+                            frame,
+                            &mut state,
+                            &AppConfig::default(),
+                            &load_theme(crate::theme::DEFAULT_THEME_NAME, None),
+                        )
+                    })
+                    .unwrap_or_else(|e| {
+                        panic!("render must not panic at width {width} tree={tree}: {e}")
+                    });
+            }
+        }
+    }
+
+    #[test]
+    fn test_tree_directory_row_ellipsizes_label_at_narrow_width() {
+        let files = vec![
+            make_entry("some/very/long/directory/path/a.rs"),
+            make_entry("some/very/long/directory/path/b.rs"),
+        ];
+        let mut state = AppState::new(files, Duration::from_millis(600), "main".to_string());
+        state.cycle_view_mode();
+
+        let rendered = render_to_string(&mut state, &AppConfig::default(), 28, 8);
+        assert!(
+            rendered.contains('\u{2026}'),
+            "expected ellipsis, got: {rendered}"
+        );
+        assert!(
+            !rendered.contains("some/very/long/directory/path/"),
+            "got: {rendered}"
+        );
+    }
+
+    #[test]
+    fn test_tree_file_row_ellipsizes_label_at_narrow_width() {
+        let files = vec![
+            make_entry("src/ui/really_long_filename_here.rs"),
+            make_entry("src/ui/mod.rs"),
+        ];
+        let mut state = AppState::new(files, Duration::from_millis(600), "main".to_string());
+        state.cycle_view_mode();
+
+        let rendered = render_to_string(&mut state, &AppConfig::default(), 30, 8);
+        assert!(
+            rendered.contains('\u{2026}'),
+            "expected ellipsis, got: {rendered}"
+        );
+    }
+
+    #[test]
+    fn test_flat_row_mid_ellipsizes_path_at_narrow_width() {
+        let files = vec![FileEntry {
+            path: "src/very/deeply/nested/path/long_filename.rs".to_string(),
+            status: FileStatus::Modified,
+            insertions: 234,
+            deletions: 15,
+        }];
+        let mut state = AppState::new(files, Duration::from_millis(600), "main".to_string());
+        let rendered = render_to_string(&mut state, &AppConfig::default(), 50, 6);
+        assert!(rendered.contains("long_filename.rs"), "got: {rendered}");
+        assert!(rendered.contains("-15"), "got: {rendered}");
+        assert!(rendered.contains("+234"), "got: {rendered}");
+        assert!(rendered.contains('\u{2026}'), "got: {rendered}");
+    }
+
+    #[test]
+    fn test_flat_row_drops_stats_below_floor() {
+        let files = vec![FileEntry {
+            path: "src/a/b/c/d/really_long_filename.rs".to_string(),
+            status: FileStatus::Modified,
+            insertions: 234,
+            deletions: 15,
+        }];
+        let mut state = AppState::new(files, Duration::from_millis(600), "main".to_string());
+        // Width 24: with borders + padding the elastic budget drops
+        // under the 20-col floor, so stats should be dropped from the
+        // file row (the header title may still show aggregate stats).
+        let rendered_rows = render_rows(&mut state, &AppConfig::default(), 24, 6);
+        let file_row = rendered_rows
+            .iter()
+            .find(|r| r.contains(" M "))
+            .expect("file row present");
+        assert!(
+            !file_row.contains("-15"),
+            "stats should drop, got: {file_row}"
+        );
+        assert!(
+            !file_row.contains("+234"),
+            "stats should drop, got: {file_row}"
+        );
+        assert!(
+            file_row.contains(".rs"),
+            "filename extension should remain, got: {file_row}"
+        );
+        assert!(
+            file_row.contains('\u{2026}'),
+            "ellipsis expected, got: {file_row}"
+        );
     }
 
     #[test]

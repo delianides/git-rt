@@ -212,7 +212,15 @@ fn render_flat_file_list(
         items.push(item);
     }
 
-    render_list(frame, state, config, theme, area, items, state.selected_index());
+    render_list(
+        frame,
+        state,
+        config,
+        theme,
+        area,
+        items,
+        state.selected_index(),
+    );
 }
 
 fn render_tree_file_list(
@@ -251,10 +259,7 @@ fn render_tree_file_list(
                 ])
             }
             VisibleRow::File {
-                depth,
-                label,
-                file,
-                ..
+                depth, label, file, ..
             } => {
                 let indent = "  ".repeat(*depth);
                 let status_char = file_status_char(file.status.clone());
@@ -290,7 +295,15 @@ fn render_tree_file_list(
         items.push(item);
     }
 
-    render_list(frame, state, config, theme, area, items, state.selected_index());
+    render_list(
+        frame,
+        state,
+        config,
+        theme,
+        area,
+        items,
+        state.selected_index(),
+    );
 }
 
 fn inset_file_list_area(area: Rect) -> Rect {
@@ -435,7 +448,12 @@ mod tests {
         }
     }
 
-    fn render_to_string(state: &mut AppState, config: &AppConfig, width: u16, height: u16) -> String {
+    fn render_to_string(
+        state: &mut AppState,
+        config: &AppConfig,
+        width: u16,
+        height: u16,
+    ) -> String {
         let backend = TestBackend::new(width, height);
         let mut terminal = ratatui::Terminal::new(backend).unwrap();
         terminal

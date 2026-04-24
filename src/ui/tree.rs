@@ -188,7 +188,12 @@ fn flatten_children(
     files.sort_by(|a, b| a.path.cmp(&b.path));
 
     for file in files {
-        let label = file.path.rsplit('/').next().unwrap_or(&file.path).to_string();
+        let label = file
+            .path
+            .rsplit('/')
+            .next()
+            .unwrap_or(&file.path)
+            .to_string();
         out.push(VisibleRow::File {
             id: RowId::File(file.path.clone()),
             depth,
@@ -231,20 +236,25 @@ mod tests {
 
     #[test]
     fn build_rows_respects_collapsed_directories() {
-        let files = vec![
-            file("src/app.rs", 1, 0),
-            file("src/ui/mod.rs", 3, 1),
-        ];
+        let files = vec![file("src/app.rs", 1, 0), file("src/ui/mod.rs", 3, 1)];
 
         let rows = build_visible_rows(&files, &std::collections::BTreeSet::new());
 
-        assert_eq!(rows.iter().map(|row| row.label()).collect::<Vec<_>>(), vec!["src/"]);
+        assert_eq!(
+            rows.iter().map(|row| row.label()).collect::<Vec<_>>(),
+            vec!["src/"]
+        );
     }
 
     #[test]
     fn build_rows_uses_full_path_as_stable_file_id() {
         let files = vec![file("src/ui/mod.rs", 3, 1)];
-        let rows = build_visible_rows(&files, &["src".to_string(), "src/ui".to_string()].into_iter().collect());
+        let rows = build_visible_rows(
+            &files,
+            &["src".to_string(), "src/ui".to_string()]
+                .into_iter()
+                .collect(),
+        );
 
         assert_eq!(rows[2].id(), &RowId::File("src/ui/mod.rs".to_string()));
     }

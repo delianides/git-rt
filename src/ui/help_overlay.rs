@@ -128,11 +128,7 @@ mod tests {
     }
 
     fn lines_text(lines: &[Line<'_>]) -> String {
-        lines
-            .iter()
-            .map(line_text)
-            .collect::<Vec<_>>()
-            .join("\n")
+        lines.iter().map(line_text).collect::<Vec<_>>().join("\n")
     }
 
     #[test]

@@ -291,10 +291,10 @@ impl GitRepo {
         crate::git::cli::compute_status_files(&self.repo_path, None)
     }
 
-    /// Compute the unified diff for a single file.
+    /// Compute the unified diff for a single file (worktree vs index).
     ///
-    /// Uses gix to load the index blob and diffs it against the worktree file.
-    /// For untracked files, synthesizes a diff where every line is an addition.
+    /// Tracked files go through `git diff -- <path>` for a real Myers diff.
+    /// Untracked files fall back to a synthetic all-additions diff.
     pub fn diff_file(&self, path: &str) -> Result<FileDiff, GitFailure> {
         let work_dir = match self.repo.workdir() {
             Some(d) => d.to_path_buf(),
@@ -302,42 +302,23 @@ impl GitRepo {
         };
         let worktree_path = work_dir.join(path);
 
-        // Load the index to find the tracked blob
+        // Tracked? Shell out to `git diff -- <path>` for a real Myers diff.
         let index = match self.repo.index_or_empty() {
             Ok(i) => i,
             Err(e) => return Err(GitFailure::EnvChange(format!("diff_file index: {e}"))),
         };
-
         let path_bstr: &gix::bstr::BStr = path.as_bytes().into();
-        let entry = index.entry_by_path(path_bstr);
+        if index.entry_by_path(path_bstr).is_some() {
+            let bytes = crate::git::cli::run_diff_patch(&self.repo_path, None, path)?;
+            return Ok(crate::git::cli::parse_unified_diff(&bytes));
+        }
 
-        match entry {
-            Some(entry) => {
-                let blob = match self.repo.find_object(entry.id) {
-                    Ok(obj) => obj,
-                    Err(e) => {
-                        return Err(GitFailure::EnvChange(format!("diff_file blob: {e}")));
-                    }
-                };
-                let index_text = String::from_utf8_lossy(&blob.data).into_owned();
-
-                let worktree_text = match std::fs::read_to_string(&worktree_path) {
-                    Ok(t) => t,
-                    Err(_) => {
-                        return Ok(synthesize_deletion_diff(&index_text));
-                    }
-                };
-
-                Ok(synthesize_text_diff(&index_text, &worktree_text))
-            }
-            None => {
-                if worktree_path.exists() {
-                    self.diff_untracked(path)
-                        .map_err(|e| GitFailure::Failed(format!("diff_untracked: {e}")))
-                } else {
-                    Ok(FileDiff::default())
-                }
-            }
+        // Not in the index: untracked (if present) or nothing.
+        if worktree_path.exists() {
+            self.diff_untracked(path)
+                .map_err(|e| GitFailure::Failed(format!("diff_untracked: {e}")))
+        } else {
+            Ok(FileDiff::default())
         }
     }
 
@@ -842,7 +823,10 @@ impl GitRepo {
     }
 
     /// Compute the unified diff for a single file between the merge base
-    /// and the current working tree.
+    /// and the current working tree. Tracked content goes through
+    /// `git diff <merge_base> -- <path>` for a real Myers diff; untracked
+    /// files (not in the merge-base tree, not in the index) fall back to
+    /// the synthetic all-additions diff.
     pub fn branch_diff_file(
         &self,
         path: &str,
@@ -854,31 +838,47 @@ impl GitRepo {
         };
         let worktree_path = work_dir.join(path);
 
-        let mb_commit = self
-            .repo
-            .find_object(merge_base)
-            .map_err(|e| GitFailure::EnvChange(format!("branch_diff_file find mb: {e}")))?
-            .try_into_commit()
-            .map_err(|e| GitFailure::EnvChange(format!("branch_diff_file into commit: {e}")))?;
-        let mb_tree = mb_commit
-            .tree()
-            .map_err(|e| GitFailure::EnvChange(format!("branch_diff_file tree: {e}")))?;
-
-        let old_text = self.find_blob_in_tree(&mb_tree, path);
-
-        match (old_text, worktree_path.exists()) {
-            (Some(old), true) => {
-                let new_text = match std::fs::read_to_string(&worktree_path) {
-                    Ok(t) => t,
-                    Err(_) => return Ok(FileDiff::default()),
-                };
-                Ok(synthesize_text_diff(&old, &new_text))
+        // Is the file tracked in either the index or the merge-base tree?
+        // If yes, let `git diff` handle every case (modified, deleted,
+        // added-on-branch, binary).
+        let in_index = match self.repo.index_or_empty() {
+            Ok(idx) => {
+                let path_bstr: &gix::bstr::BStr = path.as_bytes().into();
+                idx.entry_by_path(path_bstr).is_some()
             }
-            (Some(old), false) => Ok(synthesize_deletion_diff(&old)),
-            (None, true) => self
-                .diff_untracked(path)
-                .map_err(|e| GitFailure::Failed(format!("branch_diff_file untracked: {e}"))),
-            (None, false) => Ok(FileDiff::default()),
+            Err(e) => {
+                return Err(GitFailure::EnvChange(format!(
+                    "branch_diff_file index: {e}"
+                )))
+            }
+        };
+
+        let in_mb_tree = if !in_index {
+            let mb_commit = self
+                .repo
+                .find_object(merge_base)
+                .map_err(|e| GitFailure::EnvChange(format!("branch_diff_file find mb: {e}")))?
+                .try_into_commit()
+                .map_err(|e| GitFailure::EnvChange(format!("branch_diff_file into commit: {e}")))?;
+            let mb_tree = mb_commit
+                .tree()
+                .map_err(|e| GitFailure::EnvChange(format!("branch_diff_file tree: {e}")))?;
+            self.find_blob_in_tree(&mb_tree, path).is_some()
+        } else {
+            true
+        };
+
+        if in_index || in_mb_tree {
+            let bytes = crate::git::cli::run_diff_patch(&self.repo_path, Some(&merge_base), path)?;
+            return Ok(crate::git::cli::parse_unified_diff(&bytes));
+        }
+
+        // Not in index and not in merge-base tree: untracked addition.
+        if worktree_path.exists() {
+            self.diff_untracked(path)
+                .map_err(|e| GitFailure::Failed(format!("branch_diff_file untracked: {e}")))
+        } else {
+            Ok(FileDiff::default())
         }
     }
 
@@ -944,112 +944,6 @@ impl GitRepo {
     }
 }
 
-/// Synthesize a FileDiff between two texts using a simple prefix/suffix trim.
-/// Emits a single hunk showing the changed region with 3 lines of context.
-/// Not a proper Myers diff but readable enough for the compact view.
-fn synthesize_text_diff(old: &str, new: &str) -> FileDiff {
-    let old_lines: Vec<&str> = old.lines().collect();
-    let new_lines: Vec<&str> = new.lines().collect();
-
-    // Trim common prefix
-    let mut prefix_len = 0;
-    while prefix_len < old_lines.len()
-        && prefix_len < new_lines.len()
-        && old_lines[prefix_len] == new_lines[prefix_len]
-    {
-        prefix_len += 1;
-    }
-
-    // Trim common suffix (be careful not to overlap prefix)
-    let mut suffix_len = 0;
-    while suffix_len < (old_lines.len().saturating_sub(prefix_len))
-        && suffix_len < (new_lines.len().saturating_sub(prefix_len))
-        && old_lines[old_lines.len() - 1 - suffix_len]
-            == new_lines[new_lines.len() - 1 - suffix_len]
-    {
-        suffix_len += 1;
-    }
-
-    let old_changed_start = prefix_len;
-    let old_changed_end = old_lines.len() - suffix_len;
-    let new_changed_start = prefix_len;
-    let new_changed_end = new_lines.len() - suffix_len;
-
-    // If nothing changed, return empty diff
-    if old_changed_start >= old_changed_end && new_changed_start >= new_changed_end {
-        return FileDiff::default();
-    }
-
-    let mut lines = Vec::new();
-
-    // Context before (up to 3 lines)
-    let context_before_start = prefix_len.saturating_sub(3);
-    for line in &old_lines[context_before_start..prefix_len] {
-        lines.push(DiffLine {
-            kind: DiffLineKind::Context,
-            content: line.to_string(),
-        });
-    }
-
-    // Deletions
-    for line in &old_lines[old_changed_start..old_changed_end] {
-        lines.push(DiffLine {
-            kind: DiffLineKind::Deletion,
-            content: line.to_string(),
-        });
-    }
-
-    // Additions
-    for line in &new_lines[new_changed_start..new_changed_end] {
-        lines.push(DiffLine {
-            kind: DiffLineKind::Addition,
-            content: line.to_string(),
-        });
-    }
-
-    // Context after (up to 3 lines)
-    let context_after_end = (old_changed_end + 3).min(old_lines.len());
-    for line in &old_lines[old_changed_end..context_after_end] {
-        lines.push(DiffLine {
-            kind: DiffLineKind::Context,
-            content: line.to_string(),
-        });
-    }
-
-    let old_count = old_changed_end - context_before_start;
-    let new_count = new_changed_end - context_before_start;
-
-    let header = format!(
-        "@@ -{},{} +{},{} @@",
-        context_before_start + 1,
-        old_count.max(1),
-        context_before_start + 1,
-        new_count.max(1)
-    );
-
-    FileDiff {
-        hunks: vec![DiffHunk { header, lines }],
-    }
-}
-
-/// Synthesize a "file deleted" diff (all lines as deletions).
-fn synthesize_deletion_diff(old: &str) -> FileDiff {
-    let lines: Vec<DiffLine> = old
-        .lines()
-        .map(|l| DiffLine {
-            kind: DiffLineKind::Deletion,
-            content: l.to_string(),
-        })
-        .collect();
-    let count = lines.len();
-    FileDiff {
-        hunks: vec![DiffHunk {
-            header: format!("@@ -1,{count} +0,0 @@ (deleted)"),
-            lines,
-        }],
-    }
-}
-
 /// Count commits reachable from `from` but not from `exclude`.
 fn count_reachable_exclusive(
     repo: &gix::Repository,
@@ -1083,45 +977,6 @@ fn count_reachable_exclusive(
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn test_synthesize_text_diff_detects_changes() {
-        let old = "line1\nline2\nline3\n";
-        let new = "line1\nmodified\nline3\n";
-        let diff = synthesize_text_diff(old, new);
-        assert_eq!(diff.hunks.len(), 1, "should produce one hunk");
-        let hunk = &diff.hunks[0];
-        let del_count = hunk
-            .lines
-            .iter()
-            .filter(|l| matches!(l.kind, DiffLineKind::Deletion))
-            .count();
-        let add_count = hunk
-            .lines
-            .iter()
-            .filter(|l| matches!(l.kind, DiffLineKind::Addition))
-            .count();
-        assert_eq!(del_count, 1, "one line deleted");
-        assert_eq!(add_count, 1, "one line added");
-    }
-
-    #[test]
-    fn test_synthesize_text_diff_no_changes() {
-        let s = "same\nsame\n";
-        let diff = synthesize_text_diff(s, s);
-        assert!(diff.hunks.is_empty(), "identical texts produce empty diff");
-    }
-
-    #[test]
-    fn test_synthesize_deletion_diff_marks_all_deletions() {
-        let diff = synthesize_deletion_diff("a\nb\nc\n");
-        assert_eq!(diff.hunks.len(), 1);
-        assert_eq!(diff.hunks[0].lines.len(), 3);
-        assert!(diff.hunks[0]
-            .lines
-            .iter()
-            .all(|l| matches!(l.kind, DiffLineKind::Deletion)));
-    }
 
     #[test]
     fn test_diff_file_handles_missing_path() {
@@ -2123,5 +1978,105 @@ mod tests {
         ]);
         let repo = GitRepo::new(p).unwrap();
         assert_eq!(repo.detect_base_branch("main"), None);
+    }
+
+    /// Regression test for the bug where a small non-contiguous edit was
+    /// rendered as one giant delete-then-add block. The fix shells out to
+    /// `git diff -p` and parses the unified-diff output, so changes at the
+    /// top and bottom of a file produce TWO hunks, not one.
+    #[test]
+    fn diff_file_produces_multiple_hunks_for_non_contiguous_changes() {
+        let tmp = tempfile::tempdir().unwrap();
+        let repo = tmp.path();
+        init_repo_for_discover(repo);
+
+        // Write a 30-line file and commit it.
+        let original: String = (1..=30)
+            .map(|i| format!("line {i}\n"))
+            .collect::<Vec<_>>()
+            .join("");
+        std::fs::write(repo.join("file.txt"), &original).unwrap();
+        git(repo, &["add", "file.txt"]);
+        git(repo, &["commit", "-q", "-m", "add file"]);
+
+        // Modify line 2 and line 28 — separate, non-contiguous changes.
+        let modified: String = (1..=30)
+            .map(|i| match i {
+                2 => "line 2 CHANGED\n".to_string(),
+                28 => "line 28 CHANGED\n".to_string(),
+                _ => format!("line {i}\n"),
+            })
+            .collect::<Vec<_>>()
+            .join("");
+        std::fs::write(repo.join("file.txt"), &modified).unwrap();
+
+        let r = GitRepo::new(repo).unwrap();
+        let diff = r.diff_file("file.txt").expect("diff_file ok");
+
+        assert!(
+            diff.hunks.len() >= 2,
+            "expected at least 2 hunks for non-contiguous changes, got {}: {:?}",
+            diff.hunks.len(),
+            diff.hunks.iter().map(|h| &h.header).collect::<Vec<_>>()
+        );
+
+        let dels = diff
+            .hunks
+            .iter()
+            .flat_map(|h| h.lines.iter())
+            .filter(|l| matches!(l.kind, DiffLineKind::Deletion))
+            .count();
+        let adds = diff
+            .hunks
+            .iter()
+            .flat_map(|h| h.lines.iter())
+            .filter(|l| matches!(l.kind, DiffLineKind::Addition))
+            .count();
+        assert_eq!(dels, 2, "two lines deleted");
+        assert_eq!(adds, 2, "two lines added");
+    }
+
+    /// Branch view variant of the previous test: changes committed on a
+    /// branch since merge-base must also render as multiple hunks.
+    #[test]
+    fn branch_diff_file_produces_multiple_hunks_for_non_contiguous_changes() {
+        let tmp = tempfile::tempdir().unwrap();
+        let repo = tmp.path();
+        init_repo_for_discover(repo);
+
+        let original: String = (1..=30)
+            .map(|i| format!("line {i}\n"))
+            .collect::<Vec<_>>()
+            .join("");
+        std::fs::write(repo.join("file.txt"), &original).unwrap();
+        git(repo, &["add", "file.txt"]);
+        git(repo, &["commit", "-q", "-m", "add file"]);
+
+        // Branch off main and commit a non-contiguous change.
+        git(repo, &["checkout", "-q", "-b", "feature"]);
+        let modified: String = (1..=30)
+            .map(|i| match i {
+                2 => "line 2 CHANGED\n".to_string(),
+                28 => "line 28 CHANGED\n".to_string(),
+                _ => format!("line {i}\n"),
+            })
+            .collect::<Vec<_>>()
+            .join("");
+        std::fs::write(repo.join("file.txt"), &modified).unwrap();
+        git(repo, &["add", "file.txt"]);
+        git(repo, &["commit", "-q", "-m", "edit"]);
+
+        let r = GitRepo::new(repo).unwrap();
+        let mb = r.merge_base("main").unwrap().expect("merge base");
+        let diff = r
+            .branch_diff_file("file.txt", mb)
+            .expect("branch_diff_file ok");
+
+        assert!(
+            diff.hunks.len() >= 2,
+            "expected at least 2 hunks, got {}: {:?}",
+            diff.hunks.len(),
+            diff.hunks.iter().map(|h| &h.header).collect::<Vec<_>>()
+        );
     }
 }

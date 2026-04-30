@@ -9,7 +9,7 @@
 use std::path::Path;
 use std::process::Command;
 
-use crate::git::{FileEntry, FileStatus, GitFailure};
+use crate::git::{DiffHunk, DiffLine, DiffLineKind, FileDiff, FileEntry, FileStatus, GitFailure};
 
 /// Parse `git status --porcelain=v2 -z` output into a list of
 /// `(path, FileStatus)` pairs. Robust to records appearing in any order;
@@ -414,4 +414,233 @@ pub fn parse_name_status(bytes: &[u8]) -> Vec<(String, FileStatus)> {
         }
     }
     out
+}
+
+/// Parse the unified-diff body of a single-file `git diff -p` invocation
+/// into a [`FileDiff`].
+///
+/// Recognised line kinds:
+///   `@@ ... @@ ...`  — hunk header (starts a new hunk)
+///   ` `              — context line
+///   `-`              — deletion
+///   `+`              — addition
+///   `\`              — "no newline at end of file" marker (skipped)
+///
+/// All header lines (`diff --git`, `index`, `---`, `+++`, `Binary files ...`)
+/// before the first `@@` are skipped. Binary diffs and identical files
+/// produce an empty [`FileDiff`].
+pub fn parse_unified_diff(bytes: &[u8]) -> FileDiff {
+    let text = String::from_utf8_lossy(bytes);
+    let mut hunks: Vec<DiffHunk> = Vec::new();
+    let mut current: Option<DiffHunk> = None;
+
+    for line in text.split('\n') {
+        if line.starts_with("@@") {
+            if let Some(h) = current.take() {
+                hunks.push(h);
+            }
+            current = Some(DiffHunk {
+                header: line.to_string(),
+                lines: Vec::new(),
+            });
+            continue;
+        }
+
+        let Some(hunk) = current.as_mut() else {
+            continue;
+        };
+
+        if line.starts_with('\\') {
+            continue;
+        }
+
+        let (kind, content) = match line.as_bytes().first() {
+            Some(b'+') => (DiffLineKind::Addition, &line[1..]),
+            Some(b'-') => (DiffLineKind::Deletion, &line[1..]),
+            Some(b' ') => (DiffLineKind::Context, &line[1..]),
+            None => continue,
+            _ => continue,
+        };
+
+        hunk.lines.push(DiffLine {
+            kind,
+            content: content.to_string(),
+        });
+    }
+
+    if let Some(h) = current.take() {
+        hunks.push(h);
+    }
+
+    FileDiff { hunks }
+}
+
+/// Run `git diff -p --no-color [base] -- <path>` and return raw stdout.
+///
+/// `base_ref`:
+///   - `Some(oid)` → diff merge-base-tree to worktree (branch view)
+///   - `None`      → diff index to worktree (default working-tree view,
+///     i.e. unstaged changes only — matches the prior in-tree behaviour)
+///
+/// Includes `-c core.quotePath=false` so non-ASCII paths come through unquoted.
+/// Note: we deliberately do NOT pass `-z` here because diff bodies contain
+/// newlines, and `-z` only affects the inter-record path NULs which we don't
+/// need for a single-file invocation.
+pub fn run_diff_patch(
+    repo_path: &Path,
+    base_ref: Option<&gix::ObjectId>,
+    path: &str,
+) -> Result<Vec<u8>, GitFailure> {
+    let mut cmd = Command::new("git");
+    cmd.current_dir(repo_path)
+        .args(["-c", "core.quotePath=false", "diff", "-p", "--no-color"]);
+    if let Some(oid) = base_ref {
+        cmd.arg(format!("{}", oid.to_hex()));
+    }
+    cmd.arg("--").arg(path);
+    let out = cmd
+        .output()
+        .map_err(|e| GitFailure::EnvChange(format!("git diff -p spawn: {e}")))?;
+    if !out.status.success() {
+        return Err(GitFailure::EnvChange(format!(
+            "git diff -p exit {}: {}",
+            out.status,
+            String::from_utf8_lossy(&out.stderr)
+        )));
+    }
+    Ok(out.stdout)
+}
+
+#[cfg(test)]
+mod diff_parser_tests {
+    use super::*;
+
+    fn join_patch(lines: &[&str]) -> Vec<u8> {
+        let mut s = lines.join("\n");
+        s.push('\n');
+        s.into_bytes()
+    }
+
+    #[test]
+    fn parses_single_hunk() {
+        let patch = join_patch(&[
+            "diff --git a/foo b/foo",
+            "index 1111..2222 100644",
+            "--- a/foo",
+            "+++ b/foo",
+            "@@ -1,3 +1,3 @@",
+            " a",
+            "-b",
+            "+B",
+            " c",
+        ]);
+        let diff = parse_unified_diff(&patch);
+        assert_eq!(diff.hunks.len(), 1);
+        let h = &diff.hunks[0];
+        assert_eq!(h.header, "@@ -1,3 +1,3 @@");
+        assert_eq!(h.lines.len(), 4);
+        assert!(matches!(h.lines[0].kind, DiffLineKind::Context));
+        assert_eq!(h.lines[0].content, "a");
+        assert!(matches!(h.lines[1].kind, DiffLineKind::Deletion));
+        assert_eq!(h.lines[1].content, "b");
+        assert!(matches!(h.lines[2].kind, DiffLineKind::Addition));
+        assert_eq!(h.lines[2].content, "B");
+        assert!(matches!(h.lines[3].kind, DiffLineKind::Context));
+        assert_eq!(h.lines[3].content, "c");
+    }
+
+    #[test]
+    fn parses_multiple_non_contiguous_hunks() {
+        // This is the bug we're fixing: a +10/-1 file with changes at the
+        // top and bottom should produce TWO hunks, not one giant
+        // delete-then-add block.
+        let patch = join_patch(&[
+            "diff --git a/foo b/foo",
+            "--- a/foo",
+            "+++ b/foo",
+            "@@ -1,3 +1,3 @@",
+            "-old line 1",
+            "+new line 1",
+            " unchanged 2",
+            " unchanged 3",
+            "@@ -50,2 +50,3 @@",
+            " ctx",
+            "+inserted",
+            " ctx",
+        ]);
+        let diff = parse_unified_diff(&patch);
+        assert_eq!(diff.hunks.len(), 2, "expected two separate hunks");
+        assert_eq!(diff.hunks[0].header, "@@ -1,3 +1,3 @@");
+        assert_eq!(diff.hunks[1].header, "@@ -50,2 +50,3 @@");
+
+        let total_dels = diff
+            .hunks
+            .iter()
+            .flat_map(|h| h.lines.iter())
+            .filter(|l| matches!(l.kind, DiffLineKind::Deletion))
+            .count();
+        let total_adds = diff
+            .hunks
+            .iter()
+            .flat_map(|h| h.lines.iter())
+            .filter(|l| matches!(l.kind, DiffLineKind::Addition))
+            .count();
+        assert_eq!(total_dels, 1);
+        assert_eq!(total_adds, 2);
+    }
+
+    #[test]
+    fn skips_no_newline_marker() {
+        let patch = join_patch(&[
+            "--- a/foo",
+            "+++ b/foo",
+            "@@ -1 +1 @@",
+            "-x",
+            "\\ No newline at end of file",
+            "+y",
+            "\\ No newline at end of file",
+        ]);
+        let diff = parse_unified_diff(&patch);
+        assert_eq!(diff.hunks.len(), 1);
+        assert_eq!(diff.hunks[0].lines.len(), 2);
+    }
+
+    #[test]
+    fn empty_output_yields_empty_diff() {
+        let diff = parse_unified_diff(b"");
+        assert!(diff.hunks.is_empty());
+    }
+
+    #[test]
+    fn binary_files_yield_empty_diff() {
+        // `git diff` emits "Binary files a/foo and b/foo differ" with no @@.
+        let patch = join_patch(&[
+            "diff --git a/foo b/foo",
+            "index 1111..2222 100644",
+            "Binary files a/foo and b/foo differ",
+        ]);
+        let diff = parse_unified_diff(&patch);
+        assert!(diff.hunks.is_empty());
+    }
+
+    #[test]
+    fn header_lines_before_first_hunk_are_ignored() {
+        // The leading `+++` / `---` lines must not be parsed as additions/deletions.
+        let patch = join_patch(&[
+            "diff --git a/foo b/foo",
+            "--- a/foo",
+            "+++ b/foo",
+            "@@ -1 +1 @@",
+            "-a",
+            "+b",
+        ]);
+        let diff = parse_unified_diff(&patch);
+        assert_eq!(diff.hunks.len(), 1);
+        let lines = &diff.hunks[0].lines;
+        assert_eq!(lines.len(), 2);
+        assert!(matches!(lines[0].kind, DiffLineKind::Deletion));
+        assert_eq!(lines[0].content, "a");
+        assert!(matches!(lines[1].kind, DiffLineKind::Addition));
+        assert_eq!(lines[1].content, "b");
+    }
 }

@@ -22,7 +22,7 @@ impl Default for Matcher {
 impl Matcher {
     pub fn new() -> Self {
         Self {
-            inner: nucleo_matcher::Matcher::new(Config::DEFAULT),
+            inner: nucleo_matcher::Matcher::new(Config::DEFAULT.match_paths()),
         }
     }
 
@@ -31,12 +31,13 @@ impl Matcher {
     /// original order. Items that do not match are omitted.
     ///
     /// `label` extracts the searchable string from each item.
-    pub fn rank<T>(
-        &mut self,
-        query: &str,
-        items: &[T],
-        label: impl Fn(&T) -> &str,
-    ) -> Vec<usize> {
+    ///
+    /// Note: a fresh `Pattern` is parsed on every call. The inner matcher's
+    /// scratch buffers are reused across calls (the whole reason `Matcher`
+    /// is held in state), but the per-keystroke `Pattern::parse` allocation
+    /// is unavoidable with the current API. If profiling ever shows this is
+    /// hot, cache the `(query, Pattern)` pair inside `Matcher`.
+    pub fn rank<T>(&mut self, query: &str, items: &[T], label: impl Fn(&T) -> &str) -> Vec<usize> {
         if query.is_empty() {
             return (0..items.len()).collect();
         }

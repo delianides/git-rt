@@ -64,9 +64,8 @@ pub fn parse_porcelain(input: &str) -> Result<Vec<WorktreeEntry>, WorktreeError>
 
         match key {
             "worktree" => {
-                let path = value.ok_or_else(|| {
-                    WorktreeError::Parse("`worktree` line missing path".into())
-                })?;
+                let path = value
+                    .ok_or_else(|| WorktreeError::Parse("`worktree` line missing path".into()))?;
                 current = Some(WorktreeEntry {
                     path: PathBuf::from(path),
                     head: String::new(),
@@ -78,21 +77,19 @@ pub fn parse_porcelain(input: &str) -> Result<Vec<WorktreeEntry>, WorktreeError>
                 });
             }
             "HEAD" => {
-                let entry = current.as_mut().ok_or_else(|| {
-                    WorktreeError::Parse("`HEAD` before `worktree`".into())
-                })?;
-                let sha = value.ok_or_else(|| {
-                    WorktreeError::Parse("`HEAD` line missing sha".into())
-                })?;
+                let entry = current
+                    .as_mut()
+                    .ok_or_else(|| WorktreeError::Parse("`HEAD` before `worktree`".into()))?;
+                let sha =
+                    value.ok_or_else(|| WorktreeError::Parse("`HEAD` line missing sha".into()))?;
                 entry.head = sha.to_string();
             }
             "branch" => {
-                let entry = current.as_mut().ok_or_else(|| {
-                    WorktreeError::Parse("`branch` before `worktree`".into())
-                })?;
-                let raw = value.ok_or_else(|| {
-                    WorktreeError::Parse("`branch` line missing ref".into())
-                })?;
+                let entry = current
+                    .as_mut()
+                    .ok_or_else(|| WorktreeError::Parse("`branch` before `worktree`".into()))?;
+                let raw = value
+                    .ok_or_else(|| WorktreeError::Parse("`branch` line missing ref".into()))?;
                 let name = raw.strip_prefix("refs/heads/").unwrap_or(raw).to_string();
                 entry.branch = Some(name);
             }
@@ -136,8 +133,12 @@ pub fn list(repo_root: &Path) -> Result<Vec<WorktreeEntry>, WorktreeError> {
         .output()?;
 
     if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr).into_owned();
-        return Err(WorktreeError::NonZero(stderr.trim().to_string()));
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        return Err(WorktreeError::NonZero(format!(
+            "exit {}: {}",
+            output.status,
+            stderr.trim()
+        )));
     }
 
     let stdout = String::from_utf8_lossy(&output.stdout);
@@ -225,10 +226,7 @@ branch refs/heads/feat-x
         let input =
             "worktree /a\nHEAD aaa\nbranch refs/heads/main\nprunable gitdir file missing\n\n";
         let entries = parse_porcelain(input).unwrap();
-        assert_eq!(
-            entries[0].prunable.as_deref(),
-            Some("gitdir file missing")
-        );
+        assert_eq!(entries[0].prunable.as_deref(), Some("gitdir file missing"));
     }
 
     #[test]

@@ -208,6 +208,7 @@ enum MainAction {
     OpenPr,
     Help,
     CycleMode,
+    OpenSwitcher,
     None,
 }
 
@@ -227,6 +228,7 @@ fn interpret_main_key(modifiers: KeyModifiers, code: KeyCode) -> MainAction {
         (_, KeyCode::Char('e')) => MainAction::Edit,
         (_, KeyCode::Char('p')) => MainAction::OpenPr,
         (_, KeyCode::Char('?')) => MainAction::Help,
+        (_, KeyCode::Char('s')) => MainAction::OpenSwitcher,
         _ => MainAction::None,
     }
 }
@@ -559,6 +561,35 @@ impl App {
             return Ok(false);
         }
 
+        // Switch dialog mode: intercept keys before normal handling.
+        if self.state.is_switch_dialog_visible() {
+            // Ctrl-C still quits.
+            if key.modifiers == KeyModifiers::CONTROL && key.code == KeyCode::Char('c') {
+                return Ok(true);
+            }
+            let outcome = self
+                .state
+                .switch_dialog_mut()
+                .and_then(|d| d.handle_key(key));
+            match outcome {
+                None => {}
+                Some(crate::ui::switch_dialog::DialogOutcome::Cancel) => {
+                    self.state.hide_switch_dialog();
+                }
+                Some(crate::ui::switch_dialog::DialogOutcome::Reject(msg)) => {
+                    self.state.set_flash_message(msg);
+                }
+                Some(crate::ui::switch_dialog::DialogOutcome::Switch(path)) => {
+                    self.state.hide_switch_dialog();
+                    if let Err(e) = self.switch_to_path(path) {
+                        tracing::warn!(error = %e, "switch_to_path failed");
+                        self.state.set_flash_message(format!("switch failed: {e}"));
+                    }
+                }
+            }
+            return Ok(false);
+        }
+
         match interpret_main_key(key.modifiers, key.code) {
             MainAction::Quit => return Ok(true),
             MainAction::MoveDown => self.state.select_next(),
@@ -573,6 +604,7 @@ impl App {
             MainAction::OpenPr => self.open_pr()?,
             MainAction::Help => self.state.show_help(),
             MainAction::CycleMode => self.state.cycle_view_mode(),
+            MainAction::OpenSwitcher => self.open_switch_dialog()?,
             MainAction::None => {}
         }
         Ok(false)
@@ -719,6 +751,30 @@ impl App {
         let url = info.url.clone();
         tracing::info!(%url, "Opening PR in browser");
         open_url(&url)
+    }
+
+    /// Open the switch-worktree dialog. Closes the diff overlay if visible
+    /// and flashes a message if `git worktree list` fails.
+    fn open_switch_dialog(&mut self) -> Result<()> {
+        if self.state.is_diff_overlay_visible() {
+            self.state.hide_diff_overlay();
+        }
+        let entries = match crate::git::worktree::list(&self.repo_path) {
+            Ok(es) => es,
+            Err(e) => {
+                tracing::warn!(error = %e, "git worktree list failed");
+                self.state
+                    .set_flash_message(format!("worktree list failed: {e}"));
+                return Ok(());
+            }
+        };
+        let current =
+            std::fs::canonicalize(&self.watch_path).unwrap_or_else(|_| self.watch_path.clone());
+        let primary = std::fs::canonicalize(&self.main_worktree_path)
+            .unwrap_or_else(|_| self.main_worktree_path.clone());
+        let dialog = crate::ui::switch_dialog::SwitchDialog::new(entries, &current, &primary);
+        self.state.show_switch_dialog(dialog);
+        Ok(())
     }
 
     fn switch_to_path(&mut self, path: PathBuf) -> Result<()> {
@@ -1169,6 +1225,10 @@ mod input_tests {
         assert_eq!(
             interpret_main_key(KeyModifiers::NONE, KeyCode::Esc),
             MainAction::None
+        );
+        assert_eq!(
+            interpret_main_key(KeyModifiers::NONE, KeyCode::Char('s')),
+            MainAction::OpenSwitcher
         );
     }
 

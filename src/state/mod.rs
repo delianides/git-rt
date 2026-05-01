@@ -2,6 +2,7 @@ use std::collections::{BTreeSet, HashMap};
 use std::time::{Duration, Instant};
 
 use crate::git::{FileDiff, FileEntry};
+use crate::ui::switch_dialog::SwitchDialog;
 use crate::ui::tree::{build_visible_rows, RowId, VisibleRow};
 
 /// State of the PR widget
@@ -179,6 +180,8 @@ pub struct AppState {
     /// so stale `Response::Diff` messages whose token doesn't match the
     /// current one get dropped by the app event loop.
     pending_diff_token: u64,
+    /// The switch-worktree dialog, when open.
+    switch_dialog: Option<SwitchDialog>,
 }
 
 impl AppState {
@@ -217,6 +220,7 @@ impl AppState {
             diff_scroll: 0,
             diff_overlay_visible: false,
             pending_diff_token: 0,
+            switch_dialog: None,
         }
     }
 
@@ -422,6 +426,33 @@ impl AppState {
         self.diff_scroll = 0;
     }
 
+    // -- Switch dialog --
+
+    /// True when the switch-worktree dialog is open.
+    pub fn is_switch_dialog_visible(&self) -> bool {
+        self.switch_dialog.is_some()
+    }
+
+    /// Open the switch dialog with the given dialog state.
+    pub fn show_switch_dialog(&mut self, dialog: SwitchDialog) {
+        self.switch_dialog = Some(dialog);
+    }
+
+    /// Close the switch dialog.
+    pub fn hide_switch_dialog(&mut self) {
+        self.switch_dialog = None;
+    }
+
+    /// Borrow the dialog mutably (for key handling).
+    pub fn switch_dialog_mut(&mut self) -> Option<&mut SwitchDialog> {
+        self.switch_dialog.as_mut()
+    }
+
+    /// Borrow the dialog immutably (for rendering).
+    pub fn switch_dialog(&self) -> Option<&SwitchDialog> {
+        self.switch_dialog.as_ref()
+    }
+
     /// Currently expanded diff, if any.
     pub fn expanded_diff(&self) -> Option<&FileDiff> {
         self.current_diff.as_ref().map(|diff| &diff.diff)
@@ -619,6 +650,7 @@ impl AppState {
         self.current_diff = None;
         self.diff_overlay_visible = false;
         self.diff_scroll = 0;
+        self.switch_dialog = None;
         self.pending_diff_token = self.pending_diff_token.wrapping_add(1);
     }
 
@@ -1466,6 +1498,35 @@ mod tests {
         assert_eq!(state.expanded_diff_path(), Some("src/ui/mod.rs"));
         assert_eq!(state.expanded_diff_stats(), Some((7, 3)));
         assert_eq!(state.diff_scroll(), 0);
+    }
+
+    #[test]
+    fn test_switch_dialog_visibility_roundtrip() {
+        use crate::git::worktree::WorktreeEntry;
+        use crate::ui::switch_dialog::SwitchDialog;
+        use std::path::{Path, PathBuf};
+
+        let mut s = AppState::new(Vec::new(), Duration::from_millis(100), "main".to_string());
+        assert!(!s.is_switch_dialog_visible());
+
+        let entries = vec![WorktreeEntry {
+            path: PathBuf::from("/a"),
+            head: "0000000000000000000000000000000000000000".to_string(),
+            branch: Some("main".to_string()),
+            bare: false,
+            detached: false,
+            locked: None,
+            prunable: None,
+        }];
+        let dialog = SwitchDialog::new(entries, Path::new("/a"), Path::new("/"));
+        s.show_switch_dialog(dialog);
+        assert!(s.is_switch_dialog_visible());
+        assert!(s.switch_dialog().is_some());
+        assert!(s.switch_dialog_mut().is_some());
+
+        s.hide_switch_dialog();
+        assert!(!s.is_switch_dialog_visible());
+        assert!(s.switch_dialog().is_none());
     }
 
     #[test]

@@ -11,6 +11,7 @@ pub mod fit;
 pub mod header;
 pub mod help_overlay;
 pub mod pr_line;
+pub mod switch_dialog;
 pub mod tree;
 
 use anyhow::Result;

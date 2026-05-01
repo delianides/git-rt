@@ -5,7 +5,8 @@
 //! distinct from `src/watcher/worktree.rs`, which tracks `.git/worktrees/`
 //! activity for auto-follow.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
+use std::process::Command;
 
 use thiserror::Error;
 
@@ -124,6 +125,23 @@ pub fn parse_porcelain(input: &str) -> Result<Vec<WorktreeEntry>, WorktreeError>
     }
 
     Ok(out)
+}
+
+/// Run `git worktree list --porcelain` in `repo_root` and parse the output.
+pub fn list(repo_root: &Path) -> Result<Vec<WorktreeEntry>, WorktreeError> {
+    let output = Command::new("git")
+        .arg("-C")
+        .arg(repo_root)
+        .args(["worktree", "list", "--porcelain"])
+        .output()?;
+
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr).into_owned();
+        return Err(WorktreeError::NonZero(stderr.trim().to_string()));
+    }
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    parse_porcelain(&stdout)
 }
 
 #[cfg(test)]

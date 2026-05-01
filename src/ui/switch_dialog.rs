@@ -5,7 +5,7 @@
 
 use std::path::{Path, PathBuf};
 
-use crossterm::event::{KeyCode, KeyEvent};
+use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
 use crate::fuzzy::Matcher;
 use crate::git::worktree::WorktreeEntry;
@@ -136,7 +136,9 @@ impl SwitchDialog {
                 }
                 Some(DialogOutcome::Switch(row.entry.path.clone()))
             }
-            KeyCode::Char(c) => {
+            KeyCode::Char(c)
+                if key.modifiers.is_empty() || key.modifiers == KeyModifiers::SHIFT =>
+            {
                 self.filter.push(c);
                 self.recompute_filter();
                 None
@@ -510,5 +512,18 @@ mod tests {
             label.contains("/some/other/place/wt"),
             "non-descendant label should remain absolute, got {label:?}"
         );
+    }
+
+    #[test]
+    fn ctrl_modifier_char_does_not_corrupt_filter() {
+        let entries = vec![entry("/a", Some("main"), false)];
+        let mut d = SwitchDialog::new(entries, Path::new("/a"), Path::new("/"));
+        // Pressing Ctrl-c (or any modifier-chord character) must NOT append
+        // to the filter. The App-level intercept handles Ctrl-c as quit;
+        // the dialog itself defends against future reorderings.
+        let key = KeyEvent::new(KeyCode::Char('c'), KeyModifiers::CONTROL);
+        let outcome = d.handle_key(key);
+        assert!(outcome.is_none());
+        assert_eq!(d.filter(), "");
     }
 }

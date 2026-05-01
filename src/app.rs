@@ -1361,4 +1361,75 @@ mod input_tests {
         assert!(app.state.is_help_visible());
         assert_eq!(app.state.view_mode(), crate::state::ViewMode::Flat);
     }
+
+    fn make_dialog() -> crate::ui::switch_dialog::SwitchDialog {
+        use crate::git::worktree::WorktreeEntry;
+        use std::path::PathBuf;
+        let entries = vec![
+            WorktreeEntry {
+                path: PathBuf::from("/a"),
+                head: "0000000000000000000000000000000000000000".to_string(),
+                branch: Some("main".to_string()),
+                bare: false,
+                detached: false,
+                locked: None,
+                prunable: None,
+            },
+            WorktreeEntry {
+                path: PathBuf::from("/b"),
+                head: "0000000000000000000000000000000000000000".to_string(),
+                branch: Some("feat".to_string()),
+                bare: false,
+                detached: false,
+                locked: None,
+                prunable: None,
+            },
+        ];
+        crate::ui::switch_dialog::SwitchDialog::new(
+            entries,
+            std::path::Path::new("/a"),
+            std::path::Path::new("/"),
+        )
+    }
+
+    #[test]
+    fn test_s_while_help_visible_does_not_open_switch_dialog() {
+        let mut app = make_app(vec![make_entry("src/ui/mod.rs")]);
+        app.state.show_help();
+
+        let should_quit = app
+            .handle_key_event(KeyEvent::new(KeyCode::Char('s'), KeyModifiers::NONE), None)
+            .unwrap();
+
+        assert!(!should_quit);
+        assert!(app.state.is_help_visible());
+        assert!(!app.state.is_switch_dialog_visible());
+    }
+
+    #[test]
+    fn test_esc_in_switch_dialog_hides_it() {
+        let mut app = make_app(vec![make_entry("src/ui/mod.rs")]);
+        app.state.show_switch_dialog(make_dialog());
+        assert!(app.state.is_switch_dialog_visible());
+
+        let should_quit = app
+            .handle_key_event(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE), None)
+            .unwrap();
+
+        assert!(!should_quit);
+        assert!(!app.state.is_switch_dialog_visible());
+    }
+
+    #[test]
+    fn test_unknown_key_in_switch_dialog_keeps_it_open() {
+        let mut app = make_app(vec![make_entry("src/ui/mod.rs")]);
+        app.state.show_switch_dialog(make_dialog());
+
+        let should_quit = app
+            .handle_key_event(KeyEvent::new(KeyCode::F(5), KeyModifiers::NONE), None)
+            .unwrap();
+
+        assert!(!should_quit);
+        assert!(app.state.is_switch_dialog_visible());
+    }
 }

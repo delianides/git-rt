@@ -1,8 +1,8 @@
 //! Modal dialog for switching which worktree git-rt is watching.
 //!
-//! State and key-handling live here. Rendering is in `render()` below
-//! (added in Task 6). Unit tests cover the headless core; rendering is
-//! validated manually.
+//! State and key-handling live here. A `render()` function will be added
+//! alongside this state once the renderer task lands. Unit tests cover the
+//! headless core; rendering is validated manually.
 
 use std::path::{Path, PathBuf};
 
@@ -33,6 +33,11 @@ pub enum DialogOutcome {
     Reject(String),
 }
 
+/// Modal dialog state for switching the watched worktree.
+///
+/// Tracks the rows to display, the current filter, the selection, the
+/// filter-output index list, and the fuzzy matcher. Use [`SwitchDialog::new`]
+/// to construct and [`SwitchDialog::handle_key`] to drive it.
 pub struct SwitchDialog {
     rows: Vec<Row>,
     filter: String,
@@ -74,15 +79,22 @@ impl SwitchDialog {
         }
     }
 
+    /// All rows, in dialog-display order (current first, then porcelain order).
     pub fn rows(&self) -> &[Row] {
         &self.rows
     }
+    /// Current fuzzy-filter input.
     pub fn filter(&self) -> &str {
         &self.filter
     }
+    /// Index into [`Self::filtered_indices`] for the currently highlighted row.
+    /// When the filtered list is empty, this is `0` and the renderer should
+    /// check [`Self::filtered_indices`] before drawing a selection cursor.
     pub fn selected(&self) -> usize {
         self.selected
     }
+    /// Indices into [`Self::rows`] that match the current filter, sorted by
+    /// descending fuzzy-match score (or original order when the filter is empty).
     pub fn filtered_indices(&self) -> &[usize] {
         &self.filtered_indices
     }
@@ -233,8 +245,11 @@ mod tests {
         ];
         let mut d = SwitchDialog::new(entries, Path::new("/a"));
         let _ = d.handle_key(key('j'));
-        // Filter contains 'j', selected stays at 0 (the j-only-match in filtered).
+        // Neither row's label contains 'j', so the filter narrows to zero matches.
+        // The 'j' key cannot navigate even when the filtered list is empty.
         assert_eq!(d.filter(), "j");
+        assert!(d.filtered_indices().is_empty());
+        assert_eq!(d.selected(), 0);
     }
 
     #[test]

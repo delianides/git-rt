@@ -56,7 +56,7 @@ impl Matcher {
             .collect();
 
         // Highest score first. Ties keep input order via stable sort.
-        scored.sort_by(|a, b| b.1.cmp(&a.1));
+        scored.sort_by_key(|&(_, score)| std::cmp::Reverse(score));
         scored.into_iter().map(|(i, _)| i).collect()
     }
 }

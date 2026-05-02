@@ -59,6 +59,7 @@ pub fn build_help_lines(theme: &Theme) -> Vec<Line<'static>> {
             &[
                 ("m", "Cycle view mode"),
                 ("r", "Refresh"),
+                ("s", "Switch worktree"),
                 ("e", "Edit selected file"),
                 ("p", "Open PR in browser"),
                 ("?", "Toggle this help"),
@@ -148,6 +149,7 @@ mod tests {
         assert!(text.contains("Enter"), "missing Enter key");
         assert!(text.contains("Space"), "missing Space key");
         assert!(text.contains("d "), "missing d key");
+        assert!(text.contains("s "), "missing s key");
         assert!(text.contains("?"), "missing ? key");
         assert!(text.contains("Ctrl+C"), "missing Ctrl+C");
     }

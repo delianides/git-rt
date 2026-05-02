@@ -127,6 +127,7 @@ pub enum DiffLineKind {
 
 pub mod cli;
 pub mod worker;
+pub mod worktree;
 
 /// Status of a file relative to the git index/HEAD
 #[derive(Debug, Clone, PartialEq, Eq)]

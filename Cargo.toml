@@ -45,6 +45,9 @@ thiserror = "2"
 # Unicode display-width math for narrow-terminal adaptive rendering
 unicode-width = "0.2"
 
+# Fuzzy matching for the switch dialog and future filter UIs
+nucleo-matcher = "0.3"
+
 # HTTP client for GitHub API
 ureq = { version = "3", features = ["json"] }
 

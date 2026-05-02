@@ -11,6 +11,7 @@ pub mod fit;
 pub mod header;
 pub mod help_overlay;
 pub mod pr_line;
+pub mod switch_dialog;
 pub mod tree;
 
 use anyhow::Result;
@@ -146,7 +147,12 @@ fn render(frame: &mut Frame, state: &mut AppState, config: &AppConfig, theme: &T
         }
     }
 
-    // 4. Help overlay.
+    // 4. Switch dialog (above diff, below help).
+    if let Some(dialog) = state.switch_dialog() {
+        switch_dialog::render(frame, dialog, theme);
+    }
+
+    // 5. Help overlay.
     if state.is_help_visible() {
         help_overlay::render_help_overlay(frame, theme);
     }

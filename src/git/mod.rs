@@ -442,36 +442,107 @@ impl GitRepo {
         Some(id.detach())
     }
 
-    /// Compute the merge base between HEAD and the given base ref.
+    /// Compute the merge base between HEAD and the given base branch.
     ///
-    /// Returns `None` if the ref can't be resolved, if HEAD equals the merge base
-    /// (i.e., the current branch is fully behind the base), or if HEAD is detached
-    /// and equals the base commit.
+    /// For short names (no `/`), enumerates all plausible tips
+    /// (`refs/heads/<name>` plus `refs/remotes/<remote>/<name>` for every
+    /// configured remote) and returns the merge-base whose topological
+    /// distance to HEAD is smallest. This keeps the branch view minimal
+    /// even when local `<base>` is stale relative to `origin/<base>` (or
+    /// vice versa) — the common case after `git fetch && git rebase
+    /// origin/<base>`.
+    ///
+    /// For names containing `/` (e.g. `origin/release/x`, `feature/foo`),
+    /// the name is treated as an exact ref and resolved with the
+    /// single-tip path — the user's explicit intent wins.
+    ///
+    /// Returns `None` when:
+    /// - The base name resolves to no tips,
+    /// - The base equals the current branch (degenerate self-diff),
+    /// - HEAD equals every candidate tip (fully behind every base),
+    /// - No merge-base can be computed for any candidate.
     pub fn merge_base(&self, base_ref: &str) -> Result<Option<gix::ObjectId>, GitFailure> {
-        let base_id = self.resolve_ref_to_commit(base_ref);
-        let base_id = match base_id {
-            Some(id) => id,
-            None => return Ok(None),
-        };
-
-        let head_commit = match self.repo.head_commit() {
-            Ok(c) => c,
-            Err(e) => return Err(GitFailure::EnvChange(format!("merge_base head: {e}"))),
-        };
+        let head_commit = self
+            .repo
+            .head_commit()
+            .map_err(|e| GitFailure::EnvChange(format!("merge_base head: {e}")))?;
         let head_id = head_commit.id().detach();
 
-        if head_id == base_id {
-            return Ok(None);
+        // Self-as-base is degenerate (preserves existing semantics for
+        // `merge_base(current_branch_name)` → `None`).
+        if let Ok(name) = self.branch_name() {
+            if name == base_ref {
+                return Ok(None);
+            }
         }
 
-        let base = self
-            .find_merge_base(head_id, base_id)
-            .map_err(|e| GitFailure::EnvChange(format!("merge_base walk: {e}")))?;
+        // Names with `/` are exact refs — preserve explicit user intent.
+        let tips: Vec<gix::ObjectId> = if base_ref.contains('/') {
+            match self.resolve_ref_to_commit(base_ref) {
+                Some(id) => vec![id],
+                None => return Ok(None),
+            }
+        } else {
+            let collected = self.collect_base_tips(base_ref);
+            if collected.is_empty() {
+                return Ok(None);
+            }
+            collected
+        };
 
-        match base {
-            Some(mb) if mb == head_id => Ok(None),
-            other => Ok(other),
+        // Build a topological index over HEAD's ancestry once. Smaller
+        // index = closer to HEAD tip = smaller "what's on my branch" diff.
+        let head_walk_index: std::collections::HashMap<gix::ObjectId, usize> = {
+            let mut map = std::collections::HashMap::new();
+            if let Ok(walk) = self.repo.rev_walk([head_id]).all() {
+                for (idx, info) in walk.flatten().enumerate() {
+                    map.insert(info.id, idx);
+                }
+            }
+            map
+        };
+
+        // For each tip, compute merge-base; track the merge-base with the
+        // smallest topological distance to HEAD.
+        let mut best: Option<(usize, gix::ObjectId)> = None;
+        for tip in &tips {
+            // Skip tips that equal HEAD — they yield a degenerate merge-base
+            // (HEAD itself) which is uninformative for branch view.
+            if *tip == head_id {
+                continue;
+            }
+            let mb = match self.find_merge_base(head_id, *tip) {
+                Ok(Some(id)) => id,
+                Ok(None) => continue,
+                Err(e) => {
+                    tracing::debug!(
+                        target: "git_rt::git::base_resolve",
+                        tip = %tip.to_hex(),
+                        error = %e,
+                        "merge-base walk failed for tip; skipping"
+                    );
+                    continue;
+                }
+            };
+            if mb == head_id {
+                continue;
+            }
+            let dist = head_walk_index.get(&mb).copied().unwrap_or(usize::MAX);
+            match best {
+                Some((d, _)) if d <= dist => {}
+                _ => best = Some((dist, mb)),
+            }
         }
+
+        let result = best.map(|(_, mb)| mb);
+        tracing::debug!(
+            target: "git_rt::git::base_resolve",
+            name = base_ref,
+            tip_count = tips.len(),
+            chosen_mb = ?result.map(|id| id.to_hex().to_string()),
+            "resolved merge-base"
+        );
+        Ok(result)
     }
 
     /// Try to resolve a ref name to a commit ObjectId.
@@ -498,6 +569,39 @@ impl GitRepo {
         }
 
         None
+    }
+
+    /// Enumerate all plausible commit tips for a short branch name.
+    ///
+    /// For `<name>`, returns the tips of `refs/heads/<name>` and
+    /// `refs/remotes/<remote>/<name>` for every configured remote.
+    /// Order: local first, then remotes in `remote_names()` order.
+    /// Duplicates are deduplicated. Non-commit refs are skipped.
+    fn collect_base_tips(&self, name: &str) -> Vec<gix::ObjectId> {
+        let mut tips: Vec<gix::ObjectId> = Vec::new();
+
+        let try_ref = |full_ref: &str, out: &mut Vec<gix::ObjectId>| {
+            let Ok(reference) = self.repo.find_reference(full_ref) else {
+                return;
+            };
+            let id = reference.id().detach();
+            let Ok(obj) = self.repo.find_object(id) else {
+                return;
+            };
+            if obj.kind == gix::object::Kind::Commit && !out.contains(&id) {
+                out.push(id);
+            }
+        };
+
+        try_ref(&format!("refs/heads/{name}"), &mut tips);
+        for remote in self.repo.remote_names() {
+            try_ref(
+                &format!("refs/remotes/{}/{name}", remote.as_ref()),
+                &mut tips,
+            );
+        }
+
+        tips
     }
 
     /// Find the merge base (most recent common ancestor) of two commits.

@@ -1466,6 +1466,51 @@ mod tests {
     }
 
     #[test]
+    fn merge_base_exact_ref_with_slash_skips_enumeration() {
+        // Setup: main with one commit, origin/release/x at that commit, then
+        // feature with one extra commit. Calling merge_base("origin/release/x")
+        // must resolve to the planted ref directly and produce the planted commit
+        // as the merge-base.
+        let tmp = tempfile::tempdir().unwrap();
+        let repo_path = tmp.path().join("repo");
+        init_repo_for_discover(&repo_path);
+
+        std::fs::write(repo_path.join("a.txt"), "a").unwrap();
+        git(&repo_path, &["add", "a.txt"]);
+        git(&repo_path, &["commit", "-q", "-m", "C1"]);
+        let c1 = String::from_utf8(
+            std::process::Command::new("git")
+                .args(["rev-parse", "HEAD"])
+                .current_dir(&repo_path)
+                .output()
+                .unwrap()
+                .stdout,
+        )
+        .unwrap()
+        .trim()
+        .to_string();
+
+        git(
+            &repo_path,
+            &["update-ref", "refs/remotes/origin/release/x", &c1],
+        );
+        git(&repo_path, &["remote", "add", "origin", "."]);
+
+        git(&repo_path, &["checkout", "-q", "-b", "feature", &c1]);
+        std::fs::write(repo_path.join("f.txt"), "f").unwrap();
+        git(&repo_path, &["add", "f.txt"]);
+        git(&repo_path, &["commit", "-q", "-m", "F1"]);
+
+        let repo = GitRepo::new(&repo_path).unwrap();
+        let mb = repo.merge_base("origin/release/x").unwrap().unwrap();
+        assert_eq!(
+            mb.to_hex().to_string(),
+            c1,
+            "merge-base for exact slash-name must equal the planted commit",
+        );
+    }
+
+    #[test]
     fn test_new_returns_not_a_repo_for_invalid_path() {
         let temp = std::env::temp_dir().join("git-rt-test-not-a-repo-task2");
         std::fs::create_dir_all(&temp).unwrap();

@@ -504,7 +504,7 @@ impl GitRepo {
 
         // For each tip, compute merge-base; track the merge-base with the
         // smallest topological distance to HEAD.
-        let mut best: Option<(usize, gix::ObjectId)> = None;
+        let mut best: Option<(usize, gix::ObjectId, gix::ObjectId)> = None; // (distance, mb, tip)
         for tip in &tips {
             // Skip tips that equal HEAD — they yield a degenerate merge-base
             // (HEAD itself) which is uninformative for branch view.
@@ -529,17 +529,20 @@ impl GitRepo {
             }
             let dist = head_walk_index.get(&mb).copied().unwrap_or(usize::MAX);
             match best {
-                Some((d, _)) if d <= dist => {}
-                _ => best = Some((dist, mb)),
+                Some((d, _, _)) if d <= dist => {}
+                _ => best = Some((dist, mb, *tip)),
             }
         }
 
-        let result = best.map(|(_, mb)| mb);
+        let chosen = best;
+        let result = chosen.map(|(_, mb, _)| mb);
         tracing::debug!(
             target: "git_rt::git::base_resolve",
             name = base_ref,
             tip_count = tips.len(),
-            chosen_mb = ?result.map(|id| id.to_hex().to_string()),
+            chosen_tip = ?chosen.map(|(_, _, tip)| tip.to_hex().to_string()),
+            chosen_mb = ?chosen.map(|(_, mb, _)| mb.to_hex().to_string()),
+            topo_distance = ?chosen.map(|(d, _, _)| d),
             "resolved merge-base"
         );
         Ok(result)
@@ -1306,6 +1309,32 @@ mod tests {
             mb.to_hex().to_string(),
             c3,
             "merge-base must be C3 (origin/main), not C1 (stale local main)",
+        );
+    }
+
+    #[test]
+    fn merge_base_skips_tip_equal_to_head() {
+        // User is on `feature`, just branched from `main` with no new commits.
+        // `collect_base_tips("main")` returns [local_main_tip] (== HEAD).
+        // The loop must skip that tip; with no other tips, result is None.
+        let tmp = tempfile::tempdir().unwrap();
+        let repo_path = tmp.path().join("repo");
+        init_repo_for_discover(&repo_path);
+
+        // Single commit on main; that's where feature will branch from.
+        std::fs::write(repo_path.join("a.txt"), "a").unwrap();
+        git(&repo_path, &["add", "a.txt"]);
+        git(&repo_path, &["commit", "-q", "-m", "C1"]);
+
+        // Branch feature off main with no extra commits — HEAD == main's tip.
+        git(&repo_path, &["checkout", "-q", "-b", "feature"]);
+
+        let repo = GitRepo::new(&repo_path).unwrap();
+        let result = repo.merge_base("main").unwrap();
+        assert!(
+            result.is_none(),
+            "merge_base must be None when the only candidate tip equals HEAD; got {:?}",
+            result.map(|id| id.to_hex().to_string())
         );
     }
 

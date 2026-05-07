@@ -1339,6 +1339,67 @@ mod tests {
     }
 
     #[test]
+    fn merge_base_picks_local_when_remote_stale() {
+        // Local main is current (at C3); origin/main is stale (at C1).
+        // Feature is off C3. The closest merge-base must be C3, not C1.
+        let tmp = tempfile::tempdir().unwrap();
+        let repo_path = tmp.path().join("repo");
+        init_repo_for_discover(&repo_path);
+
+        std::fs::write(repo_path.join("a.txt"), "a").unwrap();
+        git(&repo_path, &["add", "a.txt"]);
+        git(&repo_path, &["commit", "-q", "-m", "C1"]);
+        let c1 = String::from_utf8(
+            std::process::Command::new("git")
+                .args(["rev-parse", "HEAD"])
+                .current_dir(&repo_path)
+                .output()
+                .unwrap()
+                .stdout,
+        )
+        .unwrap()
+        .trim()
+        .to_string();
+
+        std::fs::write(repo_path.join("b.txt"), "b").unwrap();
+        git(&repo_path, &["add", "b.txt"]);
+        git(&repo_path, &["commit", "-q", "-m", "C2"]);
+
+        std::fs::write(repo_path.join("c.txt"), "c").unwrap();
+        git(&repo_path, &["add", "c.txt"]);
+        git(&repo_path, &["commit", "-q", "-m", "C3"]);
+        let c3 = String::from_utf8(
+            std::process::Command::new("git")
+                .args(["rev-parse", "HEAD"])
+                .current_dir(&repo_path)
+                .output()
+                .unwrap()
+                .stdout,
+        )
+        .unwrap()
+        .trim()
+        .to_string();
+
+        // Plant origin/main at C1 (stale remote).
+        git(&repo_path, &["update-ref", "refs/remotes/origin/main", &c1]);
+        git(&repo_path, &["remote", "add", "origin", "."]);
+
+        // Feature off C3.
+        git(&repo_path, &["checkout", "-q", "-b", "feature", &c3]);
+        std::fs::write(repo_path.join("f.txt"), "f").unwrap();
+        git(&repo_path, &["add", "f.txt"]);
+        git(&repo_path, &["commit", "-q", "-m", "F1"]);
+
+        let repo = GitRepo::new(&repo_path).unwrap();
+        let mb = repo.merge_base("main").unwrap().unwrap();
+        assert_eq!(
+            mb.to_hex().to_string(),
+            c3,
+            "merge-base must be C3 (local main, current), not C1 (stale origin/main)",
+        );
+    }
+
+    #[test]
     fn test_new_returns_not_a_repo_for_invalid_path() {
         let temp = std::env::temp_dir().join("git-rt-test-not-a-repo-task2");
         std::fs::create_dir_all(&temp).unwrap();

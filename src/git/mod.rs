@@ -1400,6 +1400,72 @@ mod tests {
     }
 
     #[test]
+    fn merge_base_handles_divergence() {
+        // C1 is the common ancestor.
+        // Local main: C1 → L (diverged left).
+        // origin/main: C1 → R (diverged right).
+        // Feature is off R with one commit. The merge-base of HEAD with R
+        // (which equals R) is closer to HEAD than the merge-base of HEAD with
+        // L (which is C1).
+        let tmp = tempfile::tempdir().unwrap();
+        let repo_path = tmp.path().join("repo");
+        init_repo_for_discover(&repo_path);
+
+        std::fs::write(repo_path.join("a.txt"), "a").unwrap();
+        git(&repo_path, &["add", "a.txt"]);
+        git(&repo_path, &["commit", "-q", "-m", "C1"]);
+        let c1 = String::from_utf8(
+            std::process::Command::new("git")
+                .args(["rev-parse", "HEAD"])
+                .current_dir(&repo_path)
+                .output()
+                .unwrap()
+                .stdout,
+        )
+        .unwrap()
+        .trim()
+        .to_string();
+
+        // Local main advances to L.
+        std::fs::write(repo_path.join("l.txt"), "l").unwrap();
+        git(&repo_path, &["add", "l.txt"]);
+        git(&repo_path, &["commit", "-q", "-m", "L"]);
+
+        // Build R off C1 and plant it as origin/main.
+        git(&repo_path, &["checkout", "-q", "-b", "tmp-r", &c1]);
+        std::fs::write(repo_path.join("r.txt"), "r").unwrap();
+        git(&repo_path, &["add", "r.txt"]);
+        git(&repo_path, &["commit", "-q", "-m", "R"]);
+        let r = String::from_utf8(
+            std::process::Command::new("git")
+                .args(["rev-parse", "HEAD"])
+                .current_dir(&repo_path)
+                .output()
+                .unwrap()
+                .stdout,
+        )
+        .unwrap()
+        .trim()
+        .to_string();
+        git(&repo_path, &["update-ref", "refs/remotes/origin/main", &r]);
+        git(&repo_path, &["remote", "add", "origin", "."]);
+
+        // Feature off R with one commit.
+        git(&repo_path, &["checkout", "-q", "-b", "feature", &r]);
+        std::fs::write(repo_path.join("f.txt"), "f").unwrap();
+        git(&repo_path, &["add", "f.txt"]);
+        git(&repo_path, &["commit", "-q", "-m", "F1"]);
+
+        let repo = GitRepo::new(&repo_path).unwrap();
+        let mb = repo.merge_base("main").unwrap().unwrap();
+        assert_eq!(
+            mb.to_hex().to_string(),
+            r,
+            "merge-base must be R (closer to HEAD), not C1 (local main's mb)",
+        );
+    }
+
+    #[test]
     fn test_new_returns_not_a_repo_for_invalid_path() {
         let temp = std::env::temp_dir().join("git-rt-test-not-a-repo-task2");
         std::fs::create_dir_all(&temp).unwrap();

@@ -442,36 +442,110 @@ impl GitRepo {
         Some(id.detach())
     }
 
-    /// Compute the merge base between HEAD and the given base ref.
+    /// Compute the merge base between HEAD and the given base branch.
     ///
-    /// Returns `None` if the ref can't be resolved, if HEAD equals the merge base
-    /// (i.e., the current branch is fully behind the base), or if HEAD is detached
-    /// and equals the base commit.
+    /// For short names (no `/`), enumerates all plausible tips
+    /// (`refs/heads/<name>` plus `refs/remotes/<remote>/<name>` for every
+    /// configured remote) and returns the merge-base whose topological
+    /// distance to HEAD is smallest. This keeps the branch view minimal
+    /// even when local `<base>` is stale relative to `origin/<base>` (or
+    /// vice versa) — the common case after `git fetch && git rebase
+    /// origin/<base>`.
+    ///
+    /// For names containing `/` (e.g. `origin/release/x`, `feature/foo`),
+    /// the name is treated as an exact ref and resolved with the
+    /// single-tip path — the user's explicit intent wins.
+    ///
+    /// Returns `None` when:
+    /// - The base name resolves to no tips,
+    /// - The base equals the current branch (degenerate self-diff),
+    /// - HEAD equals every candidate tip (fully behind every base),
+    /// - No merge-base can be computed for any candidate.
     pub fn merge_base(&self, base_ref: &str) -> Result<Option<gix::ObjectId>, GitFailure> {
-        let base_id = self.resolve_ref_to_commit(base_ref);
-        let base_id = match base_id {
-            Some(id) => id,
-            None => return Ok(None),
-        };
-
-        let head_commit = match self.repo.head_commit() {
-            Ok(c) => c,
-            Err(e) => return Err(GitFailure::EnvChange(format!("merge_base head: {e}"))),
-        };
+        let head_commit = self
+            .repo
+            .head_commit()
+            .map_err(|e| GitFailure::EnvChange(format!("merge_base head: {e}")))?;
         let head_id = head_commit.id().detach();
 
-        if head_id == base_id {
-            return Ok(None);
+        // Self-as-base is degenerate (preserves existing semantics for
+        // `merge_base(current_branch_name)` → `None`).
+        if let Ok(name) = self.branch_name() {
+            if name == base_ref {
+                return Ok(None);
+            }
         }
 
-        let base = self
-            .find_merge_base(head_id, base_id)
-            .map_err(|e| GitFailure::EnvChange(format!("merge_base walk: {e}")))?;
+        // Names with `/` are exact refs — preserve explicit user intent.
+        let tips: Vec<gix::ObjectId> = if base_ref.contains('/') {
+            match self.resolve_ref_to_commit(base_ref) {
+                Some(id) => vec![id],
+                None => return Ok(None),
+            }
+        } else {
+            let collected = self.collect_base_tips(base_ref);
+            if collected.is_empty() {
+                return Ok(None);
+            }
+            collected
+        };
 
-        match base {
-            Some(mb) if mb == head_id => Ok(None),
-            other => Ok(other),
+        // Build a topological index over HEAD's ancestry once. Smaller
+        // index = closer to HEAD tip = smaller "what's on my branch" diff.
+        let head_walk_index: std::collections::HashMap<gix::ObjectId, usize> = {
+            let mut map = std::collections::HashMap::new();
+            if let Ok(walk) = self.repo.rev_walk([head_id]).all() {
+                for (idx, info) in walk.flatten().enumerate() {
+                    map.insert(info.id, idx);
+                }
+            }
+            map
+        };
+
+        // For each tip, compute merge-base; track the merge-base with the
+        // smallest topological distance to HEAD.
+        let mut best: Option<(usize, gix::ObjectId, gix::ObjectId)> = None; // (distance, mb, tip)
+        for tip in &tips {
+            // Skip tips that equal HEAD — they yield a degenerate merge-base
+            // (HEAD itself) which is uninformative for branch view.
+            if *tip == head_id {
+                continue;
+            }
+            let mb = match self.find_merge_base(head_id, *tip) {
+                Ok(Some(id)) => id,
+                Ok(None) => continue,
+                Err(e) => {
+                    tracing::debug!(
+                        target: "git_rt::git::base_resolve",
+                        tip = %tip.to_hex(),
+                        error = %e,
+                        "merge-base walk failed for tip; skipping"
+                    );
+                    continue;
+                }
+            };
+            if mb == head_id {
+                continue;
+            }
+            let dist = head_walk_index.get(&mb).copied().unwrap_or(usize::MAX);
+            match best {
+                Some((d, _, _)) if d <= dist => {}
+                _ => best = Some((dist, mb, *tip)),
+            }
         }
+
+        let chosen = best;
+        let result = chosen.map(|(_, mb, _)| mb);
+        tracing::debug!(
+            target: "git_rt::git::base_resolve",
+            name = base_ref,
+            tip_count = tips.len(),
+            chosen_tip = ?chosen.map(|(_, _, tip)| tip.to_hex().to_string()),
+            chosen_mb = ?chosen.map(|(_, mb, _)| mb.to_hex().to_string()),
+            topo_distance = ?chosen.map(|(d, _, _)| d),
+            "resolved merge-base"
+        );
+        Ok(result)
     }
 
     /// Try to resolve a ref name to a commit ObjectId.
@@ -498,6 +572,39 @@ impl GitRepo {
         }
 
         None
+    }
+
+    /// Enumerate all plausible commit tips for a short branch name.
+    ///
+    /// For `<name>`, returns the tips of `refs/heads/<name>` and
+    /// `refs/remotes/<remote>/<name>` for every configured remote.
+    /// Order: local first, then remotes in `remote_names()` order.
+    /// Duplicates are deduplicated. Non-commit refs are skipped.
+    fn collect_base_tips(&self, name: &str) -> Vec<gix::ObjectId> {
+        let mut tips: Vec<gix::ObjectId> = Vec::new();
+
+        let try_ref = |full_ref: &str, out: &mut Vec<gix::ObjectId>| {
+            let Ok(reference) = self.repo.find_reference(full_ref) else {
+                return;
+            };
+            let id = reference.id().detach();
+            let Ok(obj) = self.repo.find_object(id) else {
+                return;
+            };
+            if obj.kind == gix::object::Kind::Commit && !out.contains(&id) {
+                out.push(id);
+            }
+        };
+
+        try_ref(&format!("refs/heads/{name}"), &mut tips);
+        for remote in self.repo.remote_names() {
+            try_ref(
+                &format!("refs/remotes/{}/{name}", remote.as_ref()),
+                &mut tips,
+            );
+        }
+
+        tips
     }
 
     /// Find the merge base (most recent common ancestor) of two commits.
@@ -1146,6 +1253,261 @@ mod tests {
         let result = repo.merge_base("nonexistent-branch-xyz-99999");
         assert!(result.is_ok());
         assert!(result.unwrap().is_none());
+    }
+
+    #[test]
+    fn merge_base_picks_remote_when_local_stale() {
+        // Simulates `git fetch && git rebase origin/main` on a feature branch.
+        // Local main is stale (at C1); origin/main is current (at C3); feature
+        // is rebased onto C3. The closest merge-base must be C3, not C1.
+        let tmp = tempfile::tempdir().unwrap();
+        let repo_path = tmp.path().join("repo");
+        init_repo_for_discover(&repo_path);
+
+        // Build C1 → C2 → C3 on main.
+        std::fs::write(repo_path.join("a.txt"), "a").unwrap();
+        git(&repo_path, &["add", "a.txt"]);
+        git(&repo_path, &["commit", "-q", "-m", "C1"]);
+        let c1 = std::process::Command::new("git")
+            .args(["rev-parse", "HEAD"])
+            .current_dir(&repo_path)
+            .output()
+            .unwrap();
+        let c1 = String::from_utf8(c1.stdout).unwrap().trim().to_string();
+
+        std::fs::write(repo_path.join("b.txt"), "b").unwrap();
+        git(&repo_path, &["add", "b.txt"]);
+        git(&repo_path, &["commit", "-q", "-m", "C2"]);
+
+        std::fs::write(repo_path.join("c.txt"), "c").unwrap();
+        git(&repo_path, &["add", "c.txt"]);
+        git(&repo_path, &["commit", "-q", "-m", "C3"]);
+        let c3 = std::process::Command::new("git")
+            .args(["rev-parse", "HEAD"])
+            .current_dir(&repo_path)
+            .output()
+            .unwrap();
+        let c3 = String::from_utf8(c3.stdout).unwrap().trim().to_string();
+
+        // Move local main pointer back to C1 (simulating "stale local main").
+        git(&repo_path, &["update-ref", "refs/heads/main", &c1]);
+
+        // Plant origin/main at C3 (simulating "fetched but didn't pull local").
+        git(&repo_path, &["update-ref", "refs/remotes/origin/main", &c3]);
+        // Add a remote so remote_names() includes "origin".
+        git(&repo_path, &["remote", "add", "origin", "."]);
+
+        // Create feature off C3 with one feature commit.
+        git(&repo_path, &["checkout", "-q", "-b", "feature", &c3]);
+        std::fs::write(repo_path.join("f.txt"), "f").unwrap();
+        git(&repo_path, &["add", "f.txt"]);
+        git(&repo_path, &["commit", "-q", "-m", "F1"]);
+
+        let repo = GitRepo::new(&repo_path).unwrap();
+        let mb = repo.merge_base("main").unwrap().unwrap();
+        assert_eq!(
+            mb.to_hex().to_string(),
+            c3,
+            "merge-base must be C3 (origin/main), not C1 (stale local main)",
+        );
+    }
+
+    #[test]
+    fn merge_base_skips_tip_equal_to_head() {
+        // User is on `feature`, just branched from `main` with no new commits.
+        // `collect_base_tips("main")` returns [local_main_tip] (== HEAD).
+        // The loop must skip that tip; with no other tips, result is None.
+        let tmp = tempfile::tempdir().unwrap();
+        let repo_path = tmp.path().join("repo");
+        init_repo_for_discover(&repo_path);
+
+        // Single commit on main; that's where feature will branch from.
+        std::fs::write(repo_path.join("a.txt"), "a").unwrap();
+        git(&repo_path, &["add", "a.txt"]);
+        git(&repo_path, &["commit", "-q", "-m", "C1"]);
+
+        // Branch feature off main with no extra commits — HEAD == main's tip.
+        git(&repo_path, &["checkout", "-q", "-b", "feature"]);
+
+        let repo = GitRepo::new(&repo_path).unwrap();
+        let result = repo.merge_base("main").unwrap();
+        assert!(
+            result.is_none(),
+            "merge_base must be None when the only candidate tip equals HEAD; got {:?}",
+            result.map(|id| id.to_hex().to_string())
+        );
+    }
+
+    #[test]
+    fn merge_base_picks_local_when_remote_stale() {
+        // Local main is current (at C3); origin/main is stale (at C1).
+        // Feature is off C3. The closest merge-base must be C3, not C1.
+        let tmp = tempfile::tempdir().unwrap();
+        let repo_path = tmp.path().join("repo");
+        init_repo_for_discover(&repo_path);
+
+        std::fs::write(repo_path.join("a.txt"), "a").unwrap();
+        git(&repo_path, &["add", "a.txt"]);
+        git(&repo_path, &["commit", "-q", "-m", "C1"]);
+        let c1 = String::from_utf8(
+            std::process::Command::new("git")
+                .args(["rev-parse", "HEAD"])
+                .current_dir(&repo_path)
+                .output()
+                .unwrap()
+                .stdout,
+        )
+        .unwrap()
+        .trim()
+        .to_string();
+
+        std::fs::write(repo_path.join("b.txt"), "b").unwrap();
+        git(&repo_path, &["add", "b.txt"]);
+        git(&repo_path, &["commit", "-q", "-m", "C2"]);
+
+        std::fs::write(repo_path.join("c.txt"), "c").unwrap();
+        git(&repo_path, &["add", "c.txt"]);
+        git(&repo_path, &["commit", "-q", "-m", "C3"]);
+        let c3 = String::from_utf8(
+            std::process::Command::new("git")
+                .args(["rev-parse", "HEAD"])
+                .current_dir(&repo_path)
+                .output()
+                .unwrap()
+                .stdout,
+        )
+        .unwrap()
+        .trim()
+        .to_string();
+
+        // Plant origin/main at C1 (stale remote).
+        git(&repo_path, &["update-ref", "refs/remotes/origin/main", &c1]);
+        git(&repo_path, &["remote", "add", "origin", "."]);
+
+        // Feature off C3.
+        git(&repo_path, &["checkout", "-q", "-b", "feature", &c3]);
+        std::fs::write(repo_path.join("f.txt"), "f").unwrap();
+        git(&repo_path, &["add", "f.txt"]);
+        git(&repo_path, &["commit", "-q", "-m", "F1"]);
+
+        let repo = GitRepo::new(&repo_path).unwrap();
+        let mb = repo.merge_base("main").unwrap().unwrap();
+        assert_eq!(
+            mb.to_hex().to_string(),
+            c3,
+            "merge-base must be C3 (local main, current), not C1 (stale origin/main)",
+        );
+    }
+
+    #[test]
+    fn merge_base_handles_divergence() {
+        // C1 is the common ancestor.
+        // Local main: C1 → L (diverged left).
+        // origin/main: C1 → R (diverged right).
+        // Feature is off R with one commit. The merge-base of HEAD with R
+        // (which equals R) is closer to HEAD than the merge-base of HEAD with
+        // L (which is C1).
+        let tmp = tempfile::tempdir().unwrap();
+        let repo_path = tmp.path().join("repo");
+        init_repo_for_discover(&repo_path);
+
+        std::fs::write(repo_path.join("a.txt"), "a").unwrap();
+        git(&repo_path, &["add", "a.txt"]);
+        git(&repo_path, &["commit", "-q", "-m", "C1"]);
+        let c1 = String::from_utf8(
+            std::process::Command::new("git")
+                .args(["rev-parse", "HEAD"])
+                .current_dir(&repo_path)
+                .output()
+                .unwrap()
+                .stdout,
+        )
+        .unwrap()
+        .trim()
+        .to_string();
+
+        // Local main advances to L.
+        std::fs::write(repo_path.join("l.txt"), "l").unwrap();
+        git(&repo_path, &["add", "l.txt"]);
+        git(&repo_path, &["commit", "-q", "-m", "L"]);
+
+        // Build R off C1 and plant it as origin/main.
+        git(&repo_path, &["checkout", "-q", "-b", "tmp-r", &c1]);
+        std::fs::write(repo_path.join("r.txt"), "r").unwrap();
+        git(&repo_path, &["add", "r.txt"]);
+        git(&repo_path, &["commit", "-q", "-m", "R"]);
+        let r = String::from_utf8(
+            std::process::Command::new("git")
+                .args(["rev-parse", "HEAD"])
+                .current_dir(&repo_path)
+                .output()
+                .unwrap()
+                .stdout,
+        )
+        .unwrap()
+        .trim()
+        .to_string();
+        git(&repo_path, &["update-ref", "refs/remotes/origin/main", &r]);
+        git(&repo_path, &["remote", "add", "origin", "."]);
+
+        // Feature off R with one commit.
+        git(&repo_path, &["checkout", "-q", "-b", "feature", &r]);
+        std::fs::write(repo_path.join("f.txt"), "f").unwrap();
+        git(&repo_path, &["add", "f.txt"]);
+        git(&repo_path, &["commit", "-q", "-m", "F1"]);
+
+        let repo = GitRepo::new(&repo_path).unwrap();
+        let mb = repo.merge_base("main").unwrap().unwrap();
+        assert_eq!(
+            mb.to_hex().to_string(),
+            r,
+            "merge-base must be R (closer to HEAD), not C1 (local main's mb)",
+        );
+    }
+
+    #[test]
+    fn merge_base_exact_ref_with_slash_skips_enumeration() {
+        // Setup: main with one commit, origin/release/x at that commit, then
+        // feature with one extra commit. Calling merge_base("origin/release/x")
+        // must resolve to the planted ref directly and produce the planted commit
+        // as the merge-base.
+        let tmp = tempfile::tempdir().unwrap();
+        let repo_path = tmp.path().join("repo");
+        init_repo_for_discover(&repo_path);
+
+        std::fs::write(repo_path.join("a.txt"), "a").unwrap();
+        git(&repo_path, &["add", "a.txt"]);
+        git(&repo_path, &["commit", "-q", "-m", "C1"]);
+        let c1 = String::from_utf8(
+            std::process::Command::new("git")
+                .args(["rev-parse", "HEAD"])
+                .current_dir(&repo_path)
+                .output()
+                .unwrap()
+                .stdout,
+        )
+        .unwrap()
+        .trim()
+        .to_string();
+
+        git(
+            &repo_path,
+            &["update-ref", "refs/remotes/origin/release/x", &c1],
+        );
+        git(&repo_path, &["remote", "add", "origin", "."]);
+
+        git(&repo_path, &["checkout", "-q", "-b", "feature", &c1]);
+        std::fs::write(repo_path.join("f.txt"), "f").unwrap();
+        git(&repo_path, &["add", "f.txt"]);
+        git(&repo_path, &["commit", "-q", "-m", "F1"]);
+
+        let repo = GitRepo::new(&repo_path).unwrap();
+        let mb = repo.merge_base("origin/release/x").unwrap().unwrap();
+        assert_eq!(
+            mb.to_hex().to_string(),
+            c1,
+            "merge-base for exact slash-name must equal the planted commit",
+        );
     }
 
     #[test]

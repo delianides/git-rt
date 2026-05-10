@@ -102,6 +102,12 @@ pub struct App {
     main_missing_warned: bool,
     /// Receiver for GitHub PR events
     gh_rx: Option<Receiver<crate::github::GitHubEvent>>,
+    /// Last branch name observed in a recompute bundle. `None` until the
+    /// first bundle arrives. Used by `apply_status` to detect mid-session
+    /// branch renames so the PR poller can be restarted and a flash message
+    /// shown.
+    #[allow(dead_code)]
+    last_seen_branch: Option<String>,
     /// CLI override for base branch
     base_override: Option<String>,
     /// Sender for worker requests. Bounded; drops on overflow are safe
@@ -363,6 +369,7 @@ impl App {
             main_worktree_path,
             main_missing_warned: false,
             gh_rx,
+            last_seen_branch: None,
             base_override,
             worker_tx,
             worker_rx,
@@ -627,6 +634,36 @@ impl App {
         }
         self.state.set_computing(true);
         Ok(())
+    }
+
+    /// React to a branch-name change in the watched worktree:
+    /// 1. Restart the PR poller against the new branch.
+    /// 2. Show a flash message with old → new.
+    /// 3. Update `last_seen_branch`.
+    ///
+    /// Called by `apply_status` when a recompute bundle's branch name
+    /// differs from the previously observed branch.
+    #[allow(dead_code)]
+    fn handle_branch_change(&mut self, new_branch: &str) {
+        let old = self.last_seen_branch.clone().unwrap_or_default();
+        tracing::info!(old = %old, new = %new_branch, "branch renamed in watched worktree");
+
+        // Drop the old PR receiver. The sender thread will exit on its
+        // next iteration when it tries to send on a dropped channel.
+        self.gh_rx = None;
+        if self.config.pr.enabled {
+            if let Some(token) = crate::github::resolve_auth_token() {
+                self.gh_rx = Some(crate::github::start_polling(
+                    &self.watch_path,
+                    new_branch,
+                    &token,
+                ));
+            }
+        }
+
+        self.state
+            .set_flash_message(format!("branch renamed: {old} → {new_branch}"));
+        self.last_seen_branch = Some(new_branch.to_string());
     }
 
     /// Apply a worker `StatusBundle` to `AppState`.
@@ -1125,6 +1162,7 @@ mod input_tests {
                 main_worktree_path: PathBuf::new(),
                 main_missing_warned: false,
                 gh_rx: None,
+                last_seen_branch: None,
                 base_override: None,
                 worker_tx,
                 worker_rx,
@@ -1396,5 +1434,18 @@ mod input_tests {
 
         assert!(!should_quit);
         assert!(app.state.is_switch_dialog_visible());
+    }
+
+    #[test]
+    fn handle_branch_change_sets_flash_and_updates_last_seen() {
+        let mut app = make_app(Vec::new());
+        app.last_seen_branch = Some("feat-1".to_string());
+        app.handle_branch_change("feat-2");
+        assert_eq!(app.last_seen_branch.as_deref(), Some("feat-2"));
+        let flash = app.state.flash_message();
+        assert!(
+            flash.is_some_and(|m| m.contains("feat-1") && m.contains("feat-2")),
+            "expected rename flash, got {flash:?}"
+        );
     }
 }

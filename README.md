@@ -10,6 +10,14 @@ Run `git-rt` in a terminal pane alongside your editor. It shows a live-updating 
 
 ## Install
 
+### Homebrew (macOS / Linux)
+
+```bash
+brew install delianides/git-rt/git-rt
+```
+
+### From source
+
 ```bash
 cargo install --path .
 ```

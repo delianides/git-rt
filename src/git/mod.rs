@@ -652,7 +652,7 @@ impl GitRepo {
             }
         }
 
-        // Priority 4: fallback
+        // Priority 3: fallback
         if self
             .resolve_ref_to_commit("refs/remotes/origin/main")
             .is_some()

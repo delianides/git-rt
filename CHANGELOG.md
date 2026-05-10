@@ -1,5 +1,24 @@
 # Changelog
 
+## [1.3.0](https://github.com/delianides/git-rt/compare/v1.2.0...v1.3.0) (2026-05-10)
+
+
+### Features
+
+* pinned-worktree mode (no auto-follow, trunk-only base, rename absorption) ([#80](https://github.com/delianides/git-rt/issues/80)) ([53144e2](https://github.com/delianides/git-rt/commit/53144e211e048cc0f65e28fa142e327c2967acf1))
+* switch worktree dialog ([#75](https://github.com/delianides/git-rt/issues/75)) ([8790b85](https://github.com/delianides/git-rt/commit/8790b859c34e2a6816fbb9126c32a729ea984732))
+
+
+### Bug Fixes
+
+* **git:** pick closest merge-base when local and remote base diverge ([#78](https://github.com/delianides/git-rt/issues/78)) ([9d09d36](https://github.com/delianides/git-rt/commit/9d09d366a4b7aaa79f53a564881c9c4e12cb3843))
+* **git:** use real git diff for overlay, replacing prefix/suffix synthesizer ([#76](https://github.com/delianides/git-rt/issues/76)) ([0998dee](https://github.com/delianides/git-rt/commit/0998dee3fef8cd6f7aba1ac2f40b08b091588171))
+
+
+### Performance Improvements
+
+* audit-driven hot-path improvements (recompute -50% on large repos) ([#79](https://github.com/delianides/git-rt/issues/79)) ([0e8edba](https://github.com/delianides/git-rt/commit/0e8edba26fe29c3b355cfdc8dfba554ba9f6f1f1))
+
 ## [1.2.0](https://github.com/delianides/git-rt/compare/v1.1.0...v1.2.0) (2026-04-24)
 
 

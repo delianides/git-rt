@@ -100,10 +100,13 @@ pub struct App {
     /// flash message every 250 ms when both the watched path and the main
     /// worktree are gone.
     main_missing_warned: bool,
-    /// Whether to auto-follow the most recently active worktree
-    auto_follow: bool,
     /// Receiver for GitHub PR events
     gh_rx: Option<Receiver<crate::github::GitHubEvent>>,
+    /// Last branch name observed in a recompute bundle. `None` until the
+    /// first bundle arrives. Used by `apply_status` to detect mid-session
+    /// branch renames so the PR poller can be restarted and a flash message
+    /// shown.
+    last_seen_branch: Option<String>,
     /// CLI override for base branch
     base_override: Option<String>,
     /// Sender for worker requests. Bounded; drops on overflow are safe
@@ -263,7 +266,6 @@ impl App {
         repo_path: PathBuf,
         config: AppConfig,
         debounce_ms: u64,
-        auto_follow: bool,
         theme_override: Option<String>,
         base_override: Option<String>,
     ) -> Result<Self> {
@@ -365,8 +367,8 @@ impl App {
             watch_path,
             main_worktree_path,
             main_missing_warned: false,
-            auto_follow,
             gh_rx,
+            last_seen_branch: None,
             base_override,
             worker_tx,
             worker_rx,
@@ -506,7 +508,6 @@ impl App {
                 ) {
                     self.fallback_to_main()?;
                 }
-                self.check_worktree_activity()?;
             }
         }
     }
@@ -634,6 +635,38 @@ impl App {
         Ok(())
     }
 
+    /// React to a branch-name change in the watched worktree:
+    /// 1. Restart the PR poller against the new branch.
+    /// 2. Show a flash message with old → new.
+    /// 3. Update `last_seen_branch`.
+    ///
+    /// Called by `apply_status` when a recompute bundle's branch name
+    /// differs from the previously observed branch.
+    fn handle_branch_change(&mut self, new_branch: &str) {
+        let old = self.last_seen_branch.clone().unwrap_or_default();
+        tracing::info!(old = %old, new = %new_branch, "branch renamed in watched worktree");
+
+        // Clear stale PR data before restarting the poller so the UI doesn't
+        // keep showing the old branch's PR while the new poller spins up.
+        self.state.clear_pr();
+        // Drop the old PR receiver. The sender thread will exit on its
+        // next iteration when it tries to send on a dropped channel.
+        self.gh_rx = None;
+        if self.config.pr.enabled {
+            if let Some(token) = crate::github::resolve_auth_token() {
+                self.gh_rx = Some(crate::github::start_polling(
+                    &self.watch_path,
+                    new_branch,
+                    &token,
+                ));
+            }
+        }
+
+        self.state
+            .set_flash_message(format!("branch renamed: {old} → {new_branch}"));
+        self.last_seen_branch = Some(new_branch.to_string());
+    }
+
     /// Apply a worker `StatusBundle` to `AppState`.
     fn apply_status(&mut self, bundle: StatusBundle) {
         static FIRST_STATUS_LOGGED: std::sync::atomic::AtomicBool =
@@ -644,6 +677,21 @@ impl App {
                 "apply_status: first Status received"
             );
         }
+
+        // Detect mid-session branch rename: only fire when we have a prior
+        // observation that disagrees with the new bundle. The first bundle
+        // sets `last_seen_branch` without firing the rename hook.
+        match self.last_seen_branch.as_deref() {
+            Some(prev) if prev != bundle.branch => {
+                let new_branch = bundle.branch.clone();
+                self.handle_branch_change(&new_branch);
+            }
+            None => {
+                self.last_seen_branch = Some(bundle.branch.clone());
+            }
+            _ => {}
+        }
+
         self.state.update_files(bundle.files);
         self.state
             .set_merge_base(bundle.merge_base, bundle.base_branch);
@@ -822,6 +870,9 @@ impl App {
         }
 
         // Worker is now on the new repo. Reset state and request a fresh load.
+        // Reset the rename-detection baseline so the new worktree's first
+        // bundle re-establishes it without firing a phantom rename.
+        self.last_seen_branch = None;
         self.state
             .reset_for_switch(Vec::new(), String::new(), String::new(), String::new());
         self._watcher = Some(watcher);
@@ -849,40 +900,6 @@ impl App {
         let _ = self.worker_tx.try_send(Request::Recompute);
         self.state.set_computing(true);
 
-        Ok(())
-    }
-
-    /// On every tick, check which worktree was most recently active (by HEAD +
-    /// index mtime) and switch to it if it differs from the current watch path.
-    fn check_worktree_activity(&mut self) -> Result<()> {
-        if !self.auto_follow {
-            return Ok(());
-        }
-        let worktrees = crate::watcher::activity::list_all_worktrees(&self.repo_path);
-        if worktrees.len() <= 1 {
-            return Ok(());
-        }
-        let newest = worktrees
-            .iter()
-            .filter_map(|wt| {
-                let activity = crate::watcher::activity::worktree_last_activity(&wt.path)?;
-                Some((wt, activity))
-            })
-            .max_by_key(|(_, mtime)| *mtime);
-
-        if let Some((wt, _)) = newest {
-            if wt.path != self.watch_path {
-                tracing::info!(
-                    worktree = %wt.name,
-                    path = ?wt.path,
-                    "Switching to most recently active worktree"
-                );
-                let name = wt.name.clone();
-                self.switch_to_path(wt.path.clone())?;
-                self.state
-                    .set_flash_message(format!("Switched to worktree: {name}"));
-            }
-        }
         Ok(())
     }
 
@@ -1163,8 +1180,8 @@ mod input_tests {
                 watch_path: PathBuf::new(),
                 main_worktree_path: PathBuf::new(),
                 main_missing_warned: false,
-                auto_follow: false,
                 gh_rx: None,
+                last_seen_branch: None,
                 base_override: None,
                 worker_tx,
                 worker_rx,
@@ -1436,5 +1453,81 @@ mod input_tests {
 
         assert!(!should_quit);
         assert!(app.state.is_switch_dialog_visible());
+    }
+
+    #[test]
+    fn handle_branch_change_sets_flash_and_updates_last_seen() {
+        let mut app = make_app(Vec::new());
+        app.last_seen_branch = Some("feat-1".to_string());
+        // Seed stale PR error state to verify it gets cleared.
+        app.state.set_pr_error("stale error from feat-1".into());
+        assert!(
+            app.state.pr_state().error.is_some(),
+            "test setup: pr error should be set"
+        );
+
+        app.handle_branch_change("feat-2");
+
+        assert_eq!(app.last_seen_branch.as_deref(), Some("feat-2"));
+        assert!(
+            app.state.pr_state().error.is_none(),
+            "expected pr error cleared after branch rename"
+        );
+        assert!(
+            app.state.pr_state().info.is_none(),
+            "expected pr info cleared after branch rename"
+        );
+        assert!(
+            !app.state.pr_state().loading,
+            "expected pr loading cleared after branch rename"
+        );
+        let flash = app.state.flash_message();
+        assert!(
+            flash.is_some_and(|m| m.contains("feat-1") && m.contains("feat-2")),
+            "expected rename flash, got {flash:?}"
+        );
+    }
+
+    #[test]
+    fn apply_status_triggers_branch_change_on_rename() {
+        use crate::git::worker::StatusBundle;
+        let mut app = make_app(Vec::new());
+
+        // First bundle establishes baseline.
+        let bundle1 = StatusBundle {
+            branch: "feat-1".to_string(),
+            ..Default::default()
+        };
+        app.apply_status(bundle1);
+        assert_eq!(app.last_seen_branch.as_deref(), Some("feat-1"));
+        assert!(
+            app.state.flash_message().is_none(),
+            "first bundle should not flash a rename"
+        );
+
+        // Second bundle on a different branch fires the rename hook.
+        let bundle2 = StatusBundle {
+            branch: "feat-2".to_string(),
+            ..Default::default()
+        };
+        app.apply_status(bundle2);
+        assert_eq!(app.last_seen_branch.as_deref(), Some("feat-2"));
+        let flash = app.state.flash_message();
+        assert!(
+            flash.is_some_and(|m| m.contains("feat-1") && m.contains("feat-2")),
+            "expected rename flash on second apply, got {flash:?}"
+        );
+
+        // Third bundle on the same branch is a no-op for rename.
+        app.state.clear_flash_message();
+        let bundle3 = StatusBundle {
+            branch: "feat-2".to_string(),
+            ..Default::default()
+        };
+        app.apply_status(bundle3);
+        assert!(
+            app.state.flash_message().is_none(),
+            "same-branch bundle should not refire rename flash"
+        );
     }
 }

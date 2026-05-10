@@ -1,6 +1,3 @@
-pub mod activity;
-pub mod worktree;
-
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;

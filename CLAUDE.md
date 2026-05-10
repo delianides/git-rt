@@ -65,6 +65,7 @@ When a filesystem event fires:
 - **Diff numstat**: `git diff --numstat -z <merge-base>` for branch view, `git diff --numstat -z` for the working-tree view.
 - **Cheap reads**: branch name, HEAD commit, merge-base, stash count, ahead/behind still use `gix` — sub-millisecond.
 - **Diff content**: rendered in an in-app overlay (see `src/ui/diff_overlay.rs`) — centered 85% panel with colored `+`/`-`/context lines and line numbers, scrollable with `j`/`k`.
+- **Base branch resolution**: the diff range's "base" is the repo trunk. Priority: explicit `--base` flag → `display.base_branch` config → `origin/HEAD` symbolic-ref target → `origin/main` → `origin/master`. Sibling local branches are never chosen.
 
 ### Filesystem Watching
 
@@ -72,6 +73,7 @@ When a filesystem event fires:
 - Watches the entire working tree, filters out `.git/` directory changes (except `.git/index` for staged changes)
 - Debounce window: 500ms default, configurable
 - On debounce fire: full git status recomputation via worker thread
+- A git-rt instance is pinned to one worktree for its lifetime. Background filesystem activity in *other* worktrees does not move the watched path. Use the `s`-key dialog to switch deliberately, or relaunch git-rt against a different path.
 
 ## Key Design Decisions
 
@@ -95,14 +97,12 @@ git-rt
 git-rt [OPTIONS] [PATH]
 
 Arguments:
-  [PATH]  Path to git repository (defaults to current directory)
+  [PATH]  Path to git repository or worktree (defaults to current directory)
 
 Options:
   -c, --config <FILE>     Path to config file
   -d, --debounce <MS>     Debounce interval in milliseconds [default: 500]
       --log <LEVEL>       Enable logging (trace, debug, info, warn, error)
-      --branch <BRANCH>   Pin to the worktree with this branch checked out
-      --no-follow         Disable auto-follow to other worktrees
       --theme <NAME|PATH> Theme override (built-in name or path to .toml theme file)
       --base <BRANCH>     Base branch for the branch-scoped diff range
   -h, --help              Print help

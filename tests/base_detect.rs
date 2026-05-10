@@ -1,8 +1,7 @@
-//! End-to-end integration tests for per-branch base detection.
+//! End-to-end integration tests for trunk-priority base resolution.
 //!
 //! Builds real git repos with `tempfile` + shell-out to `git`, then calls
-//! `GitRepo::detect_base_branch` directly to verify the full tier-1 + tier-2
-//! flow produces the expected result.
+//! `GitRepo::resolve_base_branch` to verify the priority chain.
 
 use std::path::Path;
 use std::process::Command;
@@ -17,286 +16,107 @@ fn git(dir: &Path, args: &[&str]) {
         .env("GIT_AUTHOR_EMAIL", "t@t")
         .env("GIT_COMMITTER_NAME", "t")
         .env("GIT_COMMITTER_EMAIL", "t@t")
+        .env("GIT_CONFIG_COUNT", "1")
+        .env("GIT_CONFIG_KEY_0", "commit.gpgsign")
+        .env("GIT_CONFIG_VALUE_0", "false")
         .status()
         .expect("git command must run");
     assert!(status.success(), "git {:?} failed", args);
 }
 
+/// Repo with origin/HEAD → main; resolve returns "main".
 #[test]
-fn stacked_branches_detect_nearest_parent() {
+fn resolves_origin_head() {
     let tmp = tempfile::tempdir().unwrap();
-    let p = tmp.path();
-    // main ← feature-a ← feature-b
-    git(p, &["init", "-q", "-b", "main"]);
+    let upstream = tmp.path().join("upstream.git");
+    let work = tmp.path().join("work");
+    std::fs::create_dir_all(&work).unwrap();
+    Command::new("git")
+        .args(["init", "-q", "--bare", upstream.to_str().unwrap()])
+        .status()
+        .unwrap();
+    git(&work, &["init", "-q", "-b", "main"]);
+    std::fs::write(work.join("a"), "x").unwrap();
+    git(&work, &["add", "."]);
+    git(&work, &["commit", "-q", "-m", "m1"]);
     git(
-        p,
-        &[
-            "-c",
-            "commit.gpgsign=false",
-            "commit",
-            "--allow-empty",
-            "-q",
-            "-m",
-            "m1",
-        ],
+        &work,
+        &["remote", "add", "origin", upstream.to_str().unwrap()],
     );
-    git(p, &["checkout", "-q", "-b", "feature-a"]);
-    git(
-        p,
-        &[
-            "-c",
-            "commit.gpgsign=false",
-            "commit",
-            "--allow-empty",
-            "-q",
-            "-m",
-            "a1",
-        ],
-    );
-    git(p, &["checkout", "-q", "-b", "feature-b"]);
-    git(
-        p,
-        &[
-            "-c",
-            "commit.gpgsign=false",
-            "commit",
-            "--allow-empty",
-            "-q",
-            "-m",
-            "b1",
-        ],
-    );
+    git(&work, &["push", "-q", "-u", "origin", "main"]);
+    git(&work, &["remote", "set-head", "origin", "main"]);
 
-    let repo = GitRepo::new(p).unwrap();
+    let repo = GitRepo::new(&work).unwrap();
+    assert_eq!(repo.resolve_base_branch(None).as_deref(), Some("main"));
+}
+
+/// Sibling branches are NOT chosen even when their merge-base is closer.
+#[test]
+fn ignores_sibling_branches() {
+    let tmp = tempfile::tempdir().unwrap();
+    let upstream = tmp.path().join("upstream.git");
+    let work = tmp.path().join("work");
+    std::fs::create_dir_all(&work).unwrap();
+    Command::new("git")
+        .args(["init", "-q", "--bare", upstream.to_str().unwrap()])
+        .status()
+        .unwrap();
+    git(&work, &["init", "-q", "-b", "main"]);
+    std::fs::write(work.join("a"), "x").unwrap();
+    git(&work, &["add", "."]);
+    git(&work, &["commit", "-q", "-m", "m1"]);
+    git(
+        &work,
+        &["remote", "add", "origin", upstream.to_str().unwrap()],
+    );
+    git(&work, &["push", "-q", "-u", "origin", "main"]);
+    git(&work, &["remote", "set-head", "origin", "main"]);
+    // Two sibling branches both rooted at the latest main commit
+    git(&work, &["branch", "drew/sibling-a"]);
+    git(&work, &["checkout", "-q", "-b", "drew/sibling-b"]);
+    std::fs::write(work.join("b"), "y").unwrap();
+    git(&work, &["add", "."]);
+    git(&work, &["commit", "-q", "-m", "b1"]);
+
+    let repo = GitRepo::new(&work).unwrap();
+    let base = repo.resolve_base_branch(None);
     assert_eq!(
-        repo.detect_base_branch("feature-b"),
-        Some("feature-a".to_string())
+        base.as_deref(),
+        Some("main"),
+        "expected trunk, got sibling-aware: {:?}",
+        base
     );
 }
 
+/// Explicit override wins over auto-detection.
 #[test]
-fn branch_off_remote_tracking_returns_short_name() {
-    // Create a "remote" bare repo with develop, then clone it, then branch
-    // off origin/develop without checking it out locally.
+fn explicit_override_wins() {
     let tmp = tempfile::tempdir().unwrap();
-    let remote = tmp.path().join("remote.git");
-    let clone = tmp.path().join("clone");
+    let work = tmp.path().join("work");
+    std::fs::create_dir_all(&work).unwrap();
+    git(&work, &["init", "-q", "-b", "main"]);
+    std::fs::write(work.join("a"), "x").unwrap();
+    git(&work, &["add", "."]);
+    git(&work, &["commit", "-q", "-m", "m1"]);
 
-    let status = Command::new("git")
-        .args(["init", "-q", "--bare", "-b", "main"])
-        .arg(&remote)
-        .status()
-        .expect("git init bare");
-    assert!(status.success(), "bare init failed");
-
-    // Seed the bare repo via a scratch clone.
-    let scratch = tmp.path().join("scratch");
-    let status = Command::new("git")
-        .args(["clone", "-q"])
-        .arg(&remote)
-        .arg(&scratch)
-        .status()
-        .expect("git clone scratch");
-    assert!(status.success(), "scratch clone failed");
-
-    git(
-        &scratch,
-        &[
-            "-c",
-            "commit.gpgsign=false",
-            "commit",
-            "--allow-empty",
-            "-q",
-            "-m",
-            "m1",
-        ],
-    );
-    git(&scratch, &["checkout", "-q", "-b", "develop"]);
-    git(
-        &scratch,
-        &[
-            "-c",
-            "commit.gpgsign=false",
-            "commit",
-            "--allow-empty",
-            "-q",
-            "-m",
-            "d1",
-        ],
-    );
-    git(&scratch, &["push", "-q", "origin", "main", "develop"]);
-
-    // Now clone fresh and branch off origin/develop without checking it out.
-    let status = Command::new("git")
-        .args(["clone", "-q"])
-        .arg(&remote)
-        .arg(&clone)
-        .status()
-        .expect("git clone");
-    assert!(status.success(), "clone failed");
-
-    git(
-        &clone,
-        &["checkout", "-q", "-b", "feature", "origin/develop"],
-    );
-    git(
-        &clone,
-        &[
-            "-c",
-            "commit.gpgsign=false",
-            "commit",
-            "--allow-empty",
-            "-q",
-            "-m",
-            "f1",
-        ],
-    );
-
-    let repo = GitRepo::new(&clone).unwrap();
-    // Tier 1 should pick "develop" (short name) from reflog "Created from origin/develop".
+    let repo = GitRepo::new(&work).unwrap();
     assert_eq!(
-        repo.detect_base_branch("feature"),
-        Some("develop".to_string())
+        repo.resolve_base_branch(Some("custom")).as_deref(),
+        Some("custom")
     );
 }
 
+/// Repo with no remote falls through to None.
 #[test]
-fn explicit_base_override_short_circuits_detection() {
-    // Verify at the compute_status / worker integration level: explicit
-    // override wins even when detection would pick something else.
-    use crossbeam_channel::bounded;
-    use git_rt::git::worker::{Request, Response, Worker};
-    use std::time::Duration;
-
+fn no_remote_returns_none() {
     let tmp = tempfile::tempdir().unwrap();
-    let p = tmp.path();
-    git(p, &["init", "-q", "-b", "main"]);
-    git(
-        p,
-        &[
-            "-c",
-            "commit.gpgsign=false",
-            "commit",
-            "--allow-empty",
-            "-q",
-            "-m",
-            "m1",
-        ],
-    );
-    git(p, &["checkout", "-q", "-b", "feature-a"]);
-    git(
-        p,
-        &[
-            "-c",
-            "commit.gpgsign=false",
-            "commit",
-            "--allow-empty",
-            "-q",
-            "-m",
-            "a1",
-        ],
-    );
-    git(p, &["checkout", "-q", "-b", "feature-b", "feature-a"]);
-    git(
-        p,
-        &[
-            "-c",
-            "commit.gpgsign=false",
-            "commit",
-            "--allow-empty",
-            "-q",
-            "-m",
-            "b1",
-        ],
-    );
+    let work = tmp.path().join("work");
+    std::fs::create_dir_all(&work).unwrap();
+    git(&work, &["init", "-q", "-b", "main"]);
+    std::fs::write(work.join("a"), "x").unwrap();
+    git(&work, &["add", "."]);
+    git(&work, &["commit", "-q", "-m", "m1"]);
 
-    let (req_tx, req_rx) = bounded::<Request>(8);
-    let (resp_tx, resp_rx) = bounded::<Response>(8);
-    let handle = Worker::spawn(
-        p.to_path_buf(),
-        Some("main".to_string()), // explicit --base main
-        None,
-        req_rx,
-        resp_tx,
-    );
-
-    req_tx.send(Request::Recompute).unwrap();
-    let resp = resp_rx.recv_timeout(Duration::from_secs(5)).unwrap();
-    match resp {
-        Response::Status(b) => assert_eq!(b.base_branch, "main"),
-        other => panic!("expected Status, got {:?}", other),
-    }
-
-    req_tx.send(Request::Shutdown).unwrap();
-    handle.join().unwrap();
-}
-
-#[test]
-fn rebased_branch_detects_new_parent() {
-    let tmp = tempfile::tempdir().unwrap();
-    let p = tmp.path();
-    // main ← feature-a ← feature-b (initially)
-    git(p, &["init", "-q", "-b", "main"]);
-    git(
-        p,
-        &[
-            "-c",
-            "commit.gpgsign=false",
-            "commit",
-            "--allow-empty",
-            "-q",
-            "-m",
-            "m1",
-        ],
-    );
-    git(p, &["checkout", "-q", "-b", "feature-a"]);
-    git(
-        p,
-        &[
-            "-c",
-            "commit.gpgsign=false",
-            "commit",
-            "--allow-empty",
-            "-q",
-            "-m",
-            "a1",
-        ],
-    );
-    git(p, &["checkout", "-q", "-b", "feature-b"]);
-    git(
-        p,
-        &[
-            "-c",
-            "commit.gpgsign=false",
-            "commit",
-            "--allow-empty",
-            "-q",
-            "-m",
-            "b1",
-        ],
-    );
-
-    // Delete the reflog so tier-2 (merge-base) drives the result.
-    std::fs::remove_file(p.join(".git/logs/refs/heads/feature-b")).ok();
-
-    // Rebase feature-b directly onto main (dropping feature-a's commit).
-    git(
-        p,
-        &[
-            "-c",
-            "commit.gpgsign=false",
-            "rebase",
-            "-q",
-            "--onto",
-            "main",
-            "feature-a",
-            "feature-b",
-        ],
-    );
-
-    let repo = GitRepo::new(p).unwrap();
-    assert_eq!(
-        repo.detect_base_branch("feature-b"),
-        Some("main".to_string())
-    );
+    let repo = GitRepo::new(&work).unwrap();
+    assert_eq!(repo.resolve_base_branch(None), None);
 }

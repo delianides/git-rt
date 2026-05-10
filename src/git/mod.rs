@@ -251,10 +251,21 @@ struct BaseCandidate {
     is_local: bool,
 }
 
+/// Cached entry for `GitRepo::ahead_behind`: maps `(head_oid, upstream_oid)`
+/// to the previously computed `(ahead, behind)` counts.
+type AheadBehindCache =
+    std::cell::RefCell<Option<((gix::ObjectId, gix::ObjectId), (usize, usize))>>;
+
 /// Git repository handle backed by gix (gitoxide).
 pub struct GitRepo {
     repo: gix::Repository,
     repo_path: PathBuf,
+    /// Cache: (head_oid, upstream_oid) -> (ahead, behind).
+    /// `ahead_behind()` is called per recompute; on a large repo each call
+    /// walks the commit graph twice. Memoize keyed on the two input OIDs.
+    /// `RefCell` is correct here — `GitRepo` is owned and accessed only on
+    /// the single dedicated worker thread (no `Sync` needed).
+    ahead_behind_cache: AheadBehindCache,
 }
 
 impl GitRepo {
@@ -273,7 +284,11 @@ impl GitRepo {
             .unwrap_or_else(|| path.to_path_buf());
         let repo_path = std::fs::canonicalize(&repo_path).unwrap_or(repo_path);
 
-        Ok(Self { repo, repo_path })
+        Ok(Self {
+            repo,
+            repo_path,
+            ahead_behind_cache: std::cell::RefCell::new(None),
+        })
     }
 
     /// Get the current branch name, or "HEAD" if detached
@@ -387,6 +402,11 @@ impl GitRepo {
 
     /// Get ahead/behind counts relative to upstream.
     /// Returns None if there is no upstream configured.
+    ///
+    /// The result is memoized by `(head_oid, upstream_oid)`: on a large repo
+    /// each call previously walked the commit graph twice (O(N) where N is
+    /// total commits). The cache is invalidated automatically whenever HEAD
+    /// or upstream advances.
     pub fn ahead_behind(&self) -> Result<Option<(usize, usize)>, GitFailure> {
         // Get HEAD commit id
         let head_commit = match self.repo.head_commit() {
@@ -401,12 +421,20 @@ impl GitRepo {
             None => return Ok(None), // no upstream configured
         };
 
+        // Cache hit: same (head, upstream) pair as last call — skip the walks.
+        if let Some(((cached_head, cached_up), value)) = *self.ahead_behind_cache.borrow() {
+            if cached_head == head_id && cached_up == upstream_id {
+                return Ok(Some(value));
+            }
+        }
+
         // Compute ahead/behind by walking commits
         let ahead = count_reachable_exclusive(&self.repo, head_id, upstream_id)
             .map_err(|e| GitFailure::EnvChange(format!("ahead_behind ahead: {e}")))?;
         let behind = count_reachable_exclusive(&self.repo, upstream_id, head_id)
             .map_err(|e| GitFailure::EnvChange(format!("ahead_behind behind: {e}")))?;
 
+        *self.ahead_behind_cache.borrow_mut() = Some(((head_id, upstream_id), (ahead, behind)));
         Ok(Some((ahead, behind)))
     }
 
@@ -1158,6 +1186,28 @@ mod tests {
     fn test_ahead_behind_no_panic() {
         let repo = GitRepo::new(std::path::Path::new(".")).unwrap();
         let _result = repo.ahead_behind();
+    }
+
+    #[test]
+    fn ahead_behind_cache_populated_after_call() {
+        let repo = GitRepo::new(std::path::Path::new(".")).unwrap();
+        let r1 = repo.ahead_behind().ok().flatten();
+        // After the first call the cache should be populated iff we got Some.
+        {
+            let cached = repo.ahead_behind_cache.borrow();
+            if r1.is_some() {
+                assert!(
+                    cached.is_some(),
+                    "cache must be populated when ahead_behind returned Some"
+                );
+            }
+        }
+        // Second call should return the same value (from cache or fresh).
+        let r2 = repo.ahead_behind().ok().flatten();
+        assert_eq!(
+            r1, r2,
+            "repeated ahead_behind calls must return equal results"
+        );
     }
 
     #[test]

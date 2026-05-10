@@ -256,6 +256,11 @@ struct BaseCandidate {
 type AheadBehindCache =
     std::cell::RefCell<Option<((gix::ObjectId, gix::ObjectId), (usize, usize))>>;
 
+/// Cached entry for `GitRepo::merge_base`: maps `(head_oid, base_ref)` to the
+/// previously computed merge-base `ObjectId` (or `None` when none was found).
+/// Caching `None` avoids re-walking when "no merge-base" is the answer.
+type MergeBaseCache = std::cell::RefCell<Option<((gix::ObjectId, String), Option<gix::ObjectId>)>>;
+
 /// Git repository handle backed by gix (gitoxide).
 pub struct GitRepo {
     repo: gix::Repository,
@@ -266,6 +271,11 @@ pub struct GitRepo {
     /// `RefCell` is correct here — `GitRepo` is owned and accessed only on
     /// the single dedicated worker thread (no `Sync` needed).
     ahead_behind_cache: AheadBehindCache,
+    /// Cache: (head_oid, base_ref) -> merge_base_oid.
+    /// `merge_base()` builds a full topological index of HEAD's ancestry on
+    /// every call, which is expensive on large repos. Memoize keyed on the
+    /// (head_oid, base_ref) pair — invalidates correctly when either changes.
+    merge_base_cache: MergeBaseCache,
 }
 
 impl GitRepo {
@@ -288,6 +298,7 @@ impl GitRepo {
             repo,
             repo_path,
             ahead_behind_cache: std::cell::RefCell::new(None),
+            merge_base_cache: std::cell::RefCell::new(None),
         })
     }
 
@@ -496,6 +507,33 @@ impl GitRepo {
             .map_err(|e| GitFailure::EnvChange(format!("merge_base head: {e}")))?;
         let head_id = head_commit.id().detach();
 
+        // Cache check: same (head_oid, base_ref) as last call → return cached value.
+        if let Some(((cached_head, cached_base), value)) = self.merge_base_cache.borrow().as_ref() {
+            if *cached_head == head_id && cached_base.as_str() == base_ref {
+                return Ok(*value);
+            }
+        }
+
+        // Compute the result, then write to cache unconditionally before returning.
+        // All early-exit paths (degenerate self-diff, no tips, etc.) are also cached
+        // so that repeated calls with the same inputs avoid re-walking.
+        let result = self.merge_base_inner(head_id, base_ref);
+
+        // Only cache successful computations; propagate errors directly.
+        if let Ok(value) = result {
+            *self.merge_base_cache.borrow_mut() = Some(((head_id, base_ref.to_owned()), value));
+            return Ok(value);
+        }
+
+        result
+    }
+
+    /// Inner implementation of `merge_base` — called only on a cache miss.
+    fn merge_base_inner(
+        &self,
+        head_id: gix::ObjectId,
+        base_ref: &str,
+    ) -> Result<Option<gix::ObjectId>, GitFailure> {
         // Self-as-base is degenerate (preserves existing semantics for
         // `merge_base(current_branch_name)` → `None`).
         if let Ok(name) = self.branch_name() {
@@ -1208,6 +1246,18 @@ mod tests {
             r1, r2,
             "repeated ahead_behind calls must return equal results"
         );
+    }
+
+    #[test]
+    fn merge_base_cache_populated_after_call() {
+        let repo = GitRepo::new(std::path::Path::new(".")).unwrap();
+        let r1 = repo.merge_base("main").ok();
+        assert!(
+            repo.merge_base_cache.borrow().is_some(),
+            "merge_base cache should be populated after a call"
+        );
+        let r2 = repo.merge_base("main").ok();
+        assert_eq!(r1, r2, "second call should return same result");
     }
 
     #[test]

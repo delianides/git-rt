@@ -137,6 +137,31 @@ pub fn coalesce(input: VecDeque<Request>) -> VecDeque<Request> {
     output
 }
 
+/// Returns `true` when a bounded channel has reached or exceeded 50% capacity.
+/// `cap == 0` represents an unbounded channel, which is always silent.
+// Called by `warn_if_high` below; lib-target dead-code analysis doesn't see
+// the binary callers in app.rs, so suppress the lint here.
+#[allow(dead_code)]
+fn channel_high(len: usize, cap: usize) -> bool {
+    cap > 0 && len * 2 >= cap
+}
+
+/// Emit a structured `warn!` when a bounded channel is at or above 50%
+/// capacity. Call this immediately before sending to `tx` so the log line
+/// appears at the moment of pressure, not after the send blocks or drops.
+///
+/// No-op for unbounded channels (`capacity()` returns `None`).
+// Callers live in app.rs (binary target); the lib-target dead-code lint
+// doesn't see them, so the allow is required here.
+#[allow(dead_code)]
+pub(crate) fn warn_if_high(tx: &crossbeam_channel::Sender<Request>, label: &str) {
+    let len = tx.len();
+    let cap = tx.capacity().unwrap_or(0);
+    if channel_high(len, cap) {
+        tracing::warn!(channel = label, len, cap, "channel high water mark");
+    }
+}
+
 /// The worker thread harness. Owns a `GitRepo`, processes `Request`s, and
 /// sends `Response`s back. Created via [`Worker::spawn`].
 pub struct Worker;
@@ -778,5 +803,27 @@ mod tests {
 
         req_tx.send(Request::Shutdown).unwrap();
         handle.join().unwrap();
+    }
+
+    #[test]
+    fn channel_high_predicate() {
+        // Below 50%: silent.
+        assert!(!channel_high(0, 8));
+        assert!(!channel_high(3, 8));
+        // At exactly 50%: warn.
+        assert!(channel_high(4, 8));
+        // Above 50%: warn.
+        assert!(channel_high(7, 8));
+        // Unbounded (cap == 0): always silent.
+        assert!(!channel_high(100, 0));
+    }
+
+    #[test]
+    fn warn_if_high_smoke() {
+        // A bounded sender with some messages queued; just ensure no panic.
+        let (tx, _rx) = crossbeam_channel::bounded::<Request>(4);
+        tx.send(Request::Recompute).unwrap();
+        tx.send(Request::Recompute).unwrap();
+        warn_if_high(&tx, "test");
     }
 }

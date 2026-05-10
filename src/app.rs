@@ -373,6 +373,7 @@ impl App {
         })
     }
 
+    #[tracing::instrument(name = "app.run", skip_all)]
     pub fn run(&mut self) -> Result<()> {
         let mut terminal = Terminal::new()?;
         terminal.setup()?;

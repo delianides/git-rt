@@ -82,6 +82,7 @@ impl Terminal {
 // ── Main render entry point ──────────────────────────────────────────────────
 
 /// Top-level render function.
+#[tracing::instrument(name = "ui.render", skip_all)]
 fn render(frame: &mut Frame, state: &mut AppState, config: &AppConfig, theme: &Theme) {
     let area = frame.area();
 

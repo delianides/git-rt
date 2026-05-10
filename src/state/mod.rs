@@ -656,6 +656,7 @@ impl AppState {
 
     /// Update the file list from a fresh git status computation.
     /// Preserves selection position and expanded state where possible.
+    #[tracing::instrument(name = "state.update_files", skip_all, fields(n = new_files.len()))]
     pub fn update_files(&mut self, new_files: Vec<FileEntry>) {
         let selection = self.selection_snapshot();
 
@@ -711,6 +712,7 @@ impl AppState {
         // a one-frame viewport jump on every FS recompute.
     }
 
+    #[tracing::instrument(name = "state.rebuild_visible_rows", skip_all)]
     fn rebuild_visible_rows(&self) -> Vec<VisibleRow> {
         match self.view_mode {
             ViewMode::Flat => self.files.iter().map(flat_row_from_file).collect(),

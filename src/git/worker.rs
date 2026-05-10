@@ -160,6 +160,7 @@ impl Worker {
             .expect("failed to spawn git-worker thread")
     }
 
+    #[tracing::instrument(name = "git.worker.run", skip_all)]
     fn run(
         repo_path: PathBuf,
         base_override: Option<String>,

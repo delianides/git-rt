@@ -188,6 +188,7 @@ impl FsWatcher {
             None,
             move |result: Result<Vec<DebouncedEvent>, Vec<notify::Error>>| match result {
                 Ok(events) => {
+                    let _span = tracing::debug_span!("watcher.batch", n = events.len()).entered();
                     let mut has_fs = false;
                     let mut has_head = false;
                     let mut dropped_paths: usize = 0;

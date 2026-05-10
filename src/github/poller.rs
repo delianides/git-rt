@@ -31,6 +31,7 @@ pub enum GitHubEvent {
 /// across 10–30s idle polls leaves a stale keep-alive socket in the pool
 /// that GitHub's load balancer has already closed, producing
 /// "io: Peer disconnected" on the next request.
+#[tracing::instrument(name = "github.fetch_pr_data", skip_all, fields(branch = %branch))]
 pub(super) fn fetch_pr_data(
     owner: &str,
     repo: &str,

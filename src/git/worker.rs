@@ -6,7 +6,7 @@
 //! the main thread sends [`Request`] messages and receives [`Response`]
 //! messages.
 
-use std::collections::{HashMap, VecDeque};
+use std::collections::VecDeque;
 use std::path::PathBuf;
 use std::thread::{self, JoinHandle};
 
@@ -20,39 +20,6 @@ use crate::git::{FileDiff, FileEntry, GitRepo};
 /// against the current pending token and drops any result that doesn't
 /// match (user moved selection, closed overlay, switched worktrees).
 pub type DiffToken = u64;
-
-/// Per-branch cache of detected base branch names. Owned by the worker
-/// run-loop; cleared on `SwitchRepo`. Stores `Option<String>` so a
-/// genuine "no base detectable" result is remembered and doesn't retrigger
-/// detection on every recompute.
-#[derive(Debug, Default)]
-pub(crate) struct BaseCache {
-    entries: HashMap<String, Option<String>>,
-}
-
-// Kept until Task 6 deletes BaseCache entirely.
-#[allow(dead_code)]
-impl BaseCache {
-    pub(crate) fn new() -> Self {
-        Self::default()
-    }
-
-    pub(crate) fn get(&self, branch: &str) -> Option<&Option<String>> {
-        self.entries.get(branch)
-    }
-
-    pub(crate) fn insert(&mut self, branch: String, base: Option<String>) {
-        self.entries.insert(branch, base);
-    }
-
-    pub(crate) fn clear(&mut self) {
-        self.entries.clear();
-    }
-
-    pub(crate) fn is_empty(&self) -> bool {
-        self.entries.is_empty()
-    }
-}
 
 /// Requests the main thread sends to the worker.
 #[derive(Debug)]
@@ -257,12 +224,10 @@ impl Worker {
     }
 }
 
-/// Compute the same status bundle the old synchronous `handle_fs_change`
-/// produced. Errors degrade to an empty / default field rather than failing
-/// the whole bundle — mirrors current "best-effort" semantics.
-///
-/// `cache` is consulted / populated only when no explicit override is in
-/// play. Explicit overrides always short-circuit and bypass the cache.
+/// Compute the status bundle for the current worktree. Resolves the diff
+/// base via `resolve_base_branch` (trunk-priority) and delegates to
+/// `compute_with_base`. Errors degrade to default fields rather than
+/// failing the whole bundle.
 fn compute_status(
     git: &GitRepo,
     base_override: Option<&str>,

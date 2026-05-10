@@ -343,6 +343,7 @@ impl App {
         );
         // Best-effort initial Recompute. If the channel is full or disconnected,
         // the worker is dead and the app would fail anyway — log and continue.
+        crate::git::worker::warn_if_high(&worker_tx, "worker_req");
         if let Err(e) = worker_tx.try_send(Request::Recompute) {
             tracing::warn!(error = %e, "initial Recompute send failed");
             state.set_computing(false);
@@ -373,6 +374,7 @@ impl App {
         })
     }
 
+    #[tracing::instrument(name = "app.run", skip_all)]
     pub fn run(&mut self) -> Result<()> {
         let mut terminal = Terminal::new()?;
         terminal.setup()?;
@@ -432,6 +434,7 @@ impl App {
                     self.fs_rx = Some(fs_rx);
                     self.watcher_pending_rx = None;
                     tracing::info!("FsWatcher installed; issuing catch-up Recompute");
+                    crate::git::worker::warn_if_high(&self.worker_tx, "worker_req");
                     if let Err(e) = self.worker_tx.try_send(Request::Recompute) {
                         tracing::warn!(error = %e, "catch-up Recompute send failed");
                     }
@@ -614,6 +617,7 @@ impl App {
     /// is applied later when the event loop drains `worker_rx` (Task 5).
     fn handle_fs_change(&mut self) -> Result<()> {
         tracing::debug!("Filesystem change detected; sending Recompute to worker");
+        crate::git::worker::warn_if_high(&self.worker_tx, "worker_req");
         match self.worker_tx.try_send(Request::Recompute) {
             Ok(()) => {}
             Err(crossbeam_channel::TrySendError::Full(_)) => {
@@ -841,6 +845,7 @@ impl App {
         };
 
         // Trigger an initial Recompute on the new repo.
+        crate::git::worker::warn_if_high(&self.worker_tx, "worker_req");
         let _ = self.worker_tx.try_send(Request::Recompute);
         self.state.set_computing(true);
 

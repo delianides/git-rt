@@ -251,10 +251,31 @@ struct BaseCandidate {
     is_local: bool,
 }
 
+/// Cached entry for `GitRepo::ahead_behind`: maps `(head_oid, upstream_oid)`
+/// to the previously computed `(ahead, behind)` counts.
+type AheadBehindCache =
+    std::cell::RefCell<Option<((gix::ObjectId, gix::ObjectId), (usize, usize))>>;
+
+/// Cached entry for `GitRepo::merge_base`: maps `(head_oid, base_ref)` to the
+/// previously computed merge-base `ObjectId` (or `None` when none was found).
+/// Caching `None` avoids re-walking when "no merge-base" is the answer.
+type MergeBaseCache = std::cell::RefCell<Option<((gix::ObjectId, String), Option<gix::ObjectId>)>>;
+
 /// Git repository handle backed by gix (gitoxide).
 pub struct GitRepo {
     repo: gix::Repository,
     repo_path: PathBuf,
+    /// Cache: (head_oid, upstream_oid) -> (ahead, behind).
+    /// `ahead_behind()` is called per recompute; on a large repo each call
+    /// walks the commit graph twice. Memoize keyed on the two input OIDs.
+    /// `RefCell` is correct here — `GitRepo` is owned and accessed only on
+    /// the single dedicated worker thread (no `Sync` needed).
+    ahead_behind_cache: AheadBehindCache,
+    /// Cache: (head_oid, base_ref) -> merge_base_oid.
+    /// `merge_base()` builds a full topological index of HEAD's ancestry on
+    /// every call, which is expensive on large repos. Memoize keyed on the
+    /// (head_oid, base_ref) pair — invalidates correctly when either changes.
+    merge_base_cache: MergeBaseCache,
 }
 
 impl GitRepo {
@@ -273,7 +294,12 @@ impl GitRepo {
             .unwrap_or_else(|| path.to_path_buf());
         let repo_path = std::fs::canonicalize(&repo_path).unwrap_or(repo_path);
 
-        Ok(Self { repo, repo_path })
+        Ok(Self {
+            repo,
+            repo_path,
+            ahead_behind_cache: std::cell::RefCell::new(None),
+            merge_base_cache: std::cell::RefCell::new(None),
+        })
     }
 
     /// Get the current branch name, or "HEAD" if detached
@@ -387,6 +413,11 @@ impl GitRepo {
 
     /// Get ahead/behind counts relative to upstream.
     /// Returns None if there is no upstream configured.
+    ///
+    /// The result is memoized by `(head_oid, upstream_oid)`: on a large repo
+    /// each call previously walked the commit graph twice (O(N) where N is
+    /// total commits). The cache is invalidated automatically whenever HEAD
+    /// or upstream advances.
     pub fn ahead_behind(&self) -> Result<Option<(usize, usize)>, GitFailure> {
         // Get HEAD commit id
         let head_commit = match self.repo.head_commit() {
@@ -401,12 +432,20 @@ impl GitRepo {
             None => return Ok(None), // no upstream configured
         };
 
+        // Cache hit: same (head, upstream) pair as last call — skip the walks.
+        if let Some(((cached_head, cached_up), value)) = *self.ahead_behind_cache.borrow() {
+            if cached_head == head_id && cached_up == upstream_id {
+                return Ok(Some(value));
+            }
+        }
+
         // Compute ahead/behind by walking commits
         let ahead = count_reachable_exclusive(&self.repo, head_id, upstream_id)
             .map_err(|e| GitFailure::EnvChange(format!("ahead_behind ahead: {e}")))?;
         let behind = count_reachable_exclusive(&self.repo, upstream_id, head_id)
             .map_err(|e| GitFailure::EnvChange(format!("ahead_behind behind: {e}")))?;
 
+        *self.ahead_behind_cache.borrow_mut() = Some(((head_id, upstream_id), (ahead, behind)));
         Ok(Some((ahead, behind)))
     }
 
@@ -468,6 +507,33 @@ impl GitRepo {
             .map_err(|e| GitFailure::EnvChange(format!("merge_base head: {e}")))?;
         let head_id = head_commit.id().detach();
 
+        // Cache check: same (head_oid, base_ref) as last call → return cached value.
+        if let Some(((cached_head, cached_base), value)) = self.merge_base_cache.borrow().as_ref() {
+            if *cached_head == head_id && cached_base.as_str() == base_ref {
+                return Ok(*value);
+            }
+        }
+
+        // Compute the result, then write to cache unconditionally before returning.
+        // All early-exit paths (degenerate self-diff, no tips, etc.) are also cached
+        // so that repeated calls with the same inputs avoid re-walking.
+        let result = self.merge_base_inner(head_id, base_ref);
+
+        // Only cache successful computations; propagate errors directly.
+        if let Ok(value) = result {
+            *self.merge_base_cache.borrow_mut() = Some(((head_id, base_ref.to_owned()), value));
+            return Ok(value);
+        }
+
+        result
+    }
+
+    /// Inner implementation of `merge_base` — called only on a cache miss.
+    fn merge_base_inner(
+        &self,
+        head_id: gix::ObjectId,
+        base_ref: &str,
+    ) -> Result<Option<gix::ObjectId>, GitFailure> {
         // Self-as-base is degenerate (preserves existing semantics for
         // `merge_base(current_branch_name)` → `None`).
         if let Ok(name) = self.branch_name() {
@@ -1158,6 +1224,40 @@ mod tests {
     fn test_ahead_behind_no_panic() {
         let repo = GitRepo::new(std::path::Path::new(".")).unwrap();
         let _result = repo.ahead_behind();
+    }
+
+    #[test]
+    fn ahead_behind_cache_populated_after_call() {
+        let repo = GitRepo::new(std::path::Path::new(".")).unwrap();
+        let r1 = repo.ahead_behind().ok().flatten();
+        // After the first call the cache should be populated iff we got Some.
+        {
+            let cached = repo.ahead_behind_cache.borrow();
+            if r1.is_some() {
+                assert!(
+                    cached.is_some(),
+                    "cache must be populated when ahead_behind returned Some"
+                );
+            }
+        }
+        // Second call should return the same value (from cache or fresh).
+        let r2 = repo.ahead_behind().ok().flatten();
+        assert_eq!(
+            r1, r2,
+            "repeated ahead_behind calls must return equal results"
+        );
+    }
+
+    #[test]
+    fn merge_base_cache_populated_after_call() {
+        let repo = GitRepo::new(std::path::Path::new(".")).unwrap();
+        let r1 = repo.merge_base("main").ok();
+        assert!(
+            repo.merge_base_cache.borrow().is_some(),
+            "merge_base cache should be populated after a call"
+        );
+        let r2 = repo.merge_base("main").ok();
+        assert_eq!(r1, r2, "second call should return same result");
     }
 
     #[test]

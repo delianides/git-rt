@@ -30,6 +30,7 @@ use crate::git::{DiffHunk, DiffLine, DiffLineKind, FileDiff, FileEntry, FileStat
 ///
 /// `-z` mode: records are NUL-terminated; for type-2 entries the original
 /// path follows in the next NUL-terminated chunk.
+#[tracing::instrument(name = "git.parse_porcelain_v2", skip_all, fields(bytes = bytes.len()))]
 pub fn parse_porcelain_v2(bytes: &[u8]) -> Vec<(String, FileStatus)> {
     let mut out = Vec::new();
     let mut chunks = bytes.split(|&b| b == 0).filter(|c| !c.is_empty());
@@ -155,6 +156,7 @@ fn map_xy(xy: [u8; 2]) -> FileStatus {
 ///   Rename:   `<added>\t<deleted>\t\0<from>\0<to>\0`
 ///             → emitted under the destination path; the source name is dropped
 ///             (status output already reports the deletion via porcelain).
+#[tracing::instrument(name = "git.parse_numstat", skip_all, fields(bytes = bytes.len()))]
 pub fn parse_numstat(bytes: &[u8]) -> Vec<(String, usize, usize)> {
     let mut out = Vec::new();
     let mut chunks = bytes.split(|&b| b == 0).filter(|c| !c.is_empty());
@@ -287,6 +289,7 @@ pub fn merge_status_and_numstat(
 ///
 /// Errors map to [`GitFailure::EnvChange`] so the worker can log and the
 /// app can hold its previous state during transient git env changes.
+#[tracing::instrument(name = "git.compute_status_files", skip_all)]
 pub fn compute_status_files(
     repo_path: &Path,
     base_ref: Option<&gix::ObjectId>,

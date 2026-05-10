@@ -106,7 +106,6 @@ pub struct App {
     /// first bundle arrives. Used by `apply_status` to detect mid-session
     /// branch renames so the PR poller can be restarted and a flash message
     /// shown.
-    #[allow(dead_code)]
     last_seen_branch: Option<String>,
     /// CLI override for base branch
     base_override: Option<String>,
@@ -643,7 +642,6 @@ impl App {
     ///
     /// Called by `apply_status` when a recompute bundle's branch name
     /// differs from the previously observed branch.
-    #[allow(dead_code)]
     fn handle_branch_change(&mut self, new_branch: &str) {
         let old = self.last_seen_branch.clone().unwrap_or_default();
         tracing::info!(old = %old, new = %new_branch, "branch renamed in watched worktree");
@@ -679,6 +677,21 @@ impl App {
                 "apply_status: first Status received"
             );
         }
+
+        // Detect mid-session branch rename: only fire when we have a prior
+        // observation that disagrees with the new bundle. The first bundle
+        // sets `last_seen_branch` without firing the rename hook.
+        match self.last_seen_branch.as_deref() {
+            Some(prev) if prev != bundle.branch => {
+                let new_branch = bundle.branch.clone();
+                self.handle_branch_change(&new_branch);
+            }
+            None => {
+                self.last_seen_branch = Some(bundle.branch.clone());
+            }
+            _ => {}
+        }
+
         self.state.update_files(bundle.files);
         self.state
             .set_merge_base(bundle.merge_base, bundle.base_branch);
@@ -857,6 +870,9 @@ impl App {
         }
 
         // Worker is now on the new repo. Reset state and request a fresh load.
+        // Reset the rename-detection baseline so the new worktree's first
+        // bundle re-establishes it without firing a phantom rename.
+        self.last_seen_branch = None;
         self.state
             .reset_for_switch(Vec::new(), String::new(), String::new(), String::new());
         self._watcher = Some(watcher);
@@ -1469,6 +1485,49 @@ mod input_tests {
         assert!(
             flash.is_some_and(|m| m.contains("feat-1") && m.contains("feat-2")),
             "expected rename flash, got {flash:?}"
+        );
+    }
+
+    #[test]
+    fn apply_status_triggers_branch_change_on_rename() {
+        use crate::git::worker::StatusBundle;
+        let mut app = make_app(Vec::new());
+
+        // First bundle establishes baseline.
+        let bundle1 = StatusBundle {
+            branch: "feat-1".to_string(),
+            ..Default::default()
+        };
+        app.apply_status(bundle1);
+        assert_eq!(app.last_seen_branch.as_deref(), Some("feat-1"));
+        assert!(
+            app.state.flash_message().is_none(),
+            "first bundle should not flash a rename"
+        );
+
+        // Second bundle on a different branch fires the rename hook.
+        let bundle2 = StatusBundle {
+            branch: "feat-2".to_string(),
+            ..Default::default()
+        };
+        app.apply_status(bundle2);
+        assert_eq!(app.last_seen_branch.as_deref(), Some("feat-2"));
+        let flash = app.state.flash_message();
+        assert!(
+            flash.is_some_and(|m| m.contains("feat-1") && m.contains("feat-2")),
+            "expected rename flash on second apply, got {flash:?}"
+        );
+
+        // Third bundle on the same branch is a no-op for rename.
+        app.state.clear_flash_message();
+        let bundle3 = StatusBundle {
+            branch: "feat-2".to_string(),
+            ..Default::default()
+        };
+        app.apply_status(bundle3);
+        assert!(
+            app.state.flash_message().is_none(),
+            "same-branch bundle should not refire rename flash"
         );
     }
 }

@@ -121,24 +121,13 @@ fn main() -> Result<()> {
         "startup: resolve --branch"
     );
 
-    // auto_follow is now controlled only by --no-follow.
-    // --branch no longer disables auto-follow.
-    let auto_follow = !cli.no_follow;
-
     let t = std::time::Instant::now();
     let watch_path = match pinned_worktree {
         Some(ref wt) => {
             tracing::info!(worktree = %wt.name, path = ?wt.path, "Pinned to worktree");
             wt.path.clone()
         }
-        None => {
-            if auto_follow {
-                cold_start_pick(&repo_path)
-            } else {
-                // --no-follow without pinning: stay on launch directory
-                repo_path.clone()
-            }
-        }
+        None => cold_start_pick(&repo_path),
     };
     tracing::debug!(
         elapsed_ms = t.elapsed().as_millis() as u64,
@@ -151,7 +140,6 @@ fn main() -> Result<()> {
         repo_path,
         config,
         cli.debounce,
-        auto_follow,
         cli.theme,
         cli.base,
     )?;

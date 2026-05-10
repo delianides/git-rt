@@ -100,8 +100,6 @@ pub struct App {
     /// flash message every 250 ms when both the watched path and the main
     /// worktree are gone.
     main_missing_warned: bool,
-    /// Whether to auto-follow the most recently active worktree
-    auto_follow: bool,
     /// Receiver for GitHub PR events
     gh_rx: Option<Receiver<crate::github::GitHubEvent>>,
     /// CLI override for base branch
@@ -263,7 +261,6 @@ impl App {
         repo_path: PathBuf,
         config: AppConfig,
         debounce_ms: u64,
-        auto_follow: bool,
         theme_override: Option<String>,
         base_override: Option<String>,
     ) -> Result<Self> {
@@ -365,7 +362,6 @@ impl App {
             watch_path,
             main_worktree_path,
             main_missing_warned: false,
-            auto_follow,
             gh_rx,
             base_override,
             worker_tx,
@@ -506,7 +502,6 @@ impl App {
                 ) {
                     self.fallback_to_main()?;
                 }
-                self.check_worktree_activity()?;
             }
         }
     }
@@ -852,40 +847,6 @@ impl App {
         Ok(())
     }
 
-    /// On every tick, check which worktree was most recently active (by HEAD +
-    /// index mtime) and switch to it if it differs from the current watch path.
-    fn check_worktree_activity(&mut self) -> Result<()> {
-        if !self.auto_follow {
-            return Ok(());
-        }
-        let worktrees = crate::watcher::activity::list_all_worktrees(&self.repo_path);
-        if worktrees.len() <= 1 {
-            return Ok(());
-        }
-        let newest = worktrees
-            .iter()
-            .filter_map(|wt| {
-                let activity = crate::watcher::activity::worktree_last_activity(&wt.path)?;
-                Some((wt, activity))
-            })
-            .max_by_key(|(_, mtime)| *mtime);
-
-        if let Some((wt, _)) = newest {
-            if wt.path != self.watch_path {
-                tracing::info!(
-                    worktree = %wt.name,
-                    path = ?wt.path,
-                    "Switching to most recently active worktree"
-                );
-                let name = wt.name.clone();
-                self.switch_to_path(wt.path.clone())?;
-                self.state
-                    .set_flash_message(format!("Switched to worktree: {name}"));
-            }
-        }
-        Ok(())
-    }
-
     /// Fall back to the main worktree when the watched worktree is gone.
     ///
     /// Uses `fallback_decision` to choose among switching, flashing a
@@ -1163,7 +1124,6 @@ mod input_tests {
                 watch_path: PathBuf::new(),
                 main_worktree_path: PathBuf::new(),
                 main_missing_warned: false,
-                auto_follow: false,
                 gh_rx: None,
                 base_override: None,
                 worker_tx,

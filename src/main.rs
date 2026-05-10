@@ -40,16 +40,9 @@ struct Cli {
     log: Option<String>,
 
     /// Pin to the worktree (main or linked) with this branch checked out as the
-    /// starting worktree. Does not disable auto-follow — use --no-follow for that.
+    /// starting worktree.
     #[arg(long)]
     branch: Option<String>,
-
-    /// Disable automatic worktree following. When set, git-rt will stay on the
-    /// worktree it was launched in (or pinned to) and will not switch to other
-    /// worktrees even if activity is detected elsewhere. Also disables cold-start
-    /// activity scan.
-    #[arg(long)]
-    no_follow: bool,
 
     /// Theme name or path to a theme file (TOML or JSON).
     /// Overrides the theme set in the config file.

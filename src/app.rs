@@ -648,6 +648,9 @@ impl App {
         let old = self.last_seen_branch.clone().unwrap_or_default();
         tracing::info!(old = %old, new = %new_branch, "branch renamed in watched worktree");
 
+        // Clear stale PR data before restarting the poller so the UI doesn't
+        // keep showing the old branch's PR while the new poller spins up.
+        self.state.clear_pr();
         // Drop the old PR receiver. The sender thread will exit on its
         // next iteration when it tries to send on a dropped channel.
         self.gh_rx = None;
@@ -1440,8 +1443,28 @@ mod input_tests {
     fn handle_branch_change_sets_flash_and_updates_last_seen() {
         let mut app = make_app(Vec::new());
         app.last_seen_branch = Some("feat-1".to_string());
+        // Seed stale PR error state to verify it gets cleared.
+        app.state.set_pr_error("stale error from feat-1".into());
+        assert!(
+            app.state.pr_state().error.is_some(),
+            "test setup: pr error should be set"
+        );
+
         app.handle_branch_change("feat-2");
+
         assert_eq!(app.last_seen_branch.as_deref(), Some("feat-2"));
+        assert!(
+            app.state.pr_state().error.is_none(),
+            "expected pr error cleared after branch rename"
+        );
+        assert!(
+            app.state.pr_state().info.is_none(),
+            "expected pr info cleared after branch rename"
+        );
+        assert!(
+            !app.state.pr_state().loading,
+            "expected pr loading cleared after branch rename"
+        );
         let flash = app.state.flash_message();
         assert!(
             flash.is_some_and(|m| m.contains("feat-1") && m.contains("feat-2")),

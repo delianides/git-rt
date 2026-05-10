@@ -39,11 +39,6 @@ struct Cli {
     #[arg(long)]
     log: Option<String>,
 
-    /// Pin to the worktree (main or linked) with this branch checked out as the
-    /// starting worktree.
-    #[arg(long)]
-    branch: Option<String>,
-
     /// Theme name or path to a theme file (TOML or JSON).
     /// Overrides the theme set in the config file.
     #[arg(long)]

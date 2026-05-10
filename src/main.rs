@@ -99,33 +99,7 @@ fn main() -> Result<()> {
         "startup: config load"
     );
 
-    // Resolve branch pinning: search across main + all linked worktrees.
-    let t = std::time::Instant::now();
-    let pinned_worktree = if let Some(ref branch_arg) = cli.branch {
-        Some(
-            watcher::activity::resolve_branch_arg(&repo_path, branch_arg)
-                .with_context(|| format!("Failed to resolve --branch '{branch_arg}'"))?,
-        )
-    } else {
-        None
-    };
-    tracing::debug!(
-        elapsed_ms = t.elapsed().as_millis() as u64,
-        "startup: resolve --branch"
-    );
-
-    let t = std::time::Instant::now();
-    let watch_path = match pinned_worktree {
-        Some(ref wt) => {
-            tracing::info!(worktree = %wt.name, path = ?wt.path, "Pinned to worktree");
-            wt.path.clone()
-        }
-        None => cold_start_pick(&repo_path),
-    };
-    tracing::debug!(
-        elapsed_ms = t.elapsed().as_millis() as u64,
-        "startup: cold_start_pick"
-    );
+    let watch_path = repo_path.clone();
 
     let t = std::time::Instant::now();
     let mut app = app::App::new(
@@ -145,34 +119,4 @@ fn main() -> Result<()> {
         "startup: total before run()"
     );
     app.run()
-}
-
-/// Scan all worktrees (main + linked) and return the path of the one with
-/// the most recent activity. Falls back to `repo_path` if no worktrees are
-/// found or activity cannot be determined.
-fn cold_start_pick(repo_path: &std::path::Path) -> PathBuf {
-    let worktrees = watcher::activity::list_all_worktrees(repo_path);
-    if worktrees.is_empty() {
-        return repo_path.to_path_buf();
-    }
-
-    let winner = worktrees
-        .iter()
-        .filter_map(|wt| {
-            let activity = watcher::activity::worktree_last_activity(&wt.path)?;
-            Some((wt, activity))
-        })
-        .max_by_key(|(_, mtime)| *mtime);
-
-    match winner {
-        Some((wt, _)) => {
-            tracing::info!(
-                worktree = %wt.name,
-                path = ?wt.path,
-                "Cold-start auto-switched to most active worktree"
-            );
-            wt.path.clone()
-        }
-        None => repo_path.to_path_buf(),
-    }
 }

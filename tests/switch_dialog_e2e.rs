@@ -4,7 +4,7 @@ use std::process::Command;
 
 use tempfile::tempdir;
 
-use git_rt::git::worktree::list;
+use perch::git::worktree::list;
 
 fn run_git(cwd: &std::path::Path, args: &[&str]) {
     let status = Command::new("git")

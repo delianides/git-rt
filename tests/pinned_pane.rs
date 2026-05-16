@@ -1,11 +1,11 @@
-//! Tests that confirm git-rt's launch-time behavior matches the
+//! Tests that confirm perch's launch-time behavior matches the
 //! pinned-worktree spec.
 
 use std::fs;
 use std::path::Path;
 use std::process::Command;
 
-use git_rt::git::discover_worktree_root;
+use perch::git::discover_worktree_root;
 use tempfile::TempDir;
 
 fn git(dir: &Path, args: &[&str]) {

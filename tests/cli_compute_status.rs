@@ -3,8 +3,8 @@ use std::process::Command;
 
 use tempfile::TempDir;
 
-use git_rt::git::cli::compute_status_files;
-use git_rt::git::FileStatus;
+use perch::git::cli::compute_status_files;
+use perch::git::FileStatus;
 
 fn git(dir: &Path, args: &[&str]) {
     let out = Command::new("git")

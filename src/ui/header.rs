@@ -341,8 +341,8 @@ mod tests {
 
     fn fresh_state() -> AppState {
         let mut s = AppState::new(vec![], Duration::from_millis(600), "main".to_string());
-        s.set_repo_name("git-rt".to_string());
-        s.set_worktree_name("git-rt".to_string());
+        s.set_repo_name("perch".to_string());
+        s.set_worktree_name("perch".to_string());
         s
     }
 
@@ -350,7 +350,7 @@ mod tests {
     fn test_header_title_basic() {
         let s = fresh_state();
         let line = build_header_title(&s, &test_theme());
-        assert_eq!(line_text(&line), " git-rt/main ● 0 files ● flat ");
+        assert_eq!(line_text(&line), " perch/main ● 0 files ● flat ");
     }
 
     #[test]
@@ -372,7 +372,7 @@ mod tests {
             },
         ]);
         let line = build_header_title(&s, &test_theme());
-        assert_eq!(line_text(&line), " git-rt/main ● 2 files ● -3/+16 ● flat ");
+        assert_eq!(line_text(&line), " perch/main ● 2 files ● -3/+16 ● flat ");
     }
 
     #[test]
@@ -383,7 +383,7 @@ mod tests {
         let line = build_header_title(&s, &test_theme());
         assert_eq!(
             line_text(&line),
-            " git-rt/main ● 0 files ● ↑2 ↓1 ● 3 stash ● flat "
+            " perch/main ● 0 files ● ↑2 ↓1 ● 3 stash ● flat "
         );
     }
 
@@ -392,7 +392,7 @@ mod tests {
         let mut s = fresh_state();
         s.set_ahead_behind(Some((0, 0)));
         let line = build_header_title(&s, &test_theme());
-        assert_eq!(line_text(&line), " git-rt/main ● 0 files ● flat ");
+        assert_eq!(line_text(&line), " perch/main ● 0 files ● flat ");
     }
 
     #[test]
@@ -400,7 +400,7 @@ mod tests {
         let mut s = fresh_state();
         s.set_stash_count(0);
         let line = build_header_title(&s, &test_theme());
-        assert_eq!(line_text(&line), " git-rt/main ● 0 files ● flat ");
+        assert_eq!(line_text(&line), " perch/main ● 0 files ● flat ");
     }
 
     #[test]
@@ -421,9 +421,9 @@ mod tests {
     #[test]
     fn test_header_title_detached_head_shows_repo_only() {
         let mut s = AppState::new(vec![], Duration::from_millis(600), String::new());
-        s.set_repo_name("git-rt".to_string());
+        s.set_repo_name("perch".to_string());
         let line = build_header_title(&s, &test_theme());
-        assert_eq!(line_text(&line), " git-rt ● 0 files ● flat ");
+        assert_eq!(line_text(&line), " perch ● 0 files ● flat ");
     }
 
     #[test]
@@ -491,7 +491,7 @@ mod tests {
         let line = build_header_title_with_width(&s, &test_theme(), 40);
         let text = line_text(&line);
         assert!(text.contains('\u{2026}'), "expected ellipsis, got: {text}");
-        assert!(text.contains("git-rt"), "got: {text}");
+        assert!(text.contains("perch"), "got: {text}");
         assert!(
             display_width(&text) <= 40,
             "got width {}: {text}",

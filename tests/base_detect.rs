@@ -6,7 +6,7 @@
 use std::path::Path;
 use std::process::Command;
 
-use git_rt::git::GitRepo;
+use perch::git::GitRepo;
 
 fn git(dir: &Path, args: &[&str]) {
     let status = Command::new("git")

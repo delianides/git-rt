@@ -5,7 +5,7 @@ members = ["cargo:."]
 cargo-dist-version = "0.31.0"
 ci = "github"
 installers = ["shell", "powershell", "homebrew"]
-tap = "delianides/homebrew-git-rt"
+tap = "upsertco/homebrew-perch"
 targets = [
   "x86_64-apple-darwin",
   "aarch64-apple-darwin",

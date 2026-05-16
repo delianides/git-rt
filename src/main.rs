@@ -18,7 +18,7 @@ use tracing_subscriber::EnvFilter;
 
 #[derive(Parser, Debug)]
 #[command(
-    name = "git-rt",
+    name = "perch",
     version,
     about = "Real-time terminal dashboard for git changes"
 )]
@@ -55,8 +55,8 @@ fn main() -> Result<()> {
 
     // Initialize tracing if requested — write to file since TUI owns stdout/stderr
     if let Some(ref level) = cli.log {
-        let log_file = std::fs::File::create("/tmp/git-rt.log")
-            .context("Failed to create log file at /tmp/git-rt.log")?;
+        let log_file = std::fs::File::create("/tmp/perch.log")
+            .context("Failed to create log file at /tmp/perch.log")?;
         tracing_subscriber::fmt()
             .with_env_filter(EnvFilter::try_new(level).unwrap_or_else(|_| EnvFilter::new("info")))
             .with_target(false)
@@ -85,7 +85,7 @@ fn main() -> Result<()> {
         "startup: discover_worktree_root"
     );
 
-    tracing::info!(?repo_path, "Starting git-rt");
+    tracing::info!(?repo_path, "Starting perch");
 
     let t = std::time::Instant::now();
     let config = config::AppConfig::load(cli.config.as_deref())?;

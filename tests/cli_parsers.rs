@@ -1,7 +1,7 @@
-use git_rt::git::cli::{
+use perch::git::cli::{
     merge_status_and_numstat, parse_name_status, parse_numstat, parse_porcelain_v2,
 };
-use git_rt::git::{FileEntry, FileStatus};
+use perch::git::{FileEntry, FileStatus};
 
 #[test]
 fn parse_porcelain_v2_untracked_single() {

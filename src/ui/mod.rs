@@ -608,7 +608,7 @@ mod tests {
                     Duration::from_millis(600),
                     "feat/very-long-branch-name-for-testing".to_string(),
                 );
-                state.set_repo_name("git-rt".to_string());
+                state.set_repo_name("perch".to_string());
                 if tree {
                     state.cycle_view_mode();
                 }

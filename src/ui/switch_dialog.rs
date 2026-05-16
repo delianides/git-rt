@@ -1,4 +1,4 @@
-//! Modal dialog for switching which worktree git-rt is watching.
+//! Modal dialog for switching which worktree perch is watching.
 //!
 //! State, key-handling, and rendering live here. Unit tests cover the
 //! headless core; the rendering function is validated manually.
@@ -14,7 +14,7 @@ use crate::git::worktree::WorktreeEntry;
 #[derive(Debug, Clone)]
 pub struct Row {
     pub entry: WorktreeEntry,
-    /// True for the worktree git-rt is currently watching.
+    /// True for the worktree perch is currently watching.
     pub is_current: bool,
     /// Pre-rendered "branch  path" (or "(detached abc1234)  path") used both
     /// for display and as the fuzzy-match haystack.

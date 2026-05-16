@@ -43,7 +43,7 @@ fn test_branch_diff_shows_committed_files() {
     git(repo_path, &["add", "README.md"]);
     git(repo_path, &["commit", "-m", "update readme"]);
 
-    let git_repo = git_rt::git::GitRepo::new(repo_path).unwrap();
+    let git_repo = perch::git::GitRepo::new(repo_path).unwrap();
 
     let mb = git_repo
         .merge_base("main")
@@ -63,11 +63,11 @@ fn test_branch_diff_shows_committed_files() {
     );
 
     let new_file = entries.iter().find(|e| e.path == "new_file.rs").unwrap();
-    assert!(matches!(new_file.status, git_rt::git::FileStatus::Added));
+    assert!(matches!(new_file.status, perch::git::FileStatus::Added));
     assert!(new_file.insertions > 0);
 
     let readme = entries.iter().find(|e| e.path == "README.md").unwrap();
-    assert!(matches!(readme.status, git_rt::git::FileStatus::Modified));
+    assert!(matches!(readme.status, perch::git::FileStatus::Modified));
 }
 
 #[test]
@@ -89,7 +89,7 @@ fn test_branch_diff_includes_uncommitted_changes() {
     // Uncommitted change
     std::fs::write(repo_path.join("uncommitted.txt"), "uncommitted\n").unwrap();
 
-    let git_repo = git_rt::git::GitRepo::new(repo_path).unwrap();
+    let git_repo = perch::git::GitRepo::new(repo_path).unwrap();
     let mb = git_repo.merge_base("main").unwrap().expect("merge base");
     let entries = git_repo.branch_status(mb).unwrap();
     let paths: Vec<&str> = entries.iter().map(|e| e.path.as_str()).collect();
@@ -108,7 +108,7 @@ fn test_merge_base_none_on_default_branch() {
     git(repo_path, &["add", "file.txt"]);
     git(repo_path, &["commit", "-m", "initial"]);
 
-    let git_repo = git_rt::git::GitRepo::new(repo_path).unwrap();
+    let git_repo = perch::git::GitRepo::new(repo_path).unwrap();
     let result = git_repo.merge_base("main").unwrap();
     assert!(
         result.is_none(),
@@ -141,7 +141,7 @@ fn test_branch_diff_file_shows_full_diff() {
     )
     .unwrap();
 
-    let git_repo = git_rt::git::GitRepo::new(repo_path).unwrap();
+    let git_repo = perch::git::GitRepo::new(repo_path).unwrap();
     let mb = git_repo.merge_base("main").unwrap().expect("merge base");
     let diff = git_repo.branch_diff_file("file.txt", mb).unwrap();
 
@@ -151,13 +151,13 @@ fn test_branch_diff_file_shows_full_diff() {
         .hunks
         .iter()
         .flat_map(|h| &h.lines)
-        .filter(|l| matches!(l.kind, git_rt::git::DiffLineKind::Addition))
+        .filter(|l| matches!(l.kind, perch::git::DiffLineKind::Addition))
         .count();
     let deletions: usize = diff
         .hunks
         .iter()
         .flat_map(|h| &h.lines)
-        .filter(|l| matches!(l.kind, git_rt::git::DiffLineKind::Deletion))
+        .filter(|l| matches!(l.kind, perch::git::DiffLineKind::Deletion))
         .count();
 
     assert!(additions >= 2, "should have additions");
@@ -179,7 +179,7 @@ fn test_branch_status_only_committed_changes() {
     git(repo_path, &["add", "."]);
     git(repo_path, &["commit", "-m", "feature commit"]);
 
-    let git_repo = git_rt::git::GitRepo::new(repo_path).unwrap();
+    let git_repo = perch::git::GitRepo::new(repo_path).unwrap();
     let mb = git_repo.merge_base("main").unwrap().expect("merge base");
     let entries = git_repo.branch_status(mb).unwrap();
 
@@ -188,11 +188,11 @@ fn test_branch_status_only_committed_changes() {
     assert!(paths.contains(&"b.txt"), "b.txt (added) must appear");
 
     let a = entries.iter().find(|e| e.path == "a.txt").unwrap();
-    assert!(matches!(a.status, git_rt::git::FileStatus::Modified));
+    assert!(matches!(a.status, perch::git::FileStatus::Modified));
     assert!(a.insertions > 0, "modified file should have insertions");
 
     let b = entries.iter().find(|e| e.path == "b.txt").unwrap();
-    assert!(matches!(b.status, git_rt::git::FileStatus::Added));
+    assert!(matches!(b.status, perch::git::FileStatus::Added));
     assert!(b.insertions > 0, "added file should have insertions");
 }
 
@@ -213,7 +213,7 @@ fn test_branch_status_only_uncommitted_changes() {
     std::fs::write(repo_path.join("a.txt"), "a\nedited\n").unwrap();
     std::fs::write(repo_path.join("untracked.txt"), "u\n").unwrap();
 
-    let git_repo = git_rt::git::GitRepo::new(repo_path).unwrap();
+    let git_repo = perch::git::GitRepo::new(repo_path).unwrap();
     let mb = git_repo.merge_base("main").unwrap().expect("merge base");
     let entries = git_repo.branch_status(mb).unwrap();
     let paths: Vec<&str> = entries.iter().map(|e| e.path.as_str()).collect();
@@ -226,7 +226,7 @@ fn test_branch_status_only_uncommitted_changes() {
 
     let untracked = entries.iter().find(|e| e.path == "untracked.txt").unwrap();
     assert!(
-        matches!(untracked.status, git_rt::git::FileStatus::Untracked),
+        matches!(untracked.status, perch::git::FileStatus::Untracked),
         "untracked file must keep Untracked status, got {:?}",
         untracked.status
     );
@@ -248,7 +248,7 @@ fn test_branch_status_committed_then_further_edited() {
 
     std::fs::write(repo_path.join("a.txt"), "v2\nextra\n").unwrap();
 
-    let git_repo = git_rt::git::GitRepo::new(repo_path).unwrap();
+    let git_repo = perch::git::GitRepo::new(repo_path).unwrap();
     let mb = git_repo.merge_base("main").unwrap().expect("merge base");
     let entries = git_repo.branch_status(mb).unwrap();
 
@@ -277,7 +277,7 @@ fn test_branch_status_deleted_on_branch() {
     git(repo_path, &["add", "a.txt"]);
     git(repo_path, &["commit", "-m", "delete a"]);
 
-    let git_repo = git_rt::git::GitRepo::new(repo_path).unwrap();
+    let git_repo = perch::git::GitRepo::new(repo_path).unwrap();
     let mb = git_repo.merge_base("main").unwrap().expect("merge base");
     let entries = git_repo.branch_status(mb).unwrap();
 
@@ -285,7 +285,7 @@ fn test_branch_status_deleted_on_branch() {
         .iter()
         .find(|e| e.path == "a.txt")
         .expect("a.txt must appear as deleted");
-    assert!(matches!(a.status, git_rt::git::FileStatus::Deleted));
+    assert!(matches!(a.status, perch::git::FileStatus::Deleted));
     assert!(
         a.deletions >= 3,
         "deleted file should report deleted-line count; got {}",

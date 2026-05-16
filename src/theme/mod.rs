@@ -1,8 +1,8 @@
-//! Theme system for git-rt.
+//! Theme system for perch.
 //!
 //! Themes are parsed from TOML or JSON files. Built-in themes are embedded
 //! in the binary via `include_str!`. Users can place custom themes in
-//! `~/.config/git-rt/themes/` (or the platform equivalent) to override
+//! `~/.config/perch/themes/` (or the platform equivalent) to override
 //! built-ins or add new themes. Themes may use `extends = "<name>"` to
 //! inherit missing fields from another theme.
 
@@ -18,7 +18,7 @@ use ratatui::style::Color;
 
 use parser::ThemeFile;
 
-/// A complete, fully-resolved colour theme for the git-rt TUI.
+/// A complete, fully-resolved colour theme for the perch TUI.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Theme {
     pub name: String,
@@ -90,16 +90,16 @@ const BUILTIN_THEMES: &[(&str, &str)] = &[
 ];
 
 /// Default path to the user themes directory.
-/// Follows the same resolution logic as the config file: `~/.config/git-rt/themes/`
+/// Follows the same resolution logic as the config file: `~/.config/perch/themes/`
 /// or the platform-specific config directory fallback.
 pub fn default_user_themes_dir() -> Option<PathBuf> {
-    let xdg = dirs::home_dir().map(|h| h.join(".config").join("git-rt").join("themes"));
+    let xdg = dirs::home_dir().map(|h| h.join(".config").join("perch").join("themes"));
     if let Some(ref p) = xdg {
         if p.exists() {
             return xdg;
         }
     }
-    dirs::config_dir().map(|d| d.join("git-rt").join("themes"))
+    dirs::config_dir().map(|d| d.join("perch").join("themes"))
 }
 
 /// Build the theme registry by parsing all built-in themes and any user themes
@@ -283,7 +283,7 @@ mod tests {
 
     #[test]
     fn test_load_from_file_path() {
-        let dir = std::env::temp_dir().join("git-rt-theme-file-load");
+        let dir = std::env::temp_dir().join("perch-theme-file-load");
         std::fs::create_dir_all(&dir).unwrap();
         let path = dir.join("test.toml");
         std::fs::write(
@@ -309,7 +309,7 @@ bg = "#123456"
 
     #[test]
     fn test_user_themes_override_builtins() {
-        let dir = std::env::temp_dir().join("git-rt-theme-override");
+        let dir = std::env::temp_dir().join("perch-theme-override");
         std::fs::create_dir_all(&dir).unwrap();
         let path = dir.join("dracula.toml");
         std::fs::write(
@@ -333,7 +333,7 @@ bg = "#aabbcc"
 
     #[test]
     fn test_user_themes_json_format() {
-        let dir = std::env::temp_dir().join("git-rt-theme-json");
+        let dir = std::env::temp_dir().join("perch-theme-json");
         std::fs::create_dir_all(&dir).unwrap();
         let path = dir.join("my-json-theme.json");
         std::fs::write(

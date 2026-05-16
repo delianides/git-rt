@@ -48,7 +48,7 @@ pub(super) fn fetch_pr_data(
         .post("https://api.github.com/graphql")
         .header("Authorization", &format!("Bearer {token}"))
         .header("Accept", "application/vnd.github+json")
-        .header("User-Agent", "git-rt")
+        .header("User-Agent", "perch")
         .send_json(body)
         .context("GraphQL request failed")?
         .body_mut()

@@ -178,7 +178,7 @@ fn shell_single_quote(s: &str) -> String {
 }
 
 /// Open a URL in the user's default browser (macOS `open`, Linux `xdg-open`,
-/// Windows `cmd /C start`). Detached: returns immediately, git-rt keeps running.
+/// Windows `cmd /C start`). Detached: returns immediately, perch keeps running.
 /// Stdio is nulled so launcher noise doesn't corrupt the TUI.
 fn open_url(url: &str) -> Result<()> {
     let (program, args): (&str, Vec<&str>) = if cfg!(target_os = "macos") {

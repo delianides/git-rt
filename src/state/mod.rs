@@ -1086,15 +1086,15 @@ mod tests {
         let files = vec![make_entry("a.rs", 1, 0)];
         let mut state = AppState::new(files, Duration::from_millis(600), "main".to_string());
 
-        state.set_repo_name("git-rt".to_string());
-        state.set_worktree_name("git-rt".to_string());
+        state.set_repo_name("perch".to_string());
+        state.set_worktree_name("perch".to_string());
         state.set_head_info("abc1234".to_string(), "fix: some bug".to_string());
         state.set_stash_count(3);
         state.set_ahead_behind(Some((2, 1)));
         state.set_repo_state(Some("REBASING".to_string()));
 
-        assert_eq!(state.repo_name(), "git-rt");
-        assert_eq!(state.worktree_name(), "git-rt");
+        assert_eq!(state.repo_name(), "perch");
+        assert_eq!(state.worktree_name(), "perch");
         assert_eq!(state.head_sha(), "abc1234");
         assert_eq!(state.head_message(), "fix: some bug");
         assert_eq!(state.stash_count(), 3);

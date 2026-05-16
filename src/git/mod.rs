@@ -495,7 +495,7 @@ impl GitRepo {
                 Ok(None) => continue,
                 Err(e) => {
                     tracing::debug!(
-                        target: "git_rt::git::base_resolve",
+                        target: "perch::git::base_resolve",
                         tip = %tip.to_hex(),
                         error = %e,
                         "merge-base walk failed for tip; skipping"
@@ -516,7 +516,7 @@ impl GitRepo {
         let chosen = best;
         let result = chosen.map(|(_, mb, _)| mb);
         tracing::debug!(
-            target: "git_rt::git::base_resolve",
+            target: "perch::git::base_resolve",
             name = base_ref,
             tip_count = tips.len(),
             chosen_tip = ?chosen.map(|(_, _, tip)| tip.to_hex().to_string()),
@@ -1295,7 +1295,7 @@ mod tests {
 
     #[test]
     fn test_new_returns_not_a_repo_for_invalid_path() {
-        let temp = std::env::temp_dir().join("git-rt-test-not-a-repo-task2");
+        let temp = std::env::temp_dir().join("perch-test-not-a-repo-task2");
         std::fs::create_dir_all(&temp).unwrap();
         let result = GitRepo::new(&temp);
         assert!(result.is_err());
@@ -1311,7 +1311,7 @@ mod tests {
 
     #[test]
     fn test_resolve_base_branch_none_when_no_remote() {
-        let dir = std::env::temp_dir().join("git-rt-test-no-remote");
+        let dir = std::env::temp_dir().join("perch-test-no-remote");
         std::fs::create_dir_all(&dir).ok();
         let result = std::process::Command::new("git")
             .args(["init", "-b", "main"])

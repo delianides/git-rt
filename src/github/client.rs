@@ -2,7 +2,7 @@ use std::path::Path;
 use std::process::Command;
 
 /// Resolve a GitHub auth token. Tries `gh auth token` first, then
-/// falls back to the `GIT_RT_GITHUB_TOKEN` environment variable.
+/// falls back to the `PERCH_GITHUB_TOKEN` environment variable.
 pub fn resolve_auth_token() -> Option<String> {
     // Try `gh auth token` first
     if let Ok(output) = Command::new("gh").args(["auth", "token"]).output() {
@@ -15,7 +15,7 @@ pub fn resolve_auth_token() -> Option<String> {
     }
 
     // Fall back to environment variable
-    std::env::var("GIT_RT_GITHUB_TOKEN")
+    std::env::var("PERCH_GITHUB_TOKEN")
         .ok()
         .filter(|t| !t.is_empty())
 }
@@ -74,29 +74,20 @@ mod tests {
 
     #[test]
     fn test_parse_remote_ssh() {
-        let result = parse_remote_url("git@github.com:delianides/git-rt.git");
-        assert_eq!(
-            result,
-            Some(("delianides".to_string(), "git-rt".to_string()))
-        );
+        let result = parse_remote_url("git@github.com:upsertco/perch.git");
+        assert_eq!(result, Some(("upsertco".to_string(), "perch".to_string())));
     }
 
     #[test]
     fn test_parse_remote_https() {
-        let result = parse_remote_url("https://github.com/delianides/git-rt.git");
-        assert_eq!(
-            result,
-            Some(("delianides".to_string(), "git-rt".to_string()))
-        );
+        let result = parse_remote_url("https://github.com/upsertco/perch.git");
+        assert_eq!(result, Some(("upsertco".to_string(), "perch".to_string())));
     }
 
     #[test]
     fn test_parse_remote_https_no_suffix() {
-        let result = parse_remote_url("https://github.com/delianides/git-rt");
-        assert_eq!(
-            result,
-            Some(("delianides".to_string(), "git-rt".to_string()))
-        );
+        let result = parse_remote_url("https://github.com/upsertco/perch");
+        assert_eq!(result, Some(("upsertco".to_string(), "perch".to_string())));
     }
 
     #[test]

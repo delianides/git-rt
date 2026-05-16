@@ -122,11 +122,11 @@ impl AppConfig {
         let config_path = path.map(PathBuf::from).or_else(|| {
             // Check ~/.config first (XDG convention, common on macOS for CLI tools)
             let xdg_path = dirs::home_dir()
-                .map(|h| h.join(".config").join("git-rt").join("config.toml"))
+                .map(|h| h.join(".config").join("perch").join("config.toml"))
                 .filter(|p| p.exists());
 
             // Fall back to platform config dir (~/Library/Application Support on macOS)
-            xdg_path.or_else(|| dirs::config_dir().map(|d| d.join("git-rt").join("config.toml")))
+            xdg_path.or_else(|| dirs::config_dir().map(|d| d.join("perch").join("config.toml")))
         });
 
         match config_path {
@@ -189,7 +189,7 @@ mod tests {
 
     #[test]
     fn test_load_nonexistent_uses_defaults() {
-        let config = AppConfig::load(Some(Path::new("/tmp/nonexistent-git-rt-config.toml")));
+        let config = AppConfig::load(Some(Path::new("/tmp/nonexistent-perch-config.toml")));
         assert!(config.is_ok());
         let config = config.unwrap();
         assert_eq!(config.debounce_ms, 500);
@@ -198,7 +198,7 @@ mod tests {
 
     #[test]
     fn test_load_valid_toml() {
-        let dir = std::env::temp_dir().join("git-rt-test-config-simplified");
+        let dir = std::env::temp_dir().join("perch-test-config-simplified");
         std::fs::create_dir_all(&dir).unwrap();
         let path = dir.join("config.toml");
         std::fs::write(
@@ -223,7 +223,7 @@ layout = "right"
 
     #[test]
     fn test_load_partial_fills_defaults() {
-        let dir = std::env::temp_dir().join("git-rt-test-config-partial-simplified");
+        let dir = std::env::temp_dir().join("perch-test-config-partial-simplified");
         std::fs::create_dir_all(&dir).unwrap();
         let path = dir.join("config.toml");
         std::fs::write(&path, "theme = \"nord\"\n").unwrap();
@@ -243,7 +243,7 @@ layout = "right"
 
     #[test]
     fn test_load_scroll_padding_zero() {
-        let dir = std::env::temp_dir().join("git-rt-test-config-scroll-padding-zero");
+        let dir = std::env::temp_dir().join("perch-test-config-scroll-padding-zero");
         std::fs::create_dir_all(&dir).unwrap();
         let path = dir.join("config.toml");
         std::fs::write(&path, "[display]\nscroll_padding = 0\n").unwrap();
@@ -256,7 +256,7 @@ layout = "right"
 
     #[test]
     fn test_load_scroll_padding_custom() {
-        let dir = std::env::temp_dir().join("git-rt-test-config-scroll-padding-custom");
+        let dir = std::env::temp_dir().join("perch-test-config-scroll-padding-custom");
         std::fs::create_dir_all(&dir).unwrap();
         let path = dir.join("config.toml");
         std::fs::write(&path, "[display]\nscroll_padding = 10\n").unwrap();
@@ -269,7 +269,7 @@ layout = "right"
 
     #[test]
     fn test_base_branch_config() {
-        let dir = std::env::temp_dir().join("git-rt-test-config-base-branch");
+        let dir = std::env::temp_dir().join("perch-test-config-base-branch");
         std::fs::create_dir_all(&dir).unwrap();
         let path = dir.join("config.toml");
         std::fs::write(&path, "base_branch = \"develop\"\n").unwrap();
@@ -288,7 +288,7 @@ layout = "right"
 
     #[test]
     fn test_legacy_pr_layout_parses_without_error() {
-        let dir = std::env::temp_dir().join("git-rt-test-config-legacy-layout");
+        let dir = std::env::temp_dir().join("perch-test-config-legacy-layout");
         std::fs::create_dir_all(&dir).unwrap();
         let path = dir.join("config.toml");
         std::fs::write(

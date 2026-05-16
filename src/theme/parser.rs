@@ -301,7 +301,7 @@ bg = "#000000"
     #[test]
     fn test_parse_file_dispatches_by_extension() {
         use std::io::Write;
-        let dir = std::env::temp_dir().join("git-rt-theme-parse-test");
+        let dir = std::env::temp_dir().join("perch-theme-parse-test");
         std::fs::create_dir_all(&dir).unwrap();
 
         let toml_path = dir.join("a.toml");

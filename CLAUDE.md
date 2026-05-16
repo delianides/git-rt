@@ -1,8 +1,8 @@
-# CLAUDE.md — git-rt
+# CLAUDE.md — perch
 
 ## Project Overview
 
-git-rt is a real-time terminal dashboard that watches git working tree changes and displays them as a live-updating TUI. Think of it as a persistent, interactive `git status` + `git diff --numstat` that runs in a terminal pane.
+perch is a real-time terminal dashboard that watches git working tree changes and displays them as a live-updating TUI. Think of it as a persistent, interactive `git status` + `git diff --numstat` that runs in a terminal pane.
 
 ## Architecture
 
@@ -59,7 +59,7 @@ When a filesystem event fires:
 
 ### Git Integration
 
-`git-rt` uses `git` (the CLI) for the hot-path status walk and `gix` (gitoxide) for cheap reads.
+`perch` uses `git` (the CLI) for the hot-path status walk and `gix` (gitoxide) for cheap reads.
 
 - **File status**: `git status --porcelain=v2 -z` parsed natively — much faster than gix's walk on large repos thanks to git's untracked cache + fsmonitor.
 - **Diff numstat**: `git diff --numstat -z <merge-base>` for branch view, `git diff --numstat -z` for the working-tree view.
@@ -73,7 +73,7 @@ When a filesystem event fires:
 - Watches the entire working tree, filters out `.git/` directory changes (except `.git/index` for staged changes)
 - Debounce window: 500ms default, configurable
 - On debounce fire: full git status recomputation via worker thread
-- A git-rt instance is pinned to one worktree for its lifetime. Background filesystem activity in *other* worktrees does not move the watched path. Use the `s`-key dialog to switch deliberately, or relaunch git-rt against a different path.
+- A perch instance is pinned to one worktree for its lifetime. Background filesystem activity in *other* worktrees does not move the watched path. Use the `s`-key dialog to switch deliberately, or relaunch perch against a different path.
 
 ## Key Design Decisions
 
@@ -88,13 +88,13 @@ When a filesystem event fires:
 cargo build --release
 # Run in any git repository:
 cd /path/to/your/repo
-git-rt
+perch
 ```
 
 ## CLI Flags
 
 ```
-git-rt [OPTIONS] [PATH]
+perch [OPTIONS] [PATH]
 
 Arguments:
   [PATH]  Path to git repository or worktree (defaults to current directory)

@@ -1,4 +1,4 @@
-# git-rt
+# perch
 
 A real-time terminal dashboard for git changes. Watch your working tree update live as you edit files, with PR status and a one-keystroke in-app diff overlay.
 
@@ -6,14 +6,14 @@ A real-time terminal dashboard for git changes. Watch your working tree update l
 
 ## Overview
 
-Run `git-rt` in a terminal pane alongside your editor. It shows a live-updating list of changed files with insertion/deletion counts and — when the current branch has a PR open on GitHub — a compact PR status strip with review, check, and mergeability state. Press `m` to cycle between the flat file list and a tree view that groups changes by directory. Press `Enter` (or `d` / `Space` / `l` / `→`) on a file to open its full diff in a centered in-app overlay, or use those same keys to toggle directories in tree mode. Updates are event-driven via filesystem watches; there is no polling of the working tree.
+Run `perch` in a terminal pane alongside your editor. It shows a live-updating list of changed files with insertion/deletion counts and — when the current branch has a PR open on GitHub — a compact PR status strip with review, check, and mergeability state. Press `m` to cycle between the flat file list and a tree view that groups changes by directory. Press `Enter` (or `d` / `Space` / `l` / `→`) on a file to open its full diff in a centered in-app overlay, or use those same keys to toggle directories in tree mode. Updates are event-driven via filesystem watches; there is no polling of the working tree.
 
 ## Install
 
 ### Homebrew (macOS / Linux)
 
 ```bash
-brew install delianides/git-rt/git-rt
+brew install upsertco/perch/perch
 ```
 
 ### From source
@@ -28,16 +28,16 @@ Or see [Development](#development) for a Nix-based setup.
 
 ```bash
 # Current directory
-git-rt
+perch
 
 # Specific repo
-git-rt /path/to/repo
+perch /path/to/repo
 
 # Custom debounce
-git-rt --debounce 500
+perch --debounce 500
 ```
 
-git-rt can be launched from any directory inside a git working tree — the repository root is discovered automatically.
+perch can be launched from any directory inside a git working tree — the repository root is discovered automatically.
 
 ### CLI flags
 
@@ -75,7 +75,7 @@ Pressing a diff key opens a centered panel (~85% of the terminal) that renders t
 
 ## Configuration
 
-Config lives at `~/.config/git-rt/config.toml`. All sections are optional; defaults are used for anything you omit.
+Config lives at `~/.config/perch/config.toml`. All sections are optional; defaults are used for anything you omit.
 
 ### Top-level
 
@@ -139,7 +139,7 @@ show_labels = false
 
 ## Themes
 
-git-rt ships with 11 built-in themes:
+perch ships with 11 built-in themes:
 
 - `catppuccin-mocha` (default)
 - `catppuccin-latte`
@@ -155,9 +155,9 @@ git-rt ships with 11 built-in themes:
 
 Select one via the `theme` config key or the `--theme` CLI flag.
 
-User themes live in `~/.config/git-rt/themes/` — drop a `<name>.toml` file there and reference it as `theme = "<name>"`. A theme can inherit from another via `extends = "<other-theme>"` and override only the colors it wants to change.
+User themes live in `~/.config/perch/themes/` — drop a `<name>.toml` file there and reference it as `theme = "<name>"`. A theme can inherit from another via `extends = "<other-theme>"` and override only the colors it wants to change.
 
-Want a theme that isn't in the list? [PRs welcome](https://github.com/delianides/git-rt/pulls) — add a `src/theme/builtin/<name>.toml` and register it in `src/theme/mod.rs`.
+Want a theme that isn't in the list? [PRs welcome](https://github.com/upsertco/perch/pulls) — add a `src/theme/builtin/<name>.toml` and register it in `src/theme/mod.rs`.
 
 ## Development
 

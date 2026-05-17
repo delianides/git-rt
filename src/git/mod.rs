@@ -1751,7 +1751,7 @@ mod tests {
     }
 
     #[test]
-    fn strip_remote_prefix_strips_known_remote() {
+    fn strip_remote_prefix_rejects_unknown_remote() {
         let repo = GitRepo::new(std::path::Path::new(".")).unwrap();
         // A prefix that is not a configured remote is never stripped.
         assert_eq!(repo.strip_remote_prefix("definitelynotaremote/x"), None);

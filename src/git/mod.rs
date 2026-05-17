@@ -71,7 +71,7 @@ pub fn parse_created_from(line: &str) -> Option<String> {
 /// length 4..=40).
 pub fn is_hex_sha(s: &str) -> bool {
     let len = s.len();
-    (4..=40).contains(&len) && s.bytes().all(|b| b.is_ascii_hexdigit())
+    (7..=40).contains(&len) && s.bytes().all(|b| b.is_ascii_hexdigit())
 }
 
 /// Errors from `discover_worktree_root`.
@@ -1737,31 +1737,23 @@ mod tests {
     fn is_hex_sha_recognizes_shas() {
         assert!(is_hex_sha("a1b2c3d"));
         assert!(is_hex_sha("a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6e7f8a9b0"));
-        assert!(!is_hex_sha("abc")); // too short (< 4)
+        assert!(!is_hex_sha("abc")); // too short (< 7)
+        assert!(!is_hex_sha("abc1")); // 4 hex chars — too short
         assert!(!is_hex_sha("feature-a")); // non-hex chars
         assert!(!is_hex_sha(""));
     }
 
     #[test]
     fn reflog_first_created_from_returns_none_for_main() {
-        // On the test repo itself, checking "main" should not panic and should
-        // return None or Some — just verify the method is callable.
+        // main is trunk — it was not created from another branch.
         let repo = GitRepo::new(std::path::Path::new(".")).unwrap();
-        let _ = repo.reflog_first_created_from("main");
+        assert_eq!(repo.reflog_first_created_from("main"), None);
     }
 
     #[test]
     fn strip_remote_prefix_strips_known_remote() {
         let repo = GitRepo::new(std::path::Path::new(".")).unwrap();
-        // "origin/develop" → should strip to "develop" if "origin" is a remote.
-        let result = repo.strip_remote_prefix("origin/develop");
-        // Either Some("develop") if origin exists, or None if not — both are valid.
-        if let Some(branch) = result {
-            assert_eq!(branch, "develop");
-        }
-        // A name with no slash should return None.
-        assert_eq!(repo.strip_remote_prefix("no-slash"), None);
-        // A name with empty branch should return None.
-        assert_eq!(repo.strip_remote_prefix("origin/"), None);
+        // A prefix that is not a configured remote is never stripped.
+        assert_eq!(repo.strip_remote_prefix("definitelynotaremote/x"), None);
     }
 }

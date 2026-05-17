@@ -132,6 +132,32 @@ fn resolves_reflog_parent_for_stacked_branch() {
     assert_eq!(repo.resolve_base_branch(None).as_deref(), Some("b1"));
 }
 
+/// Branch `b2` created with implicit `git checkout -b b2` while on `b1`.
+/// The branch reflog only says "Created from HEAD"; the parent must be
+/// recovered from the HEAD reflog. resolve_base_branch must return `b1`.
+#[test]
+fn resolves_head_reflog_parent_for_implicit_checkout() {
+    let tmp = tempfile::tempdir().unwrap();
+    let dir = tmp.path();
+    git(dir, &["init", "-b", "main"]);
+    std::fs::write(dir.join("a.txt"), "a").unwrap();
+    git(dir, &["add", "."]);
+    git(dir, &["commit", "-m", "base"]);
+
+    // b1 forked from main.
+    git(dir, &["checkout", "-b", "b1"]);
+    std::fs::write(dir.join("b.txt"), "b").unwrap();
+    git(dir, &["add", "."]);
+    git(dir, &["commit", "-m", "b1 work"]);
+
+    // b2 created with implicit `checkout -b` (no start-point) — branch
+    // reflog records "Created from HEAD", parent only in the HEAD reflog.
+    git(dir, &["checkout", "-b", "b2"]);
+
+    let repo = GitRepo::new(dir).expect("repo opens");
+    assert_eq!(repo.resolve_base_branch(None).as_deref(), Some("b1"));
+}
+
 /// On a branch with no reflog "Created from" parent (here: `main` itself),
 /// resolution falls through to the trunk chain and never picks a sibling.
 #[test]

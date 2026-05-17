@@ -74,6 +74,23 @@ fn is_hex_sha(s: &str) -> bool {
     (7..=40).contains(&len) && s.bytes().all(|b| b.is_ascii_hexdigit())
 }
 
+/// Parse a HEAD-reflog line and return `(from, to)` if it is a
+/// `checkout: moving from <from> to <to>` entry.
+///
+/// Git writes this entry when `git checkout -b` / `git switch -c` creates a
+/// branch — `<from>` is the branch (or commit) HEAD was on. Returns `None`
+/// for any other reflog message. Git refnames cannot contain spaces, so the
+/// single ` to ` separator is unambiguous.
+fn parse_checkout_target(line: &str) -> Option<(String, String)> {
+    let (_, msg) = line.split_once('\t')?;
+    let rest = msg.strip_prefix("checkout: moving from ")?;
+    let (from, to) = rest.split_once(" to ")?;
+    if from.is_empty() || to.is_empty() {
+        return None;
+    }
+    Some((from.to_string(), to.to_string()))
+}
+
 /// Errors from `discover_worktree_root`.
 #[derive(Debug, Error)]
 pub enum DiscoverError {
@@ -709,6 +726,38 @@ impl GitRepo {
         Some(short)
     }
 
+    /// Find the parent branch of `branch` from the HEAD reflog.
+    ///
+    /// `git checkout -b` / `git switch -c` record only `Created from HEAD` in
+    /// the branch's own reflog, but the HEAD reflog (`logs/HEAD`, per-worktree)
+    /// records `checkout: moving from <parent> to <branch>` at creation time.
+    /// Returns the first such `<parent>` for `branch`, or `None` when the
+    /// reflog is missing, has no matching entry, or the parent is the `HEAD`
+    /// sentinel, a detached-HEAD SHA, or `branch` itself.
+    fn head_reflog_parent(&self, branch: &str) -> Option<String> {
+        let head_log = self.repo.git_dir().join("logs/HEAD");
+        let content = std::fs::read_to_string(&head_log).ok()?;
+
+        for line in content.lines() {
+            let Some((from, to)) = parse_checkout_target(line) else {
+                continue;
+            };
+            if to != branch {
+                continue;
+            }
+            // First `... to <branch>` entry is the branch's creation.
+            if from == "HEAD" || from == branch || is_hex_sha(&from) {
+                return None;
+            }
+            let short = self.strip_remote_prefix(&from).unwrap_or(from);
+            if short == branch {
+                return None;
+            }
+            return Some(short);
+        }
+        None
+    }
+
     /// If `name` is of the form `<remote>/<branch>` where `<remote>` is a
     /// known remote, return `<branch>`. Otherwise return `None`.
     fn strip_remote_prefix(&self, name: &str) -> Option<String> {
@@ -726,8 +775,8 @@ impl GitRepo {
 
     /// Resolve the base branch name using priority:
     /// 1. Explicit override (CLI flag or config value, pre-merged by caller)
-    /// 2. Reflog "Created from" parent of the current branch (the fork parent —
-    ///    trunk or a parent feature branch)
+    /// 2. Reflog fork parent of the current branch: its own "Created from X"
+    ///    line, else the HEAD reflog "checkout: moving from X" entry
     /// 3. Auto-detect from origin/HEAD
     /// 4. Fallback to origin/main, then origin/master
     pub fn resolve_base_branch(&self, explicit_base: Option<&str>) -> Option<String> {
@@ -735,13 +784,17 @@ impl GitRepo {
             return Some(base.to_string());
         }
 
-        // Priority 2: the reflog parent of the current branch. This is
-        // recorded fact (git writes "branch: Created from X" at creation),
-        // not a heuristic, so it can never select an unrelated sibling.
-        // On trunk itself there is no "Created from" line and this tier
-        // yields nothing, falling through to the trunk chain below.
         if let Ok(current) = self.branch_name() {
+            // 2a: the branch's own reflog "Created from X" — set when an
+            // explicit start-point is given, and by `git branch` (which
+            // resolves HEAD to a branch name).
             if let Some(parent) = self.reflog_first_created_from(&current) {
+                return Some(parent);
+            }
+            // 2b: the HEAD reflog "checkout: moving from X to <branch>" entry —
+            // covers `git checkout -b` / `git switch -c`, which record only
+            // "Created from HEAD" in the branch reflog.
+            if let Some(parent) = self.head_reflog_parent(&current) {
                 return Some(parent);
             }
         }
@@ -1768,5 +1821,37 @@ mod tests {
         let repo = GitRepo::new(std::path::Path::new(".")).unwrap();
         // A prefix that is not a configured remote is never stripped.
         assert_eq!(repo.strip_remote_prefix("definitelynotaremote/x"), None);
+    }
+
+    #[test]
+    fn parse_checkout_target_extracts_from_and_to() {
+        let line = "abc def User <u@x> 1700000000 +0000\tcheckout: moving from b1 to b2";
+        assert_eq!(
+            parse_checkout_target(line),
+            Some(("b1".to_string(), "b2".to_string()))
+        );
+    }
+
+    #[test]
+    fn parse_checkout_target_handles_slashed_names() {
+        let line = "abc def U <u@x> 0 +0000\tcheckout: moving from main to feature/foo";
+        assert_eq!(
+            parse_checkout_target(line),
+            Some(("main".to_string(), "feature/foo".to_string()))
+        );
+    }
+
+    #[test]
+    fn parse_checkout_target_rejects_non_checkout_lines() {
+        assert_eq!(parse_checkout_target(""), None);
+        assert_eq!(parse_checkout_target("no tab here"), None);
+        assert_eq!(
+            parse_checkout_target("abc def U <u@x> 0 +0000\tcommit: did a thing"),
+            None
+        );
+        assert_eq!(
+            parse_checkout_target("abc def U <u@x> 0 +0000\tbranch: Created from main"),
+            None
+        );
     }
 }

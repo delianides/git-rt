@@ -7,3 +7,4 @@
 .direnv
 CLAUDE.local.md
 .worktrees
+.claude/worktrees

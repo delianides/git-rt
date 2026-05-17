@@ -52,6 +52,9 @@ pub struct ThemeColors {
     pub status_untracked: Option<String>,
     pub status_staged: Option<String>,
     pub status_conflicted: Option<String>,
+    pub section_changes: Option<String>,
+    pub section_new: Option<String>,
+    pub section_committed: Option<String>,
 }
 
 /// Parse a TOML theme string.

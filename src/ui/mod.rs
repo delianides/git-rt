@@ -31,10 +31,10 @@ use ratatui::{
 use std::io;
 
 use crate::config::AppConfig;
-use crate::git::FileStatus;
+use crate::git::{ChangeGroup, FileStatus};
 use crate::state::{AppState, ViewMode};
 use crate::theme::Theme;
-use crate::ui::tree::VisibleRow;
+use crate::ui::tree::{RowId, VisibleRow};
 
 /// Wrapper around the ratatui terminal.
 pub struct Terminal {
@@ -383,57 +383,67 @@ fn render_expanded_file_list(
         return;
     }
 
-    let mut items = Vec::with_capacity(rows.len());
-    for row in &rows {
-        let line = match row {
+    // Each group header is preceded by a non-selectable blank spacer row
+    // (except the first group), so sections read as distinct blocks. The
+    // spacers are render-only — they are not part of the selectable row
+    // model — so `selected_index()` (a model-row index) is translated to the
+    // spacer-inclusive index of the rendered item list.
+    let selected = state.selected_index();
+    let mut rendered_selected = 0;
+    let mut items: Vec<ListItem> = Vec::with_capacity(rows.len() + 3);
+    for (i, row) in rows.iter().enumerate() {
+        if row.is_header() && !items.is_empty() {
+            items.push(ListItem::new(Line::from("")));
+        }
+        if i == selected {
+            rendered_selected = items.len();
+        }
+        let item = match row {
             VisibleRow::Header {
+                id,
                 label,
                 count,
                 collapsed,
-                ..
             } => {
+                let group = match id {
+                    RowId::Group(g) => *g,
+                    _ => unreachable!("expanded header row must carry a group id"),
+                };
+                let color = section_header_color(group, theme);
                 let arrow = if *collapsed { "▶" } else { "▼" };
-                Line::from(vec![
+                ListItem::new(Line::from(vec![
                     Span::raw(" "),
-                    Span::styled(arrow, Style::default().fg(theme.file_path)),
+                    Span::styled(arrow, Style::default().fg(color)),
                     Span::raw(" "),
                     Span::styled(
                         format!("{label} ({count})"),
-                        Style::default()
-                            .fg(theme.file_path)
-                            .add_modifier(Modifier::BOLD),
+                        Style::default().fg(color).add_modifier(Modifier::BOLD),
                     ),
-                ])
+                ]))
             }
-            VisibleRow::File { file, .. } => file_line(
-                file.path.clone(),
-                file.status.clone(),
-                file.deletions,
-                file.insertions,
-                area.width as usize,
-                theme,
-            ),
-            VisibleRow::Directory { .. } => unreachable!("expanded mode emits no directory rows"),
+            VisibleRow::File { file, .. } => {
+                let line = file_line(
+                    file.path.clone(),
+                    file.status.clone(),
+                    file.deletions,
+                    file.insertions,
+                    area.width as usize,
+                    theme,
+                );
+                let mut item = ListItem::new(line);
+                if config.display.flash_on_change && state.is_flashing(&file.path) {
+                    item = item.style(Style::default().bg(theme.flash_bg));
+                }
+                item
+            }
+            VisibleRow::Directory { .. } => {
+                unreachable!("expanded mode emits no directory rows")
+            }
         };
-
-        let mut item = ListItem::new(line);
-        if let Some(file) = row.file() {
-            if config.display.flash_on_change && state.is_flashing(&file.path) {
-                item = item.style(Style::default().bg(theme.flash_bg));
-            }
-        }
         items.push(item);
     }
 
-    render_list(
-        frame,
-        state,
-        config,
-        theme,
-        area,
-        items,
-        state.selected_index(),
-    );
+    render_list(frame, state, config, theme, area, items, rendered_selected);
 }
 
 /// Render the message shown when the Expanded view has no resolvable base
@@ -448,6 +458,15 @@ fn render_expanded_no_base(frame: &mut Frame, theme: &Theme, area: Rect) {
     .style(Style::default().fg(theme.file_path))
     .alignment(Alignment::Center);
     frame.render_widget(msg, area);
+}
+
+/// The theme color for a status-group header in the Expanded view.
+fn section_header_color(group: ChangeGroup, theme: &Theme) -> ratatui::style::Color {
+    match group {
+        ChangeGroup::Changes => theme.section_changes,
+        ChangeGroup::New => theme.section_new,
+        ChangeGroup::Committed => theme.section_committed,
+    }
 }
 
 fn inset_file_list_area(area: Rect) -> Rect {
@@ -945,6 +964,40 @@ mod tests {
         assert!(
             rendered.contains("Committed (1)"),
             "expected Committed header with count, got: {rendered}"
+        );
+    }
+
+    #[test]
+    fn test_render_expanded_mode_pads_between_groups() {
+        let files = vec![
+            grouped_entry("src/ui/changed.rs", ChangeGroup::Changes),
+            grouped_entry("src/ui/committed.rs", ChangeGroup::Committed),
+        ];
+        let mut state = AppState::new(files, Duration::from_millis(600), "main".to_string());
+        state.set_view_mode(ViewMode::Expanded);
+        state.set_merge_base(
+            Some(gix::ObjectId::empty_tree(gix::hash::Kind::Sha1)),
+            "main".to_string(),
+        );
+
+        let rows = render_rows(&mut state, &AppConfig::default(), 60, 14);
+        let committed_idx = rows
+            .iter()
+            .position(|r| r.contains("Committed (1)"))
+            .expect("Committed header should render");
+        // The second group gets one blank line of padding above its header.
+        let padding = &rows[committed_idx - 1];
+        assert!(
+            padding.trim_matches(|c| c == ' ' || c == '│').is_empty(),
+            "expected a blank padding line above the Committed header, got: {padding:?}"
+        );
+        let changes_idx = rows
+            .iter()
+            .position(|r| r.contains("Changes (1)"))
+            .expect("Changes header should render");
+        assert!(
+            changes_idx < committed_idx,
+            "Changes group should render before Committed"
         );
     }
 

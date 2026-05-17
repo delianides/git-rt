@@ -103,6 +103,9 @@ fn overlay(parent: ThemeColors, child: &ThemeColors) -> ThemeColors {
         status_untracked: child.status_untracked.clone().or(parent.status_untracked),
         status_staged: child.status_staged.clone().or(parent.status_staged),
         status_conflicted: child.status_conflicted.clone().or(parent.status_conflicted),
+        section_changes: child.section_changes.clone().or(parent.section_changes),
+        section_new: child.section_new.clone().or(parent.section_new),
+        section_committed: child.section_committed.clone().or(parent.section_committed),
     }
 }
 
@@ -161,6 +164,9 @@ fn build_theme(name: &str, colors: &ThemeColors) -> Result<Theme> {
         status_untracked: parse_field_or_default!(status_untracked, "#7f848e"),
         status_staged: parse_field_or_default!(status_staged, "#98c379"),
         status_conflicted: parse_field_or_default!(status_conflicted, "#be5046"),
+        section_changes: parse_field_or_default!(section_changes, "#e5c07b"),
+        section_new: parse_field_or_default!(section_new, "#98c379"),
+        section_committed: parse_field_or_default!(section_committed, "#7f848e"),
     })
 }
 
@@ -202,6 +208,9 @@ mod tests {
                 status_untracked: None,
                 status_staged: None,
                 status_conflicted: None,
+                section_changes: None,
+                section_new: None,
+                section_committed: None,
             },
         }
     }

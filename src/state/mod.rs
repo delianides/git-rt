@@ -84,10 +84,12 @@ pub enum MergeableStatus {
     Unknown,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "lowercase")]
 pub enum ViewMode {
     Flat,
     Tree,
+    Expanded,
 }
 
 #[derive(Debug, Clone)]
@@ -576,8 +578,9 @@ impl AppState {
         let selection = self.selection_snapshot();
 
         self.view_mode = match self.view_mode {
+            ViewMode::Expanded => ViewMode::Flat,
             ViewMode::Flat => ViewMode::Tree,
-            ViewMode::Tree => ViewMode::Flat,
+            ViewMode::Tree => ViewMode::Expanded,
         };
         self.scroll_offset = 0;
 
@@ -588,6 +591,11 @@ impl AppState {
         }
 
         self.restore_selection(selection);
+    }
+
+    /// Set the view mode directly (used to apply the configured default).
+    pub fn set_view_mode(&mut self, mode: ViewMode) {
+        self.view_mode = mode;
     }
 
     pub fn toggle_selected_directory(&mut self) -> bool {
@@ -715,7 +723,10 @@ impl AppState {
     #[tracing::instrument(name = "state.rebuild_visible_rows", skip_all)]
     fn rebuild_visible_rows(&self) -> Vec<VisibleRow> {
         match self.view_mode {
-            ViewMode::Flat => self.files.iter().map(flat_row_from_file).collect(),
+            // Expanded rendering is wired in a later task; fall back to flat for now.
+            ViewMode::Flat | ViewMode::Expanded => {
+                self.files.iter().map(flat_row_from_file).collect()
+            }
             ViewMode::Tree => build_visible_rows(&self.files, &self.expanded_dirs),
         }
     }
@@ -753,7 +764,8 @@ impl AppState {
 
     fn restore_selection(&mut self, selection: SelectionSnapshot) {
         match self.view_mode {
-            ViewMode::Flat => self.restore_flat_selection(selection.file_path),
+            // Expanded rendering is wired in a later task; fall back to flat for now.
+            ViewMode::Flat | ViewMode::Expanded => self.restore_flat_selection(selection.file_path),
             ViewMode::Tree => self.restore_tree_selection(selection),
         }
     }
@@ -893,7 +905,20 @@ mod tests {
         state.cycle_view_mode();
         assert_eq!(state.view_mode(), ViewMode::Tree);
         state.cycle_view_mode();
+        assert_eq!(state.view_mode(), ViewMode::Expanded);
+    }
+
+    #[test]
+    fn test_cycle_view_mode_three_way() {
+        let mut state = AppState::new(vec![], Duration::from_millis(600), "main".to_string());
+        state.set_view_mode(ViewMode::Expanded);
+        assert_eq!(state.view_mode(), ViewMode::Expanded);
+        state.cycle_view_mode();
         assert_eq!(state.view_mode(), ViewMode::Flat);
+        state.cycle_view_mode();
+        assert_eq!(state.view_mode(), ViewMode::Tree);
+        state.cycle_view_mode();
+        assert_eq!(state.view_mode(), ViewMode::Expanded);
     }
 
     #[test]

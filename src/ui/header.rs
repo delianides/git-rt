@@ -214,6 +214,7 @@ fn build_segments(state: &AppState, repo: &str, branch: &str, theme: &Theme) -> 
             match state.view_mode() {
                 ViewMode::Flat => "flat",
                 ViewMode::Tree => "tree",
+                ViewMode::Expanded => "expanded",
             },
             text_style,
         )],

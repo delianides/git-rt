@@ -184,7 +184,10 @@ fn render_file_list(
     area: Rect,
 ) {
     match state.view_mode() {
-        ViewMode::Flat => render_flat_file_list(frame, state, config, theme, area),
+        // Expanded rendering is wired in a later task; fall back to flat for now.
+        ViewMode::Flat | ViewMode::Expanded => {
+            render_flat_file_list(frame, state, config, theme, area)
+        }
         ViewMode::Tree => render_tree_file_list(frame, state, config, theme, area),
     }
 }

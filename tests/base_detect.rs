@@ -106,6 +106,51 @@ fn explicit_override_wins() {
     );
 }
 
+/// Branch `b2` forked from `b1` which forked from `main`.
+/// resolve_base_branch must return `b1` (the reflog parent), not `main`.
+#[test]
+fn resolves_reflog_parent_for_stacked_branch() {
+    let tmp = tempfile::tempdir().unwrap();
+    let dir = tmp.path();
+    git(dir, &["init", "-b", "main"]);
+    std::fs::write(dir.join("a.txt"), "a").unwrap();
+    git(dir, &["add", "."]);
+    git(dir, &["commit", "-m", "base"]);
+
+    // b1 forked from main.
+    git(dir, &["checkout", "-b", "b1"]);
+    std::fs::write(dir.join("b.txt"), "b").unwrap();
+    git(dir, &["add", "."]);
+    git(dir, &["commit", "-m", "b1 work"]);
+
+    // b2 forked from b1: use `git branch` so the reflog records "Created from b1",
+    // not "Created from HEAD" (which `checkout -b` would write).
+    git(dir, &["branch", "b2"]);
+    git(dir, &["checkout", "b2"]);
+
+    let repo = GitRepo::new(dir).expect("repo opens");
+    assert_eq!(repo.resolve_base_branch(None).as_deref(), Some("b1"));
+}
+
+/// On a branch with no reflog "Created from" parent (here: `main` itself),
+/// resolution falls through to the trunk chain and never picks a sibling.
+#[test]
+fn trunk_branch_falls_through_to_trunk_chain() {
+    let tmp = tempfile::tempdir().unwrap();
+    let dir = tmp.path();
+    git(dir, &["init", "-b", "main"]);
+    std::fs::write(dir.join("a.txt"), "a").unwrap();
+    git(dir, &["add", "."]);
+    git(dir, &["commit", "-m", "base"]);
+
+    // A sibling feature branch exists but must never be chosen.
+    git(dir, &["branch", "feature-x"]);
+
+    let repo = GitRepo::new(dir).expect("repo opens");
+    // No origin remote, no reflog parent for main -> None (not "feature-x").
+    assert_eq!(repo.resolve_base_branch(None), None);
+}
+
 /// Repo with no remote falls through to None.
 #[test]
 fn no_remote_returns_none() {

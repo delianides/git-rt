@@ -35,7 +35,7 @@ impl GitFailure {
 ///
 /// Expected format (single line, tab-separated message field):
 ///   `<old-sha> <new-sha> <who> <time> <tz>\tbranch: Created from <ref>`
-pub fn parse_created_from(line: &str) -> Option<String> {
+fn parse_created_from(line: &str) -> Option<String> {
     // Message is after the first tab.
     let (_, msg) = line.split_once('\t')?;
     let target = msg.strip_prefix("branch: Created from ")?.trim();
@@ -69,7 +69,7 @@ pub fn parse_created_from(line: &str) -> Option<String> {
 
 /// True if `s` looks like a full or abbreviated git object SHA (hex only,
 /// length 4..=40).
-pub fn is_hex_sha(s: &str) -> bool {
+fn is_hex_sha(s: &str) -> bool {
     let len = s.len();
     (7..=40).contains(&len) && s.bytes().all(|b| b.is_ascii_hexdigit())
 }
@@ -687,7 +687,7 @@ impl GitRepo {
     ///
     /// Returns `None` if the reflog file is missing, empty, malformed, or
     /// references the branch itself (a reset artifact).
-    pub fn reflog_first_created_from(&self, branch: &str) -> Option<String> {
+    fn reflog_first_created_from(&self, branch: &str) -> Option<String> {
         let common = resolve_common_git_dir(&self.repo_path)?;
         let reflog_path = common.join("logs/refs/heads").join(branch);
 
@@ -711,7 +711,7 @@ impl GitRepo {
 
     /// If `name` is of the form `<remote>/<branch>` where `<remote>` is a
     /// known remote, return `<branch>`. Otherwise return `None`.
-    pub fn strip_remote_prefix(&self, name: &str) -> Option<String> {
+    fn strip_remote_prefix(&self, name: &str) -> Option<String> {
         let (prefix, branch) = name.split_once('/')?;
         if branch.is_empty() {
             return None;
@@ -726,14 +726,27 @@ impl GitRepo {
 
     /// Resolve the base branch name using priority:
     /// 1. Explicit override (CLI flag or config value, pre-merged by caller)
-    /// 2. Auto-detect from origin/HEAD
-    /// 3. Fallback to origin/main, then origin/master
+    /// 2. Reflog "Created from" parent of the current branch (the fork parent —
+    ///    trunk or a parent feature branch)
+    /// 3. Auto-detect from origin/HEAD
+    /// 4. Fallback to origin/main, then origin/master
     pub fn resolve_base_branch(&self, explicit_base: Option<&str>) -> Option<String> {
         if let Some(base) = explicit_base {
             return Some(base.to_string());
         }
 
-        // Priority 2: resolve origin/HEAD symbolic ref to its target.
+        // Priority 2: the reflog parent of the current branch. This is
+        // recorded fact (git writes "branch: Created from X" at creation),
+        // not a heuristic, so it can never select an unrelated sibling.
+        // On trunk itself there is no "Created from" line and this tier
+        // yields nothing, falling through to the trunk chain below.
+        if let Ok(current) = self.branch_name() {
+            if let Some(parent) = self.reflog_first_created_from(&current) {
+                return Some(parent);
+            }
+        }
+
+        // Priority 3: resolve origin/HEAD symbolic ref to its target.
         // gix's symbolic ref API can be tricky, so read the file directly.
         let origin_head_path = self.repo.git_dir().join("refs/remotes/origin/HEAD");
         if let Ok(content) = std::fs::read_to_string(&origin_head_path) {
@@ -742,7 +755,7 @@ impl GitRepo {
             }
         }
 
-        // Priority 3: fallback
+        // Priority 4: fallback
         if self
             .resolve_ref_to_commit("refs/remotes/origin/main")
             .is_some()

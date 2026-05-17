@@ -147,7 +147,8 @@ fn build_segments(state: &AppState, repo: &str, branch: &str, theme: &Theme) -> 
     }
 
     // Resolved diff base — the branch this worktree's changes are measured
-    // against. Lowest drop priority: first to go when the pane is narrow.
+    // against.
+    // Droppable(0) — the lowest priority number, so it is dropped first.
     let base = state.base_branch();
     if !base.is_empty() {
         push_sep(&mut out, sep_span());
@@ -512,7 +513,7 @@ mod tests {
     }
 
     #[test]
-    fn header_shows_base_segment_when_set() {
+    fn test_header_shows_base_segment_when_set() {
         let mut s = fresh_state();
         s.set_branch("agent-work".to_string());
         s.set_merge_base(None, "main".to_string());
@@ -525,7 +526,7 @@ mod tests {
     }
 
     #[test]
-    fn header_omits_base_segment_when_unset() {
+    fn test_header_omits_base_segment_when_unset() {
         let mut s = fresh_state();
         s.set_branch("agent-work".to_string());
         // base_branch defaults to "" — no segment.
@@ -538,7 +539,7 @@ mod tests {
     }
 
     #[test]
-    fn header_drops_base_segment_first_when_narrow() {
+    fn test_header_drops_base_segment_first_when_narrow() {
         let mut s = fresh_state();
         s.set_branch("agent-work".to_string());
         s.set_merge_base(None, "main".to_string());
@@ -548,6 +549,11 @@ mod tests {
         assert!(
             !line_text(&narrow).contains("base main"),
             "base segment should drop first, got: {:?}",
+            line_text(&narrow)
+        );
+        assert!(
+            line_text(&narrow).contains("agent-work"),
+            "branch should still be visible, got: {:?}",
             line_text(&narrow)
         );
     }

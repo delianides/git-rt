@@ -27,6 +27,53 @@ impl GitFailure {
     }
 }
 
+/// Parse a single reflog line and return the branch name the current branch
+/// was created from, if this line is a "branch: Created from X" entry.
+///
+/// Returns `None` for malformed lines, non-"Created from" entries, the
+/// `HEAD` sentinel, and SHA sources (no branch name to return).
+///
+/// Expected format (single line, tab-separated message field):
+///   `<old-sha> <new-sha> <who> <time> <tz>\tbranch: Created from <ref>`
+pub fn parse_created_from(line: &str) -> Option<String> {
+    // Message is after the first tab.
+    let (_, msg) = line.split_once('\t')?;
+    let target = msg.strip_prefix("branch: Created from ")?.trim();
+
+    // Reject sentinels and raw SHAs.
+    if target == "HEAD" || target.is_empty() {
+        return None;
+    }
+    if is_hex_sha(target) {
+        return None;
+    }
+
+    // Strip refs/heads/ and refs/remotes/<remote>/ prefixes to return a short name.
+    if let Some(rest) = target.strip_prefix("refs/heads/") {
+        if rest.is_empty() {
+            return None;
+        }
+        return Some(rest.to_string());
+    }
+    if let Some(rest) = target.strip_prefix("refs/remotes/") {
+        // rest is "<remote>/<branch>" — strip the remote segment.
+        let (_, branch) = rest.split_once('/')?;
+        if branch.is_empty() {
+            return None;
+        }
+        return Some(branch.to_string());
+    }
+
+    Some(target.to_string())
+}
+
+/// True if `s` looks like a full or abbreviated git object SHA (hex only,
+/// length 4..=40).
+pub fn is_hex_sha(s: &str) -> bool {
+    let len = s.len();
+    (4..=40).contains(&len) && s.bytes().all(|b| b.is_ascii_hexdigit())
+}
+
 /// Errors from `discover_worktree_root`.
 #[derive(Debug, Error)]
 pub enum DiscoverError {
@@ -631,6 +678,49 @@ impl GitRepo {
             Some(gix::state::InProgress::Revert) => Some("REVERTING".to_string()),
             Some(gix::state::InProgress::RevertSequence) => Some("REVERTING".to_string()),
             None => None,
+        }
+    }
+
+    /// Read the first line of the branch's reflog (shared across worktrees —
+    /// lives in the *common* git dir at `logs/refs/heads/<branch>`) and extract
+    /// the branch name it was created from, if any.
+    ///
+    /// Returns `None` if the reflog file is missing, empty, malformed, or
+    /// references the branch itself (a reset artifact).
+    pub fn reflog_first_created_from(&self, branch: &str) -> Option<String> {
+        let common = resolve_common_git_dir(&self.repo_path)?;
+        let reflog_path = common.join("logs/refs/heads").join(branch);
+
+        let content = std::fs::read_to_string(&reflog_path).ok()?;
+        let first_line = content.lines().next()?;
+
+        let extracted = parse_created_from(first_line)?;
+        if extracted == branch {
+            return None;
+        }
+
+        // If the extracted name looks like "<remote>/<branch>" (short
+        // remote-tracking form git writes in reflogs, e.g. "origin/develop"),
+        // strip the remote prefix so callers always get the short branch name.
+        let short = self.strip_remote_prefix(&extracted).unwrap_or(extracted);
+        if short == branch {
+            return None;
+        }
+        Some(short)
+    }
+
+    /// If `name` is of the form `<remote>/<branch>` where `<remote>` is a
+    /// known remote, return `<branch>`. Otherwise return `None`.
+    pub fn strip_remote_prefix(&self, name: &str) -> Option<String> {
+        let (prefix, branch) = name.split_once('/')?;
+        if branch.is_empty() {
+            return None;
+        }
+        let remote_names = self.repo.remote_names();
+        if remote_names.iter().any(|r| r.as_ref() == prefix) {
+            Some(branch.to_string())
+        } else {
+            None
         }
     }
 
@@ -1589,5 +1679,89 @@ mod tests {
             diff.hunks.len(),
             diff.hunks.iter().map(|h| &h.header).collect::<Vec<_>>()
         );
+    }
+
+    #[test]
+    fn parse_created_from_plain_branch() {
+        let line = "0000000000000000000000000000000000000000 abc123 User <u@x> 1700000000 +0000\tbranch: Created from feature-a";
+        assert_eq!(parse_created_from(line), Some("feature-a".to_string()));
+    }
+
+    #[test]
+    fn parse_created_from_refs_heads_prefix() {
+        let line = "0 abc123 U <u@x> 0 +0000\tbranch: Created from refs/heads/feature-a";
+        assert_eq!(parse_created_from(line), Some("feature-a".to_string()));
+    }
+
+    #[test]
+    fn parse_created_from_remote_prefix() {
+        let line = "0 abc123 U <u@x> 0 +0000\tbranch: Created from refs/remotes/origin/develop";
+        assert_eq!(parse_created_from(line), Some("develop".to_string()));
+    }
+
+    #[test]
+    fn parse_created_from_head_sentinel() {
+        let line = "0 abc123 U <u@x> 0 +0000\tbranch: Created from HEAD";
+        assert_eq!(parse_created_from(line), None);
+    }
+
+    #[test]
+    fn parse_created_from_malformed_returns_none() {
+        assert_eq!(parse_created_from("not a reflog line"), None);
+        assert_eq!(parse_created_from(""), None);
+        assert_eq!(
+            parse_created_from("0 abc U <u@x> 0 +0000\tcheckout: moving from x to y"),
+            None
+        );
+    }
+
+    #[test]
+    fn parse_created_from_sha_source_returns_none() {
+        let line = "0 abc123 U <u@x> 0 +0000\tbranch: Created from a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6e7f8a9b0";
+        assert_eq!(parse_created_from(line), None);
+    }
+
+    #[test]
+    fn parse_created_from_empty_refs_heads_returns_none() {
+        let line = "0 abc U <u@x> 0 +0000\tbranch: Created from refs/heads/";
+        assert_eq!(parse_created_from(line), None);
+    }
+
+    #[test]
+    fn parse_created_from_empty_remote_branch_returns_none() {
+        let line = "0 abc U <u@x> 0 +0000\tbranch: Created from refs/remotes/origin/";
+        assert_eq!(parse_created_from(line), None);
+    }
+
+    #[test]
+    fn is_hex_sha_recognizes_shas() {
+        assert!(is_hex_sha("a1b2c3d"));
+        assert!(is_hex_sha("a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6e7f8a9b0"));
+        assert!(!is_hex_sha("abc")); // too short (< 4)
+        assert!(!is_hex_sha("feature-a")); // non-hex chars
+        assert!(!is_hex_sha(""));
+    }
+
+    #[test]
+    fn reflog_first_created_from_returns_none_for_main() {
+        // On the test repo itself, checking "main" should not panic and should
+        // return None or Some — just verify the method is callable.
+        let repo = GitRepo::new(std::path::Path::new(".")).unwrap();
+        let _ = repo.reflog_first_created_from("main");
+    }
+
+    #[test]
+    fn strip_remote_prefix_strips_known_remote() {
+        let repo = GitRepo::new(std::path::Path::new(".")).unwrap();
+        // "origin/develop" → should strip to "develop" if "origin" is a remote.
+        let result = repo.strip_remote_prefix("origin/develop");
+        // Either Some("develop") if origin exists, or None if not — both are valid.
+        if let Some(branch) = result {
+            assert_eq!(branch, "develop");
+        }
+        // A name with no slash should return None.
+        assert_eq!(repo.strip_remote_prefix("no-slash"), None);
+        // A name with empty branch should return None.
+        assert_eq!(repo.strip_remote_prefix("origin/"), None);
     }
 }

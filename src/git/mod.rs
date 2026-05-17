@@ -187,6 +187,21 @@ pub enum FileStatus {
     Conflicted,
 }
 
+/// Which status group a file belongs to in the Expanded view.
+///
+/// A file belongs to exactly one group. Precedence: a file with pending
+/// working-tree edits is `New` (if untracked) or `Changes`; otherwise a file
+/// that differs from the base branch is `Committed`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum ChangeGroup {
+    /// Tracked file with staged and/or unstaged edits vs HEAD.
+    Changes,
+    /// Untracked (newly created) file.
+    New,
+    /// Committed on the branch (differs vs base) with no pending edits.
+    Committed,
+}
+
 /// A single file entry from git status with diff stats
 #[derive(Debug, Clone)]
 pub struct FileEntry {
@@ -197,6 +212,8 @@ pub struct FileEntry {
     pub insertions: usize,
     /// Lines deleted (from numstat)
     pub deletions: usize,
+    /// Which Expanded-view status group this file belongs to.
+    pub group: ChangeGroup,
 }
 
 /// Resolve the actual `.git` directory for a repository path.
@@ -1209,6 +1226,7 @@ mod tests {
             status: FileStatus::Modified,
             insertions: 5,
             deletions: 3,
+            group: ChangeGroup::Changes,
         };
         let cloned = entry.clone();
         assert_eq!(cloned.path, "test.rs");

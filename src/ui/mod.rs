@@ -22,8 +22,8 @@ use crossterm::{
 };
 use ratatui::{
     backend::CrosstermBackend,
-    layout::{Constraint, Direction, Layout, Rect},
-    style::Style,
+    layout::{Alignment, Constraint, Direction, Layout, Rect},
+    style::{Modifier, Style},
     text::{Line, Span},
     widgets::{Block, BorderType, Borders, List, ListItem, ListState, Paragraph},
     Frame,
@@ -31,10 +31,10 @@ use ratatui::{
 use std::io;
 
 use crate::config::AppConfig;
-use crate::git::FileStatus;
+use crate::git::{ChangeGroup, FileStatus};
 use crate::state::{AppState, ViewMode};
 use crate::theme::Theme;
-use crate::ui::tree::VisibleRow;
+use crate::ui::tree::{RowId, VisibleRow};
 
 /// Wrapper around the ratatui terminal.
 pub struct Terminal {
@@ -186,6 +186,7 @@ fn render_file_list(
     match state.view_mode() {
         ViewMode::Flat => render_flat_file_list(frame, state, config, theme, area),
         ViewMode::Tree => render_tree_file_list(frame, state, config, theme, area),
+        ViewMode::Expanded => render_expanded_file_list(frame, state, config, theme, area),
     }
 }
 
@@ -334,6 +335,7 @@ fn render_tree_file_list(
                 }
                 Line::from(spans)
             }
+            VisibleRow::Header { .. } => unreachable!("tree mode emits no header rows"),
         };
 
         let mut item = ListItem::new(line);
@@ -356,6 +358,117 @@ fn render_tree_file_list(
     );
 }
 
+fn render_expanded_file_list(
+    frame: &mut Frame,
+    state: &mut AppState,
+    config: &AppConfig,
+    theme: &Theme,
+    area: Rect,
+) {
+    let area = inset_file_list_area(area);
+
+    // The Expanded view is branch-scoped: it needs a resolved base branch to
+    // compute the Committed group. If none resolved (detached HEAD, no base),
+    // show an explanatory message instead of a partial view. The
+    // initial_seed_done() check defers this message until the first git-status
+    // snapshot has arrived, so it does not flash during startup.
+    if state.merge_base().is_none() && state.initial_seed_done() {
+        render_expanded_no_base(frame, theme, area);
+        return;
+    }
+
+    let rows = state.visible_rows();
+    if rows.is_empty() {
+        render_empty_or_loading_state(frame, state, theme, area);
+        return;
+    }
+
+    // Each group header is preceded by a non-selectable blank spacer row
+    // (except the first group), so sections read as distinct blocks. The
+    // spacers are render-only — they are not part of the selectable row
+    // model — so `selected_index()` (a model-row index) is translated to the
+    // spacer-inclusive index of the rendered item list.
+    let selected = state.selected_index();
+    let mut rendered_selected = 0;
+    let mut items: Vec<ListItem> = Vec::with_capacity(rows.len() + 3);
+    for (i, row) in rows.iter().enumerate() {
+        if row.is_header() && !items.is_empty() {
+            items.push(ListItem::new(Line::from("")));
+        }
+        if i == selected {
+            rendered_selected = items.len();
+        }
+        let item = match row {
+            VisibleRow::Header {
+                id,
+                label,
+                count,
+                collapsed,
+            } => {
+                let group = match id {
+                    RowId::Group(g) => *g,
+                    _ => unreachable!("expanded header row must carry a group id"),
+                };
+                let color = section_header_color(group, theme);
+                let arrow = if *collapsed { "▶" } else { "▼" };
+                ListItem::new(Line::from(vec![
+                    Span::raw(" "),
+                    Span::styled(arrow, Style::default().fg(color)),
+                    Span::raw(" "),
+                    Span::styled(
+                        format!("{label} ({count})"),
+                        Style::default().fg(color).add_modifier(Modifier::BOLD),
+                    ),
+                ]))
+            }
+            VisibleRow::File { file, .. } => {
+                let line = file_line(
+                    file.path.clone(),
+                    file.status.clone(),
+                    file.deletions,
+                    file.insertions,
+                    area.width as usize,
+                    theme,
+                );
+                let mut item = ListItem::new(line);
+                if config.display.flash_on_change && state.is_flashing(&file.path) {
+                    item = item.style(Style::default().bg(theme.flash_bg));
+                }
+                item
+            }
+            VisibleRow::Directory { .. } => {
+                unreachable!("expanded mode emits no directory rows")
+            }
+        };
+        items.push(item);
+    }
+
+    render_list(frame, state, config, theme, area, items, rendered_selected);
+}
+
+/// Render the message shown when the Expanded view has no resolvable base
+/// branch and therefore cannot compute the Committed group.
+fn render_expanded_no_base(frame: &mut Frame, theme: &Theme, area: Rect) {
+    if area.height < 2 || area.width < 20 {
+        return;
+    }
+    let msg = Paragraph::new(
+        "Expanded view needs a base branch.\nPress m for Flat or Tree, or pass --base.",
+    )
+    .style(Style::default().fg(theme.file_path))
+    .alignment(Alignment::Center);
+    frame.render_widget(msg, area);
+}
+
+/// The theme color for a status-group header in the Expanded view.
+fn section_header_color(group: ChangeGroup, theme: &Theme) -> ratatui::style::Color {
+    match group {
+        ChangeGroup::Changes => theme.section_changes,
+        ChangeGroup::New => theme.section_new,
+        ChangeGroup::Committed => theme.section_committed,
+    }
+}
+
 fn inset_file_list_area(area: Rect) -> Rect {
     Rect {
         x: area.x,
@@ -376,7 +489,6 @@ fn render_empty_or_loading_state(
         return;
     }
     if state.is_computing() {
-        use ratatui::layout::Alignment;
         let loading = Paragraph::new("Loading\u{2026}")
             .style(Style::default().add_modifier(ratatui::style::Modifier::DIM))
             .alignment(Alignment::Center);
@@ -509,7 +621,7 @@ fn file_status_color(status: FileStatus, theme: &Theme) -> ratatui::style::Color
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::git::{FileEntry, FileStatus};
+    use crate::git::{ChangeGroup, FileEntry, FileStatus};
     use crate::theme::load_theme;
     use ratatui::backend::TestBackend;
     use std::time::Duration;
@@ -520,6 +632,7 @@ mod tests {
             status: FileStatus::Modified,
             insertions: 1,
             deletions: 1,
+            group: ChangeGroup::Changes,
         }
     }
 
@@ -592,12 +705,14 @@ mod tests {
                 status: FileStatus::Modified,
                 insertions: 234,
                 deletions: 15,
+                group: ChangeGroup::Changes,
             },
             FileEntry {
                 path: "Cargo.toml".to_string(),
                 status: FileStatus::Modified,
                 insertions: 2,
                 deletions: 1,
+                group: ChangeGroup::Changes,
             },
         ];
 
@@ -674,6 +789,7 @@ mod tests {
             status: FileStatus::Modified,
             insertions: 234,
             deletions: 15,
+            group: ChangeGroup::Changes,
         }];
         let mut state = AppState::new(files, Duration::from_millis(600), "main".to_string());
         let rendered = render_to_string(&mut state, &AppConfig::default(), 50, 6);
@@ -690,6 +806,7 @@ mod tests {
             status: FileStatus::Modified,
             insertions: 234,
             deletions: 15,
+            group: ChangeGroup::Changes,
         }];
         let mut state = AppState::new(files, Duration::from_millis(600), "main".to_string());
         // Width 24: with borders + padding the elastic budget drops
@@ -791,12 +908,14 @@ mod tests {
                 status: FileStatus::Modified,
                 insertions: 7,
                 deletions: 3,
+                group: ChangeGroup::Changes,
             },
             FileEntry {
                 path: "src/ui/header.rs".to_string(),
                 status: FileStatus::Modified,
                 insertions: 2,
                 deletions: 1,
+                group: ChangeGroup::Changes,
             },
         ];
         let mut state = AppState::new(files, Duration::from_millis(600), "main".to_string());
@@ -807,5 +926,125 @@ mod tests {
         let rendered = render_to_string(&mut state, &AppConfig::default(), 60, 16);
         assert!(rendered.contains("src/ui/mod.rs +7 -3"));
         assert!(!rendered.contains("src/ui/header.rs +2 -1"));
+    }
+
+    fn grouped_entry(path: &str, group: ChangeGroup) -> FileEntry {
+        FileEntry {
+            path: path.to_string(),
+            status: FileStatus::Modified,
+            insertions: 1,
+            deletions: 1,
+            group,
+        }
+    }
+
+    #[test]
+    fn test_render_expanded_mode_shows_group_headers_with_arrow_and_count() {
+        let files = vec![
+            grouped_entry("src/ui/changed.rs", ChangeGroup::Changes),
+            grouped_entry("src/ui/committed.rs", ChangeGroup::Committed),
+        ];
+        let mut state = AppState::new(files, Duration::from_millis(600), "main".to_string());
+        state.set_view_mode(ViewMode::Expanded);
+        // Resolve a base so the no-base guard is skipped.
+        state.set_merge_base(
+            Some(gix::ObjectId::empty_tree(gix::hash::Kind::Sha1)),
+            "main".to_string(),
+        );
+
+        let rendered = render_to_string(&mut state, &AppConfig::default(), 60, 14);
+        assert!(
+            rendered.contains("▼"),
+            "expected expanded arrow, got: {rendered}"
+        );
+        assert!(
+            rendered.contains("Changes (1)"),
+            "expected Changes header with count, got: {rendered}"
+        );
+        assert!(
+            rendered.contains("Committed (1)"),
+            "expected Committed header with count, got: {rendered}"
+        );
+    }
+
+    #[test]
+    fn test_render_expanded_mode_pads_between_groups() {
+        let files = vec![
+            grouped_entry("src/ui/changed.rs", ChangeGroup::Changes),
+            grouped_entry("src/ui/committed.rs", ChangeGroup::Committed),
+        ];
+        let mut state = AppState::new(files, Duration::from_millis(600), "main".to_string());
+        state.set_view_mode(ViewMode::Expanded);
+        state.set_merge_base(
+            Some(gix::ObjectId::empty_tree(gix::hash::Kind::Sha1)),
+            "main".to_string(),
+        );
+
+        let rows = render_rows(&mut state, &AppConfig::default(), 60, 14);
+        let committed_idx = rows
+            .iter()
+            .position(|r| r.contains("Committed (1)"))
+            .expect("Committed header should render");
+        // The second group gets one blank line of padding above its header.
+        let padding = &rows[committed_idx - 1];
+        assert!(
+            padding.trim_matches(|c| c == ' ' || c == '│').is_empty(),
+            "expected a blank padding line above the Committed header, got: {padding:?}"
+        );
+        let changes_idx = rows
+            .iter()
+            .position(|r| r.contains("Changes (1)"))
+            .expect("Changes header should render");
+        assert!(
+            changes_idx < committed_idx,
+            "Changes group should render before Committed"
+        );
+    }
+
+    #[test]
+    fn test_render_expanded_mode_collapsed_group_hides_its_files() {
+        let files = vec![grouped_entry("src/ui/changed.rs", ChangeGroup::Changes)];
+        let mut state = AppState::new(files, Duration::from_millis(600), "main".to_string());
+        state.set_view_mode(ViewMode::Expanded);
+        state.set_merge_base(
+            Some(gix::ObjectId::empty_tree(gix::hash::Kind::Sha1)),
+            "main".to_string(),
+        );
+        // Row 0 is the "Changes" header; collapse it.
+        assert!(state.toggle_selected_group());
+
+        let rendered = render_to_string(&mut state, &AppConfig::default(), 60, 14);
+        assert!(
+            rendered.contains("Changes (1)"),
+            "header should remain, got: {rendered}"
+        );
+        assert!(
+            rendered.contains("▶"),
+            "expected collapsed arrow, got: {rendered}"
+        );
+        assert!(
+            !rendered.contains("changed.rs"),
+            "collapsed group should hide its files, got: {rendered}"
+        );
+    }
+
+    #[test]
+    fn test_render_expanded_mode_shows_no_base_message() {
+        let mut state = AppState::new(vec![], Duration::from_millis(600), "main".to_string());
+        state.set_view_mode(ViewMode::Expanded);
+        // Seed the first snapshot so `initial_seed_done()` is true; leave
+        // `merge_base()` as `None` to trigger the no-base message.
+        state.update_files(vec![grouped_entry(
+            "src/ui/changed.rs",
+            ChangeGroup::Changes,
+        )]);
+        assert!(state.initial_seed_done());
+        assert!(state.merge_base().is_none());
+
+        let rendered = render_to_string(&mut state, &AppConfig::default(), 60, 14);
+        assert!(
+            rendered.contains("needs a base branch"),
+            "expected no-base message, got: {rendered}"
+        );
     }
 }

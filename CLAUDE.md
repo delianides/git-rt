@@ -26,7 +26,7 @@ src/
 
 ## Core Concepts
 
-### Default View (zero-config)
+### File List (zero-config)
 
 ```
  src/main.rs          -3  +12
@@ -40,6 +40,21 @@ src/
 - `Enter`, `l`, `Right`, `Space`, or `d` opens the selected file's diff in an in-app overlay (centered 85% panel, scrollable with `j`/`k`, dismissible with `Esc`/`q`/`h`/`Left`)
 - `q` quits
 - The viewport keeps a configurable `scroll_padding` of rows (default 3) visible above and below the selected row — set `display.scroll_padding` in `config.toml` to change it (`0` disables).
+
+### View Modes
+
+perch has three view modes, cycled with `m` (`Expanded → Flat → Tree → Expanded`):
+
+- **Expanded** (default) — files split into collapsible status groups:
+  **Changes** (staged/unstaged edits), **New files** (untracked), and
+  **Committed** (committed on the branch, no pending edits). Empty groups are
+  hidden. `Enter`/`Space` on a group header collapses it. Requires a resolved
+  base branch; with none it shows an explanatory message.
+- **Flat** — a single flat list of changed file paths.
+- **Tree** — files arranged as a directory tree.
+
+Set the startup mode with `display.default_view = "flat" | "tree" | "expanded"`
+in `config.toml` (default `"expanded"`).
 
 ### Event Loop
 
@@ -122,14 +137,12 @@ RUST_LOG=debug cargo run       # Run with debug logging
 
 ## Current Status
 
-Core feature set is complete: live file-list with numstat, PR status strip, in-app diff overlay, filesystem watching, config file + keybindings, themes, multi-worktree support, and branch-scoped diff range.
+Core feature set is complete: live file-list with numstat, status-grouped Expanded view (plus Flat and Tree view modes), PR status strip, in-app diff overlay, filesystem watching, config file + keybindings, themes, multi-worktree support, and branch-scoped diff range.
 
 Remaining open items:
 
 - [ ] Handle edge cases (index.lock, mid-rebase, empty repo)
 - [ ] Mouse support (click to select)
-- [ ] Tree view mode (directory structure)
-- [ ] Staged vs unstaged split view
 - [ ] Virtual scrolling for large repos
 - [ ] Watch multiple repos
 

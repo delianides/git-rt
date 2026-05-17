@@ -46,6 +46,10 @@ pub struct Theme {
     pub status_staged: Color,
     pub status_conflicted: Color,
 
+    pub section_changes: Color,
+    pub section_new: Color,
+    pub section_committed: Color,
+
     pub diff_add_fg: Color,
     pub diff_add_bg: Color,
     pub diff_del_fg: Color,

@@ -3,6 +3,8 @@ use std::path::{Path, PathBuf};
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 
+use crate::state::ViewMode;
+
 /// Top-level application configuration
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
@@ -53,6 +55,8 @@ pub struct DisplayConfig {
     /// file list. 0 disables the feature. Clamped to `(viewport - 1) / 2` at
     /// runtime by ratatui.
     pub scroll_padding: usize,
+    /// The view mode perch starts in. One of `"flat"`, `"tree"`, `"expanded"`.
+    pub default_view: ViewMode,
 }
 
 impl Default for DisplayConfig {
@@ -62,6 +66,7 @@ impl Default for DisplayConfig {
             flash_on_change: true,
             flash_duration_ms: 600,
             scroll_padding: 3,
+            default_view: ViewMode::Expanded,
         }
     }
 }
@@ -263,6 +268,28 @@ layout = "right"
 
         let config = AppConfig::load(Some(&path)).unwrap();
         assert_eq!(config.display.scroll_padding, 10);
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn test_default_view_defaults_to_expanded() {
+        let config = AppConfig::default();
+        assert_eq!(
+            config.display.default_view,
+            crate::state::ViewMode::Expanded
+        );
+    }
+
+    #[test]
+    fn test_load_default_view_tree() {
+        let dir = std::env::temp_dir().join("perch-test-config-default-view-tree");
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("config.toml");
+        std::fs::write(&path, "[display]\ndefault_view = \"tree\"\n").unwrap();
+
+        let config = AppConfig::load(Some(&path)).unwrap();
+        assert_eq!(config.display.default_view, crate::state::ViewMode::Tree);
 
         std::fs::remove_dir_all(&dir).ok();
     }

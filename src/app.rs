@@ -284,6 +284,7 @@ impl App {
 
         let flash_duration = Duration::from_millis(config.display.flash_duration_ms);
         let mut state = AppState::new(Vec::new(), flash_duration, branch.clone());
+        state.set_view_mode(config.display.default_view);
         state.set_computing(true);
 
         let t = Instant::now();
@@ -759,9 +760,14 @@ impl App {
     }
 
     /// Activate the selected row. Tree directories toggle open/closed;
-    /// file rows request their diff.
+    /// Expanded group headers toggle collapsed/expanded; file rows request
+    /// their diff.
     fn handle_activate(&mut self) -> Result<()> {
         if self.state.toggle_selected_directory() {
+            return Ok(());
+        }
+
+        if self.state.toggle_selected_group() {
             return Ok(());
         }
 
@@ -1145,7 +1151,7 @@ mod editor_tests {
 mod input_tests {
     use super::*;
     use crate::config::AppConfig;
-    use crate::git::{FileDiff, FileEntry, FileStatus};
+    use crate::git::{ChangeGroup, FileDiff, FileEntry, FileStatus};
     use crossbeam_channel::Receiver;
     use crossterm::event::KeyEvent;
 
@@ -1155,6 +1161,7 @@ mod input_tests {
             status: FileStatus::Modified,
             insertions: 1,
             deletions: 1,
+            group: ChangeGroup::Changes,
         }
     }
 
@@ -1208,6 +1215,23 @@ mod input_tests {
 
         assert!(!should_quit);
         assert_eq!(app.state.view_mode(), crate::state::ViewMode::Tree);
+    }
+
+    #[test]
+    fn activate_on_group_header_toggles_collapse() {
+        let files = vec![FileEntry {
+            path: "a.rs".to_string(),
+            status: FileStatus::Modified,
+            insertions: 1,
+            deletions: 0,
+            group: ChangeGroup::Changes,
+        }];
+        let mut app = make_app(files);
+        app.state.set_view_mode(crate::state::ViewMode::Expanded);
+        // Row 0 is the "Changes" header; activate it.
+        app.handle_activate().unwrap();
+        assert_eq!(app.state.visible_rows().len(), 1); // file hidden
+        assert_eq!(app.state.visible_rows()[0].header_collapsed(), Some(true));
     }
 
     #[test]
@@ -1340,12 +1364,14 @@ mod input_tests {
                 status: FileStatus::Modified,
                 insertions: 7,
                 deletions: 3,
+                group: ChangeGroup::Changes,
             },
             FileEntry {
                 path: "src/ui/mod.rs".to_string(),
                 status: FileStatus::Modified,
                 insertions: 2,
                 deletions: 1,
+                group: ChangeGroup::Changes,
             },
         ]);
 

@@ -214,6 +214,7 @@ fn build_segments(state: &AppState, repo: &str, branch: &str, theme: &Theme) -> 
             match state.view_mode() {
                 ViewMode::Flat => "flat",
                 ViewMode::Tree => "tree",
+                ViewMode::Expanded => "expanded",
             },
             text_style,
         )],
@@ -368,7 +369,7 @@ mod tests {
 
     #[test]
     fn test_header_title_with_file_stats() {
-        use crate::git::{FileEntry, FileStatus};
+        use crate::git::{ChangeGroup, FileEntry, FileStatus};
         let mut s = fresh_state();
         s.update_files(vec![
             FileEntry {
@@ -376,12 +377,14 @@ mod tests {
                 status: FileStatus::Modified,
                 insertions: 12,
                 deletions: 3,
+                group: ChangeGroup::Changes,
             },
             FileEntry {
                 path: "b.rs".to_string(),
                 status: FileStatus::Modified,
                 insertions: 4,
                 deletions: 0,
+                group: ChangeGroup::Changes,
             },
         ]);
         let line = build_header_title(&s, &test_theme());

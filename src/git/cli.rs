@@ -207,14 +207,8 @@ fn parse_count(bytes: &[u8]) -> usize {
         .unwrap_or(0)
 }
 
-/// Merge status and numstat outputs into a sorted `Vec<FileEntry>`.
+/// Classify a file present in `git status` into a `ChangeGroup`.
 ///
-/// `repo_root` is used to resolve untracked-file paths so we can read the
-/// file from disk and count lines (treated as insertions, matching the
-/// pre-existing `branch_status` behavior).
-///
-/// Output is sorted by `path` ascending — matches the contract of the old
-/// `branch_status` / `status` implementations.
 /// A file present in `git status` belongs to `New` if untracked, else
 /// `Changes`. Files absent from `git status` (numstat-only) are `Committed`
 /// and assigned by the caller.
@@ -225,6 +219,14 @@ fn group_for_status(status: &FileStatus) -> ChangeGroup {
     }
 }
 
+/// Merge status and numstat outputs into a sorted `Vec<FileEntry>`.
+///
+/// `repo_root` is used to resolve untracked-file paths so we can read the
+/// file from disk and count lines (treated as insertions, matching the
+/// pre-existing `branch_status` behavior).
+///
+/// Output is sorted by `path` ascending — matches the contract of the old
+/// `branch_status` / `status` implementations.
 pub fn merge_status_and_numstat(
     status: Vec<(String, FileStatus)>,
     numstat: Vec<(String, usize, usize)>,

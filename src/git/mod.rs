@@ -811,9 +811,11 @@ impl GitRepo {
             if short == branch {
                 return None;
             }
-            // First match is the creation entry (earliest in the append-only
-            // log). For re-checkout the branch tip is unchanged so SHA also
-            // matches, but the creation entry always comes first.
+            // If the branch tip hasn't advanced since creation, a re-checkout
+            // writes an entry with the same SHA and timestamp would also match;
+            // the creation entry appears first in the append-only log, so it is
+            // the one returned. If the tip has advanced, the re-checkout entry's
+            // SHA differs and it is skipped here.
             return Some(short);
         }
         None
@@ -1932,6 +1934,13 @@ mod tests {
     fn parse_reflog_timestamp_rejects_malformed() {
         assert_eq!(parse_reflog_timestamp(""), None);
         assert_eq!(parse_reflog_timestamp("only one"), None);
+    }
+
+    #[test]
+    fn parse_reflog_new_sha_extracts_second_token() {
+        let line = "abc123 def456 Name <e@x> 0 +0000\tmsg";
+        assert_eq!(parse_reflog_new_sha(line), Some("def456"));
+        assert_eq!(parse_reflog_new_sha("only"), None);
     }
 
     #[test]

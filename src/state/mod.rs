@@ -802,8 +802,8 @@ impl AppState {
     fn restore_selection(&mut self, selection: SelectionSnapshot) {
         match self.view_mode {
             ViewMode::Flat => self.restore_flat_selection(selection.file_path),
-            ViewMode::Tree => self.restore_tree_selection(selection),
-            ViewMode::Expanded => self.restore_expanded_selection(selection),
+            ViewMode::Tree => self.restore_selection_by_id_or_path(selection),
+            ViewMode::Expanded => self.restore_selection_by_id_or_path(selection),
         }
     }
 
@@ -830,28 +830,8 @@ impl AppState {
             .map(|file| RowId::File(file.path.clone()));
     }
 
-    fn restore_tree_selection(&mut self, selection: SelectionSnapshot) {
-        let rows = self.rebuild_visible_rows();
-
-        if let Some(selected_row_id) = selection.row_id.as_ref() {
-            if let Some(index) = rows.iter().position(|row| row.id() == selected_row_id) {
-                self.set_selection_from_rows(&rows, index);
-                return;
-            }
-        }
-
-        if let Some(selected_file_path) = selection.file_path.as_ref() {
-            let file_id = RowId::File(selected_file_path.clone());
-            if let Some(index) = rows.iter().position(|row| row.id() == &file_id) {
-                self.set_selection_from_rows(&rows, index);
-                return;
-            }
-        }
-
-        self.set_selection_from_rows(&rows, self.selected);
-    }
-
-    fn restore_expanded_selection(&mut self, selection: SelectionSnapshot) {
+    /// Restore selection after a rebuild by stable row id, then by file path, then by clamped index. Shared by Tree and Expanded modes.
+    fn restore_selection_by_id_or_path(&mut self, selection: SelectionSnapshot) {
         let rows = self.rebuild_visible_rows();
 
         if let Some(selected_row_id) = selection.row_id.as_ref() {
@@ -926,7 +906,7 @@ mod tests {
     }
 
     #[test]
-    fn expanded_mode_builds_header_rows() {
+    fn test_expanded_mode_builds_header_rows() {
         let files = vec![
             grouped_entry("a.rs", ChangeGroup::Changes),
             grouped_entry("b.rs", ChangeGroup::Committed),
@@ -939,7 +919,7 @@ mod tests {
     }
 
     #[test]
-    fn toggle_selected_group_collapses_and_keeps_header_selected() {
+    fn test_toggle_selected_group_collapses_and_keeps_header_selected() {
         let files = vec![grouped_entry("a.rs", ChangeGroup::Changes)];
         let mut state = AppState::new(files, Duration::from_millis(600), "main".to_string());
         state.set_view_mode(ViewMode::Expanded);

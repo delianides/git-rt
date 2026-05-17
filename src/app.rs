@@ -760,9 +760,14 @@ impl App {
     }
 
     /// Activate the selected row. Tree directories toggle open/closed;
-    /// file rows request their diff.
+    /// Expanded group headers toggle collapsed/expanded; file rows request
+    /// their diff.
     fn handle_activate(&mut self) -> Result<()> {
         if self.state.toggle_selected_directory() {
+            return Ok(());
+        }
+
+        if self.state.toggle_selected_group() {
             return Ok(());
         }
 
@@ -1210,6 +1215,23 @@ mod input_tests {
 
         assert!(!should_quit);
         assert_eq!(app.state.view_mode(), crate::state::ViewMode::Tree);
+    }
+
+    #[test]
+    fn activate_on_group_header_toggles_collapse() {
+        let files = vec![FileEntry {
+            path: "a.rs".to_string(),
+            status: FileStatus::Modified,
+            insertions: 1,
+            deletions: 0,
+            group: ChangeGroup::Changes,
+        }];
+        let mut app = make_app(files);
+        app.state.set_view_mode(crate::state::ViewMode::Expanded);
+        // Row 0 is the "Changes" header; activate it.
+        app.handle_activate().unwrap();
+        assert_eq!(app.state.visible_rows().len(), 1); // file hidden
+        assert_eq!(app.state.visible_rows()[0].header_collapsed(), Some(true));
     }
 
     #[test]

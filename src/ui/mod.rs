@@ -23,7 +23,7 @@ use crossterm::{
 use ratatui::{
     backend::CrosstermBackend,
     layout::{Constraint, Direction, Layout, Rect},
-    style::Style,
+    style::{Modifier, Style},
     text::{Line, Span},
     widgets::{Block, BorderType, Borders, List, ListItem, ListState, Paragraph},
     Frame,
@@ -184,11 +184,9 @@ fn render_file_list(
     area: Rect,
 ) {
     match state.view_mode() {
-        // Expanded rendering is wired in a later task; fall back to flat for now.
-        ViewMode::Flat | ViewMode::Expanded => {
-            render_flat_file_list(frame, state, config, theme, area)
-        }
+        ViewMode::Flat => render_flat_file_list(frame, state, config, theme, area),
         ViewMode::Tree => render_tree_file_list(frame, state, config, theme, area),
+        ViewMode::Expanded => render_expanded_file_list(frame, state, config, theme, area),
     }
 }
 
@@ -358,6 +356,98 @@ fn render_tree_file_list(
         items,
         state.selected_index(),
     );
+}
+
+fn render_expanded_file_list(
+    frame: &mut Frame,
+    state: &mut AppState,
+    config: &AppConfig,
+    theme: &Theme,
+    area: Rect,
+) {
+    let area = inset_file_list_area(area);
+
+    // The Expanded view is branch-scoped: it needs a resolved base branch to
+    // compute the Committed group. If none resolved (detached HEAD, no base),
+    // show an explanatory message instead of a partial view.
+    if state.merge_base().is_none() && state.initial_seed_done() {
+        render_expanded_no_base(frame, theme, area);
+        return;
+    }
+
+    let rows = state.visible_rows();
+    if rows.is_empty() {
+        render_empty_or_loading_state(frame, state, theme, area);
+        return;
+    }
+
+    let mut items = Vec::with_capacity(rows.len());
+    for row in &rows {
+        let line = match row {
+            VisibleRow::Header {
+                label,
+                count,
+                collapsed,
+                ..
+            } => {
+                let arrow = if *collapsed { "▶" } else { "▼" };
+                Line::from(vec![
+                    Span::raw(" "),
+                    Span::styled(arrow, Style::default().fg(theme.file_path)),
+                    Span::raw(" "),
+                    Span::styled(
+                        format!("{label} ({count})"),
+                        Style::default()
+                            .fg(theme.file_path)
+                            .add_modifier(Modifier::BOLD),
+                    ),
+                ])
+            }
+            VisibleRow::File { file, .. } => file_line(
+                file.path.clone(),
+                file.status.clone(),
+                file.deletions,
+                file.insertions,
+                area.width as usize,
+                theme,
+            ),
+            // build_expanded_rows never emits directory rows.
+            VisibleRow::Directory { .. } => continue,
+        };
+
+        let mut item = ListItem::new(line);
+        if let Some(file) = row.file() {
+            if config.display.flash_on_change && state.is_flashing(&file.path) {
+                item = item.style(Style::default().bg(theme.flash_bg));
+            }
+        }
+        items.push(item);
+    }
+
+    render_list(
+        frame,
+        state,
+        config,
+        theme,
+        area,
+        items,
+        state.selected_index(),
+    );
+}
+
+/// Render the message shown when the Expanded view has no resolvable base
+/// branch and therefore cannot compute the Committed group.
+fn render_expanded_no_base(frame: &mut Frame, theme: &Theme, area: Rect) {
+    if area.height < 2 || area.width < 20 {
+        return;
+    }
+    use ratatui::layout::Alignment;
+    let msg = Paragraph::new(
+        "Expanded view needs a base branch.\nPress m for Flat or Tree, or pass --base.",
+    )
+    .style(Style::default().fg(theme.file_path))
+    .alignment(Alignment::Center);
+    frame.render_widget(msg, area);
 }
 
 fn inset_file_list_area(area: Rect) -> Rect {

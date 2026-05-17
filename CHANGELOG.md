@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.5.0](https://github.com/upsertco/perch/compare/v1.4.0...v1.5.0) (2026-05-17)
+
+
+### Features
+
+* add Expanded view mode ([023b8a8](https://github.com/upsertco/perch/commit/023b8a832f73b705ef5042fe6cbeb492c13a6d36))
+
 ## [1.4.0](https://github.com/upsertco/perch/compare/v1.3.0...v1.4.0) (2026-05-17)
 
 

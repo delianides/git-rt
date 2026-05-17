@@ -833,7 +833,7 @@ fn flat_row_from_file(file: &FileEntry) -> VisibleRow {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::git::FileStatus;
+    use crate::git::{ChangeGroup, FileStatus};
 
     fn make_entry(path: &str, ins: usize, del: usize) -> FileEntry {
         FileEntry {
@@ -841,6 +841,7 @@ mod tests {
             status: FileStatus::Modified,
             insertions: ins,
             deletions: del,
+            group: ChangeGroup::Changes,
         }
     }
 

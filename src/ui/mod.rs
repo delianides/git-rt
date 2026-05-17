@@ -509,7 +509,7 @@ fn file_status_color(status: FileStatus, theme: &Theme) -> ratatui::style::Color
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::git::{FileEntry, FileStatus};
+    use crate::git::{ChangeGroup, FileEntry, FileStatus};
     use crate::theme::load_theme;
     use ratatui::backend::TestBackend;
     use std::time::Duration;
@@ -520,6 +520,7 @@ mod tests {
             status: FileStatus::Modified,
             insertions: 1,
             deletions: 1,
+            group: ChangeGroup::Changes,
         }
     }
 
@@ -592,12 +593,14 @@ mod tests {
                 status: FileStatus::Modified,
                 insertions: 234,
                 deletions: 15,
+                group: ChangeGroup::Changes,
             },
             FileEntry {
                 path: "Cargo.toml".to_string(),
                 status: FileStatus::Modified,
                 insertions: 2,
                 deletions: 1,
+                group: ChangeGroup::Changes,
             },
         ];
 
@@ -674,6 +677,7 @@ mod tests {
             status: FileStatus::Modified,
             insertions: 234,
             deletions: 15,
+            group: ChangeGroup::Changes,
         }];
         let mut state = AppState::new(files, Duration::from_millis(600), "main".to_string());
         let rendered = render_to_string(&mut state, &AppConfig::default(), 50, 6);
@@ -690,6 +694,7 @@ mod tests {
             status: FileStatus::Modified,
             insertions: 234,
             deletions: 15,
+            group: ChangeGroup::Changes,
         }];
         let mut state = AppState::new(files, Duration::from_millis(600), "main".to_string());
         // Width 24: with borders + padding the elastic budget drops
@@ -791,12 +796,14 @@ mod tests {
                 status: FileStatus::Modified,
                 insertions: 7,
                 deletions: 3,
+                group: ChangeGroup::Changes,
             },
             FileEntry {
                 path: "src/ui/header.rs".to_string(),
                 status: FileStatus::Modified,
                 insertions: 2,
                 deletions: 1,
+                group: ChangeGroup::Changes,
             },
         ];
         let mut state = AppState::new(files, Duration::from_millis(600), "main".to_string());

@@ -9,7 +9,9 @@
 use std::path::Path;
 use std::process::Command;
 
-use crate::git::{DiffHunk, DiffLine, DiffLineKind, FileDiff, FileEntry, FileStatus, GitFailure};
+use crate::git::{
+    ChangeGroup, DiffHunk, DiffLine, DiffLineKind, FileDiff, FileEntry, FileStatus, GitFailure,
+};
 
 /// Parse `git status --porcelain=v2 -z` output into a list of
 /// `(path, FileStatus)` pairs. Robust to records appearing in any order;
@@ -213,6 +215,16 @@ fn parse_count(bytes: &[u8]) -> usize {
 ///
 /// Output is sorted by `path` ascending — matches the contract of the old
 /// `branch_status` / `status` implementations.
+/// A file present in `git status` belongs to `New` if untracked, else
+/// `Changes`. Files absent from `git status` (numstat-only) are `Committed`
+/// and assigned by the caller.
+fn group_for_status(status: &FileStatus) -> ChangeGroup {
+    match status {
+        FileStatus::Untracked => ChangeGroup::New,
+        _ => ChangeGroup::Changes,
+    }
+}
+
 pub fn merge_status_and_numstat(
     status: Vec<(String, FileStatus)>,
     numstat: Vec<(String, usize, usize)>,
@@ -246,6 +258,7 @@ pub fn merge_status_and_numstat(
 
             FileEntry {
                 path,
+                group: group_for_status(&fs_status),
                 status: fs_status,
                 insertions,
                 deletions,
@@ -267,6 +280,7 @@ pub fn merge_status_and_numstat(
             status,
             insertions,
             deletions,
+            group: ChangeGroup::Committed,
         });
     }
 
@@ -645,5 +659,33 @@ mod diff_parser_tests {
         assert_eq!(lines[0].content, "a");
         assert!(matches!(lines[1].kind, DiffLineKind::Addition));
         assert_eq!(lines[1].content, "b");
+    }
+}
+
+#[cfg(test)]
+mod merge_tests {
+    use super::*;
+    use crate::git::ChangeGroup;
+
+    #[test]
+    fn classifies_files_into_change_groups() {
+        let tmp = std::env::temp_dir();
+        let status = vec![
+            ("changed.rs".to_string(), FileStatus::Modified),
+            ("staged.rs".to_string(), FileStatus::Staged),
+            ("brand_new.rs".to_string(), FileStatus::Untracked),
+        ];
+        let numstat = vec![
+            ("changed.rs".to_string(), 1, 1),
+            ("staged.rs".to_string(), 2, 0),
+            ("committed.rs".to_string(), 5, 5),
+        ];
+        let entries = merge_status_and_numstat(status, numstat, &tmp, None);
+
+        let group = |path: &str| entries.iter().find(|e| e.path == path).unwrap().group;
+        assert_eq!(group("changed.rs"), ChangeGroup::Changes);
+        assert_eq!(group("staged.rs"), ChangeGroup::Changes);
+        assert_eq!(group("brand_new.rs"), ChangeGroup::New);
+        assert_eq!(group("committed.rs"), ChangeGroup::Committed);
     }
 }

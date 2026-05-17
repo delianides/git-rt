@@ -206,7 +206,7 @@ fn flatten_children(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::git::{FileEntry, FileStatus};
+    use crate::git::{ChangeGroup, FileEntry, FileStatus};
 
     fn file(path: &str, ins: usize, del: usize) -> FileEntry {
         FileEntry {
@@ -214,6 +214,7 @@ mod tests {
             status: FileStatus::Modified,
             insertions: ins,
             deletions: del,
+            group: ChangeGroup::Changes,
         }
     }
 

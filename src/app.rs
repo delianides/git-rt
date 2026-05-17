@@ -1145,7 +1145,7 @@ mod editor_tests {
 mod input_tests {
     use super::*;
     use crate::config::AppConfig;
-    use crate::git::{FileDiff, FileEntry, FileStatus};
+    use crate::git::{ChangeGroup, FileDiff, FileEntry, FileStatus};
     use crossbeam_channel::Receiver;
     use crossterm::event::KeyEvent;
 
@@ -1155,6 +1155,7 @@ mod input_tests {
             status: FileStatus::Modified,
             insertions: 1,
             deletions: 1,
+            group: ChangeGroup::Changes,
         }
     }
 
@@ -1340,12 +1341,14 @@ mod input_tests {
                 status: FileStatus::Modified,
                 insertions: 7,
                 deletions: 3,
+                group: ChangeGroup::Changes,
             },
             FileEntry {
                 path: "src/ui/mod.rs".to_string(),
                 status: FileStatus::Modified,
                 insertions: 2,
                 deletions: 1,
+                group: ChangeGroup::Changes,
             },
         ]);
 

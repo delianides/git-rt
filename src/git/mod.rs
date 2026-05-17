@@ -91,6 +91,33 @@ fn parse_checkout_target(line: &str) -> Option<(String, String)> {
     Some((from.to_string(), to.to_string()))
 }
 
+/// Extract the unix-timestamp field from a reflog line.
+///
+/// Reflog lines are `<old> <new> <name> <email> <unixtime> <tz>\t<msg>`.
+/// The committer name may contain spaces, so the timestamp is the
+/// second-to-last whitespace token of the pre-tab prefix. Returns `None`
+/// if the field is missing or not all-digit.
+fn parse_reflog_timestamp(line: &str) -> Option<&str> {
+    let prefix = line.split_once('\t').map(|(p, _)| p).unwrap_or(line);
+    let mut tokens = prefix.split_whitespace().rev();
+    let _tz = tokens.next()?;
+    let ts = tokens.next()?;
+    if !ts.is_empty() && ts.bytes().all(|b| b.is_ascii_digit()) {
+        Some(ts)
+    } else {
+        None
+    }
+}
+
+/// Extract the `new` (second) SHA field from a reflog line.
+///
+/// Reflog lines are `<old> <new> <name> ...`. Returns the second
+/// whitespace-separated token, or `None` if absent.
+fn parse_reflog_new_sha(line: &str) -> Option<&str> {
+    let prefix = line.split_once('\t').map(|(p, _)| p).unwrap_or(line);
+    prefix.split_whitespace().nth(1)
+}
+
 /// Errors from `discover_worktree_root`.
 #[derive(Debug, Error)]
 pub enum DiscoverError {
@@ -731,10 +758,31 @@ impl GitRepo {
     /// `git checkout -b` / `git switch -c` record only `Created from HEAD` in
     /// the branch's own reflog, but the HEAD reflog (`logs/HEAD`, per-worktree)
     /// records `checkout: moving from <parent> to <branch>` at creation time.
-    /// Returns the first such `<parent>` for `branch`, or `None` when the
-    /// reflog is missing, has no matching entry, or the parent is the `HEAD`
-    /// sentinel, a detached-HEAD SHA, or `branch` itself.
+    ///
+    /// `logs/HEAD` is append-only and gains an entry on every checkout of
+    /// `branch`, not just creation. To identify the creation entry, this
+    /// correlates by timestamp: the branch's own reflog first line and the
+    /// HEAD-reflog creation entry are written by the same command and share a
+    /// unix timestamp. Re-checkouts have different timestamps and are ignored.
+    ///
+    /// Returns `None` when either reflog is missing, no entry correlates, or
+    /// the parent is the `HEAD` sentinel, a detached-HEAD SHA, or `branch`.
     fn head_reflog_parent(&self, branch: &str) -> Option<String> {
+        // Read the branch's own reflog first line, which is written at
+        // creation time.
+        let common = resolve_common_git_dir(&self.repo_path)?;
+        let branch_log = common.join("logs/refs/heads").join(branch);
+        let branch_content = std::fs::read_to_string(&branch_log).ok()?;
+        let creation_line = branch_content.lines().next()?;
+        let creation_ts = parse_reflog_timestamp(creation_line)?;
+        // The `new` SHA in the branch reflog's first line is the commit the
+        // branch was created at. When `git checkout -b` writes the
+        // corresponding HEAD-reflog entry, it records the same `new` SHA.
+        // Re-checkouts write a different `new` SHA if HEAD was elsewhere, or
+        // — if HEAD was already on the same commit — the same SHA, but at a
+        // later timestamp.
+        let creation_sha = parse_reflog_new_sha(creation_line)?;
+
         let head_log = self.repo.git_dir().join("logs/HEAD");
         let content = std::fs::read_to_string(&head_log).ok()?;
 
@@ -745,7 +793,17 @@ impl GitRepo {
             if to != branch {
                 continue;
             }
-            // First `... to <branch>` entry is the branch's creation.
+            // Must share both timestamp and new-SHA with the branch creation
+            // line. Timestamp alone can collide when operations run within the
+            // same unix second; SHA-match distinguishes delete-and-recreate
+            // (the new branch creation points to a different commit than the
+            // old one, so only the correct entry matches both fields).
+            if parse_reflog_timestamp(line) != Some(creation_ts) {
+                continue;
+            }
+            if parse_reflog_new_sha(line) != Some(creation_sha) {
+                continue;
+            }
             if from == "HEAD" || from == branch || is_hex_sha(&from) {
                 return None;
             }
@@ -753,6 +811,9 @@ impl GitRepo {
             if short == branch {
                 return None;
             }
+            // First match is the creation entry (earliest in the append-only
+            // log). For re-checkout the branch tip is unchanged so SHA also
+            // matches, but the creation entry always comes first.
             return Some(short);
         }
         None
@@ -1852,6 +1913,33 @@ mod tests {
         assert_eq!(
             parse_checkout_target("abc def U <u@x> 0 +0000\tbranch: Created from main"),
             None
+        );
+    }
+
+    #[test]
+    fn parse_reflog_timestamp_extracts_unix_time() {
+        let line = "abc def Jane Doe <j@x> 1700000000 +0000\tcheckout: moving from a to b";
+        assert_eq!(parse_reflog_timestamp(line), Some("1700000000"));
+    }
+
+    #[test]
+    fn parse_reflog_timestamp_handles_multiword_name() {
+        let line = "0 1 Mary Jane Watson Smith <m@x> 1699999999 -0400\tbranch: Created from HEAD";
+        assert_eq!(parse_reflog_timestamp(line), Some("1699999999"));
+    }
+
+    #[test]
+    fn parse_reflog_timestamp_rejects_malformed() {
+        assert_eq!(parse_reflog_timestamp(""), None);
+        assert_eq!(parse_reflog_timestamp("only one"), None);
+    }
+
+    #[test]
+    fn parse_checkout_target_handles_remote_tracking_from() {
+        let line = "abc def U <u@x> 0 +0000\tcheckout: moving from origin/main to feature/foo";
+        assert_eq!(
+            parse_checkout_target(line),
+            Some(("origin/main".to_string(), "feature/foo".to_string()))
         );
     }
 }

@@ -22,7 +22,7 @@ use crossterm::{
 };
 use ratatui::{
     backend::CrosstermBackend,
-    layout::{Constraint, Direction, Layout, Rect},
+    layout::{Alignment, Constraint, Direction, Layout, Rect},
     style::{Modifier, Style},
     text::{Line, Span},
     widgets::{Block, BorderType, Borders, List, ListItem, ListState, Paragraph},
@@ -369,7 +369,9 @@ fn render_expanded_file_list(
 
     // The Expanded view is branch-scoped: it needs a resolved base branch to
     // compute the Committed group. If none resolved (detached HEAD, no base),
-    // show an explanatory message instead of a partial view.
+    // show an explanatory message instead of a partial view. The
+    // initial_seed_done() check defers this message until the first git-status
+    // snapshot has arrived, so it does not flash during startup.
     if state.merge_base().is_none() && state.initial_seed_done() {
         render_expanded_no_base(frame, theme, area);
         return;
@@ -411,8 +413,7 @@ fn render_expanded_file_list(
                 area.width as usize,
                 theme,
             ),
-            // build_expanded_rows never emits directory rows.
-            VisibleRow::Directory { .. } => continue,
+            VisibleRow::Directory { .. } => unreachable!("expanded mode emits no directory rows"),
         };
 
         let mut item = ListItem::new(line);
@@ -441,7 +442,6 @@ fn render_expanded_no_base(frame: &mut Frame, theme: &Theme, area: Rect) {
     if area.height < 2 || area.width < 20 {
         return;
     }
-    use ratatui::layout::Alignment;
     let msg = Paragraph::new(
         "Expanded view needs a base branch.\nPress m for Flat or Tree, or pass --base.",
     )
@@ -470,7 +470,6 @@ fn render_empty_or_loading_state(
         return;
     }
     if state.is_computing() {
-        use ratatui::layout::Alignment;
         let loading = Paragraph::new("Loading\u{2026}")
             .style(Style::default().add_modifier(ratatui::style::Modifier::DIM))
             .alignment(Alignment::Center);

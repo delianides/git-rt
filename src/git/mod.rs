@@ -32,6 +32,8 @@ impl GitFailure {
 ///
 /// Returns `None` for malformed lines, non-"Created from" entries, the
 /// `HEAD` sentinel, and SHA sources (no branch name to return).
+/// A branch whose name is entirely hex digits (length 7-40) is
+/// indistinguishable from an abbreviated SHA and is treated as one.
 ///
 /// Expected format (single line, tab-separated message field):
 ///   `<old-sha> <new-sha> <who> <time> <tz>\tbranch: Created from <ref>`
@@ -848,17 +850,19 @@ impl GitRepo {
         }
 
         if let Ok(current) = self.branch_name() {
-            // 2a: the branch's own reflog "Created from X" — set when an
-            // explicit start-point is given, and by `git branch` (which
-            // resolves HEAD to a branch name).
-            if let Some(parent) = self.reflog_first_created_from(&current) {
-                return Some(parent);
-            }
-            // 2b: the HEAD reflog "checkout: moving from X to <branch>" entry —
-            // covers `git checkout -b` / `git switch -c`, which record only
-            // "Created from HEAD" in the branch reflog.
-            if let Some(parent) = self.head_reflog_parent(&current) {
-                return Some(parent);
+            if current != "HEAD" {
+                // 2a: the branch's own reflog "Created from X" — set when an
+                // explicit start-point is given, and by `git branch` (which
+                // resolves HEAD to a branch name).
+                if let Some(parent) = self.reflog_first_created_from(&current) {
+                    return Some(parent);
+                }
+                // 2b: the HEAD reflog "checkout: moving from X to <branch>" entry —
+                // covers `git checkout -b` / `git switch -c`, which record only
+                // "Created from HEAD" in the branch reflog.
+                if let Some(parent) = self.head_reflog_parent(&current) {
+                    return Some(parent);
+                }
             }
         }
 

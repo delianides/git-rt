@@ -337,6 +337,7 @@ fn render_tree_file_list(
                 }
                 Line::from(spans)
             }
+            VisibleRow::Header { .. } => unreachable!("tree mode emits no header rows"),
         };
 
         let mut item = ListItem::new(line);

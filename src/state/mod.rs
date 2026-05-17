@@ -745,7 +745,7 @@ impl AppState {
             row_id: row.map(|row| row.id().clone()),
             file_path: row.and_then(|row| match row.id() {
                 RowId::File(path) => Some(path.clone()),
-                RowId::Directory(_) => None,
+                RowId::Directory(_) | RowId::Group(_) => None,
             }),
         }
     }

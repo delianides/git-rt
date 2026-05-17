@@ -1,11 +1,12 @@
 use std::collections::{BTreeMap, BTreeSet};
 
-use crate::git::FileEntry;
+use crate::git::{ChangeGroup, FileEntry};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum RowId {
     Directory(String),
     File(String),
+    Group(ChangeGroup),
 }
 
 #[derive(Debug, Clone)]
@@ -22,24 +23,35 @@ pub enum VisibleRow {
         label: String,
         file: FileEntry,
     },
+    Header {
+        id: RowId,
+        label: String,
+        count: usize,
+        collapsed: bool,
+    },
 }
 
 impl VisibleRow {
     pub fn id(&self) -> &RowId {
         match self {
-            VisibleRow::Directory { id, .. } | VisibleRow::File { id, .. } => id,
+            VisibleRow::Directory { id, .. }
+            | VisibleRow::File { id, .. }
+            | VisibleRow::Header { id, .. } => id,
         }
     }
 
     pub fn depth(&self) -> usize {
         match self {
             VisibleRow::Directory { depth, .. } | VisibleRow::File { depth, .. } => *depth,
+            VisibleRow::Header { .. } => 0,
         }
     }
 
     pub fn label(&self) -> &str {
         match self {
-            VisibleRow::Directory { label, .. } | VisibleRow::File { label, .. } => label,
+            VisibleRow::Directory { label, .. }
+            | VisibleRow::File { label, .. }
+            | VisibleRow::Header { label, .. } => label,
         }
     }
 
@@ -47,16 +59,27 @@ impl VisibleRow {
         matches!(self, VisibleRow::Directory { .. })
     }
 
+    pub fn is_header(&self) -> bool {
+        matches!(self, VisibleRow::Header { .. })
+    }
+
     pub fn directory_expanded(&self) -> Option<bool> {
         match self {
             VisibleRow::Directory { expanded, .. } => Some(*expanded),
-            VisibleRow::File { .. } => None,
+            VisibleRow::File { .. } | VisibleRow::Header { .. } => None,
+        }
+    }
+
+    pub fn header_collapsed(&self) -> Option<bool> {
+        match self {
+            VisibleRow::Header { collapsed, .. } => Some(*collapsed),
+            VisibleRow::Directory { .. } | VisibleRow::File { .. } => None,
         }
     }
 
     pub fn file(&self) -> Option<&FileEntry> {
         match self {
-            VisibleRow::Directory { .. } => None,
+            VisibleRow::Directory { .. } | VisibleRow::Header { .. } => None,
             VisibleRow::File { file, .. } => Some(file),
         }
     }
@@ -216,6 +239,24 @@ mod tests {
             deletions: del,
             group: ChangeGroup::Changes,
         }
+    }
+
+    #[test]
+    fn header_row_exposes_label_count_and_collapsed() {
+        let row = VisibleRow::Header {
+            id: RowId::Group(ChangeGroup::Changes),
+            label: "Changes".to_string(),
+            count: 3,
+            collapsed: true,
+        };
+        assert!(row.is_header());
+        assert_eq!(row.label(), "Changes");
+        assert_eq!(row.depth(), 0);
+        assert!(!row.is_directory());
+        assert_eq!(row.directory_expanded(), None);
+        assert!(row.file().is_none());
+        assert_eq!(row.header_collapsed(), Some(true));
+        assert_eq!(row.id(), &RowId::Group(ChangeGroup::Changes));
     }
 
     #[test]

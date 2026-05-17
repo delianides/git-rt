@@ -87,8 +87,11 @@ pub enum MergeableStatus {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum ViewMode {
+    /// Flat list of every changed file.
     Flat,
+    /// Files arranged as a directory tree.
     Tree,
+    /// Files split into collapsible status-group sections.
     Expanded,
 }
 
@@ -899,7 +902,7 @@ mod tests {
     }
 
     #[test]
-    fn test_cycle_view_mode_toggles_flat_and_tree() {
+    fn test_cycle_view_mode_flat_to_tree_to_expanded() {
         let mut state = AppState::new(vec![], Duration::from_millis(600), "main".to_string());
         assert_eq!(state.view_mode(), ViewMode::Flat);
         state.cycle_view_mode();

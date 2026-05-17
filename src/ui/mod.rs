@@ -908,4 +908,90 @@ mod tests {
         assert!(rendered.contains("src/ui/mod.rs +7 -3"));
         assert!(!rendered.contains("src/ui/header.rs +2 -1"));
     }
+
+    fn grouped_entry(path: &str, group: ChangeGroup) -> FileEntry {
+        FileEntry {
+            path: path.to_string(),
+            status: FileStatus::Modified,
+            insertions: 1,
+            deletions: 1,
+            group,
+        }
+    }
+
+    #[test]
+    fn test_render_expanded_mode_shows_group_headers_with_arrow_and_count() {
+        let files = vec![
+            grouped_entry("src/ui/changed.rs", ChangeGroup::Changes),
+            grouped_entry("src/ui/committed.rs", ChangeGroup::Committed),
+        ];
+        let mut state = AppState::new(files, Duration::from_millis(600), "main".to_string());
+        state.set_view_mode(ViewMode::Expanded);
+        // Resolve a base so the no-base guard is skipped.
+        state.set_merge_base(
+            Some(gix::ObjectId::empty_tree(gix::hash::Kind::Sha1)),
+            "main".to_string(),
+        );
+
+        let rendered = render_to_string(&mut state, &AppConfig::default(), 60, 14);
+        assert!(
+            rendered.contains("▼"),
+            "expected expanded arrow, got: {rendered}"
+        );
+        assert!(
+            rendered.contains("Changes (1)"),
+            "expected Changes header with count, got: {rendered}"
+        );
+        assert!(
+            rendered.contains("Committed (1)"),
+            "expected Committed header with count, got: {rendered}"
+        );
+    }
+
+    #[test]
+    fn test_render_expanded_mode_collapsed_group_hides_its_files() {
+        let files = vec![grouped_entry("src/ui/changed.rs", ChangeGroup::Changes)];
+        let mut state = AppState::new(files, Duration::from_millis(600), "main".to_string());
+        state.set_view_mode(ViewMode::Expanded);
+        state.set_merge_base(
+            Some(gix::ObjectId::empty_tree(gix::hash::Kind::Sha1)),
+            "main".to_string(),
+        );
+        // Row 0 is the "Changes" header; collapse it.
+        assert!(state.toggle_selected_group());
+
+        let rendered = render_to_string(&mut state, &AppConfig::default(), 60, 14);
+        assert!(
+            rendered.contains("Changes (1)"),
+            "header should remain, got: {rendered}"
+        );
+        assert!(
+            rendered.contains("▶"),
+            "expected collapsed arrow, got: {rendered}"
+        );
+        assert!(
+            !rendered.contains("changed.rs"),
+            "collapsed group should hide its files, got: {rendered}"
+        );
+    }
+
+    #[test]
+    fn test_render_expanded_mode_shows_no_base_message() {
+        let mut state = AppState::new(vec![], Duration::from_millis(600), "main".to_string());
+        state.set_view_mode(ViewMode::Expanded);
+        // Seed the first snapshot so `initial_seed_done()` is true; leave
+        // `merge_base()` as `None` to trigger the no-base message.
+        state.update_files(vec![grouped_entry(
+            "src/ui/changed.rs",
+            ChangeGroup::Changes,
+        )]);
+        assert!(state.initial_seed_done());
+        assert!(state.merge_base().is_none());
+
+        let rendered = render_to_string(&mut state, &AppConfig::default(), 60, 14);
+        assert!(
+            rendered.contains("needs a base branch"),
+            "expected no-base message, got: {rendered}"
+        );
+    }
 }

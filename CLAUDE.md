@@ -169,13 +169,20 @@ Source of truth is `Cargo.toml`. Current pins:
 
 ## Commit Guidelines
 
-Use conventional commits:
+This repo follows [Conventional Commits](https://www.conventionalcommits.org/).
+Use these types:
 
 - feat: new features
 - fix: bug fixes
 - docs: documentation
 - refactor: code refactoring
 - chore: maintenance
+
+**PR titles must also be Conventional Commits.** PRs are **squash-merged**, so
+the PR title becomes the single commit message on the default branch — and
+release-please derives the release (and version bump) from those squashed
+commit messages. A PR title without a valid type prefix (e.g. `feat:`) will
+not trigger a release PR. Always prefix the PR title accordingly.
 
 ## Testing
 

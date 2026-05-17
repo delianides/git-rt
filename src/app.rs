@@ -284,6 +284,7 @@ impl App {
 
         let flash_duration = Duration::from_millis(config.display.flash_duration_ms);
         let mut state = AppState::new(Vec::new(), flash_duration, branch.clone());
+        state.set_view_mode(config.display.default_view);
         state.set_computing(true);
 
         let t = Instant::now();

@@ -119,7 +119,7 @@ fn build_segments(state: &AppState, repo: &str, branch: &str, theme: &Theme) -> 
             // "repo/" is droppable; the branch name itself is Fixed.
             let repo_prefix = format!("{repo}/");
             out.push(Segment::new(
-                SegmentKind::Droppable(3),
+                SegmentKind::Droppable(4),
                 SegmentRole::RepoPrefix,
                 vec![Span::styled(repo_prefix, text_style)],
             ));
@@ -146,9 +146,22 @@ fn build_segments(state: &AppState, repo: &str, branch: &str, theme: &Theme) -> 
         (true, true) => {}
     }
 
+    // Resolved diff base — the branch this worktree's changes are measured
+    // against.
+    // Droppable(0) — the lowest priority number, so it is dropped first.
+    let base = state.base_branch();
+    if !base.is_empty() {
+        push_sep(&mut out, sep_span());
+        out.push(Segment::new(
+            SegmentKind::Droppable(0),
+            SegmentRole::Content,
+            vec![Span::styled(format!("base {base}"), text_style)],
+        ));
+    }
+
     push_sep(&mut out, sep_span());
     out.push(Segment::new(
-        SegmentKind::Droppable(4),
+        SegmentKind::Droppable(5),
         SegmentRole::Content,
         vec![Span::styled(format!("{file_count} files"), text_style)],
     ));
@@ -156,7 +169,7 @@ fn build_segments(state: &AppState, repo: &str, branch: &str, theme: &Theme) -> 
     if total_ins > 0 || total_del > 0 {
         push_sep(&mut out, sep_span());
         out.push(Segment::new(
-            SegmentKind::Droppable(2),
+            SegmentKind::Droppable(3),
             SegmentRole::Content,
             vec![
                 Span::styled(
@@ -176,7 +189,7 @@ fn build_segments(state: &AppState, repo: &str, branch: &str, theme: &Theme) -> 
         if ahead > 0 || behind > 0 {
             push_sep(&mut out, sep_span());
             out.push(Segment::new(
-                SegmentKind::Droppable(1),
+                SegmentKind::Droppable(2),
                 SegmentRole::Content,
                 vec![Span::styled(format!("↑{ahead} ↓{behind}"), text_style)],
             ));
@@ -187,7 +200,7 @@ fn build_segments(state: &AppState, repo: &str, branch: &str, theme: &Theme) -> 
     if stash > 0 {
         push_sep(&mut out, sep_span());
         out.push(Segment::new(
-            SegmentKind::Droppable(0),
+            SegmentKind::Droppable(1),
             SegmentRole::Content,
             vec![Span::styled(format!("{stash} stash"), text_style)],
         ));
@@ -259,7 +272,7 @@ fn fit_segments(mut segs: Vec<Segment>, max_width: usize, theme: &Theme) -> Vec<
 
     // Step 3: drop droppable segments in ascending priority order, along
     // with their preceding separator.
-    for priority in 0..=4 {
+    for priority in 0..=5 {
         drop_segment_with_priority(&mut segs, priority);
         if total_width(&segs) <= max_width {
             return segs;
@@ -496,6 +509,52 @@ mod tests {
             display_width(&text) <= 40,
             "got width {}: {text}",
             display_width(&text)
+        );
+    }
+
+    #[test]
+    fn test_header_shows_base_segment_when_set() {
+        let mut s = fresh_state();
+        s.set_branch("agent-work".to_string());
+        s.set_merge_base(None, "main".to_string());
+        let line = build_header_title_with_width(&s, &test_theme(), 200);
+        assert!(
+            line_text(&line).contains("base main"),
+            "expected 'base main' in header, got: {:?}",
+            line_text(&line)
+        );
+    }
+
+    #[test]
+    fn test_header_omits_base_segment_when_unset() {
+        let mut s = fresh_state();
+        s.set_branch("agent-work".to_string());
+        // base_branch defaults to "" — no segment.
+        let line = build_header_title_with_width(&s, &test_theme(), 200);
+        assert!(
+            !line_text(&line).contains("base "),
+            "expected no base segment, got: {:?}",
+            line_text(&line)
+        );
+    }
+
+    #[test]
+    fn test_header_drops_base_segment_first_when_narrow() {
+        let mut s = fresh_state();
+        s.set_branch("agent-work".to_string());
+        s.set_merge_base(None, "main".to_string());
+        let full = build_header_title_with_width(&s, &test_theme(), 200);
+        let full_w = display_width(&line_text(&full));
+        let narrow = build_header_title_with_width(&s, &test_theme(), full_w - 1);
+        assert!(
+            !line_text(&narrow).contains("base main"),
+            "base segment should drop first, got: {:?}",
+            line_text(&narrow)
+        );
+        assert!(
+            line_text(&narrow).contains("agent-work"),
+            "branch should still be visible, got: {:?}",
+            line_text(&narrow)
         );
     }
 }

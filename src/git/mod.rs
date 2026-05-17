@@ -27,6 +27,99 @@ impl GitFailure {
     }
 }
 
+/// Parse a single reflog line and return the branch name the current branch
+/// was created from, if this line is a "branch: Created from X" entry.
+///
+/// Returns `None` for malformed lines, non-"Created from" entries, the
+/// `HEAD` sentinel, and SHA sources (no branch name to return).
+/// A branch whose name is entirely hex digits (length 7-40) is
+/// indistinguishable from an abbreviated SHA and is treated as one.
+///
+/// Expected format (single line, tab-separated message field):
+///   `<old-sha> <new-sha> <who> <time> <tz>\tbranch: Created from <ref>`
+fn parse_created_from(line: &str) -> Option<String> {
+    // Message is after the first tab.
+    let (_, msg) = line.split_once('\t')?;
+    let target = msg.strip_prefix("branch: Created from ")?.trim();
+
+    // Reject sentinels and raw SHAs.
+    if target == "HEAD" || target.is_empty() {
+        return None;
+    }
+    if is_hex_sha(target) {
+        return None;
+    }
+
+    // Strip refs/heads/ and refs/remotes/<remote>/ prefixes to return a short name.
+    if let Some(rest) = target.strip_prefix("refs/heads/") {
+        if rest.is_empty() {
+            return None;
+        }
+        return Some(rest.to_string());
+    }
+    if let Some(rest) = target.strip_prefix("refs/remotes/") {
+        // rest is "<remote>/<branch>" — strip the remote segment.
+        let (_, branch) = rest.split_once('/')?;
+        if branch.is_empty() {
+            return None;
+        }
+        return Some(branch.to_string());
+    }
+
+    Some(target.to_string())
+}
+
+/// True if `s` looks like a full or abbreviated git object SHA (hex only,
+/// length 4..=40).
+fn is_hex_sha(s: &str) -> bool {
+    let len = s.len();
+    (7..=40).contains(&len) && s.bytes().all(|b| b.is_ascii_hexdigit())
+}
+
+/// Parse a HEAD-reflog line and return `(from, to)` if it is a
+/// `checkout: moving from <from> to <to>` entry.
+///
+/// Git writes this entry when `git checkout -b` / `git switch -c` creates a
+/// branch — `<from>` is the branch (or commit) HEAD was on. Returns `None`
+/// for any other reflog message. Git refnames cannot contain spaces, so the
+/// single ` to ` separator is unambiguous.
+fn parse_checkout_target(line: &str) -> Option<(String, String)> {
+    let (_, msg) = line.split_once('\t')?;
+    let rest = msg.strip_prefix("checkout: moving from ")?;
+    let (from, to) = rest.split_once(" to ")?;
+    if from.is_empty() || to.is_empty() {
+        return None;
+    }
+    Some((from.to_string(), to.to_string()))
+}
+
+/// Extract the unix-timestamp field from a reflog line.
+///
+/// Reflog lines are `<old> <new> <name> <email> <unixtime> <tz>\t<msg>`.
+/// The committer name may contain spaces, so the timestamp is the
+/// second-to-last whitespace token of the pre-tab prefix. Returns `None`
+/// if the field is missing or not all-digit.
+fn parse_reflog_timestamp(line: &str) -> Option<&str> {
+    let prefix = line.split_once('\t').map(|(p, _)| p).unwrap_or(line);
+    let mut tokens = prefix.split_whitespace().rev();
+    let _tz = tokens.next()?;
+    let ts = tokens.next()?;
+    if !ts.is_empty() && ts.bytes().all(|b| b.is_ascii_digit()) {
+        Some(ts)
+    } else {
+        None
+    }
+}
+
+/// Extract the `new` (second) SHA field from a reflog line.
+///
+/// Reflog lines are `<old> <new> <name> ...`. Returns the second
+/// whitespace-separated token, or `None` if absent.
+fn parse_reflog_new_sha(line: &str) -> Option<&str> {
+    let prefix = line.split_once('\t').map(|(p, _)| p).unwrap_or(line);
+    prefix.split_whitespace().nth(1)
+}
+
 /// Errors from `discover_worktree_root`.
 #[derive(Debug, Error)]
 pub enum DiscoverError {
@@ -634,16 +727,146 @@ impl GitRepo {
         }
     }
 
+    /// Read the first line of the branch's reflog (shared across worktrees —
+    /// lives in the *common* git dir at `logs/refs/heads/<branch>`) and extract
+    /// the branch name it was created from, if any.
+    ///
+    /// Returns `None` if the reflog file is missing, empty, malformed, or
+    /// references the branch itself (a reset artifact).
+    fn reflog_first_created_from(&self, branch: &str) -> Option<String> {
+        let common = resolve_common_git_dir(&self.repo_path)?;
+        let reflog_path = common.join("logs/refs/heads").join(branch);
+
+        let content = std::fs::read_to_string(&reflog_path).ok()?;
+        let first_line = content.lines().next()?;
+
+        let extracted = parse_created_from(first_line)?;
+        if extracted == branch {
+            return None;
+        }
+
+        // If the extracted name looks like "<remote>/<branch>" (short
+        // remote-tracking form git writes in reflogs, e.g. "origin/develop"),
+        // strip the remote prefix so callers always get the short branch name.
+        let short = self.strip_remote_prefix(&extracted).unwrap_or(extracted);
+        if short == branch {
+            return None;
+        }
+        Some(short)
+    }
+
+    /// Find the parent branch of `branch` from the HEAD reflog.
+    ///
+    /// `git checkout -b` / `git switch -c` record only `Created from HEAD` in
+    /// the branch's own reflog, but the HEAD reflog (`logs/HEAD`, per-worktree)
+    /// records `checkout: moving from <parent> to <branch>` at creation time.
+    ///
+    /// `logs/HEAD` is append-only and gains an entry on every checkout of
+    /// `branch`, not just creation. To identify the creation entry, this
+    /// correlates by timestamp: the branch's own reflog first line and the
+    /// HEAD-reflog creation entry are written by the same command and share a
+    /// unix timestamp. Re-checkouts have different timestamps and are ignored.
+    ///
+    /// Returns `None` when either reflog is missing, no entry correlates, or
+    /// the parent is the `HEAD` sentinel, a detached-HEAD SHA, or `branch`.
+    fn head_reflog_parent(&self, branch: &str) -> Option<String> {
+        // Read the branch's own reflog first line, which is written at
+        // creation time.
+        let common = resolve_common_git_dir(&self.repo_path)?;
+        let branch_log = common.join("logs/refs/heads").join(branch);
+        let branch_content = std::fs::read_to_string(&branch_log).ok()?;
+        let creation_line = branch_content.lines().next()?;
+        let creation_ts = parse_reflog_timestamp(creation_line)?;
+        // The `new` SHA in the branch reflog's first line is the commit the
+        // branch was created at. When `git checkout -b` writes the
+        // corresponding HEAD-reflog entry, it records the same `new` SHA.
+        // Re-checkouts write a different `new` SHA if HEAD was elsewhere, or
+        // — if HEAD was already on the same commit — the same SHA, but at a
+        // later timestamp.
+        let creation_sha = parse_reflog_new_sha(creation_line)?;
+
+        let head_log = self.repo.git_dir().join("logs/HEAD");
+        let content = std::fs::read_to_string(&head_log).ok()?;
+
+        for line in content.lines() {
+            let Some((from, to)) = parse_checkout_target(line) else {
+                continue;
+            };
+            if to != branch {
+                continue;
+            }
+            // Must share both timestamp and new-SHA with the branch creation
+            // line. Timestamp alone can collide when operations run within the
+            // same unix second; SHA-match distinguishes delete-and-recreate
+            // (the new branch creation points to a different commit than the
+            // old one, so only the correct entry matches both fields).
+            if parse_reflog_timestamp(line) != Some(creation_ts) {
+                continue;
+            }
+            if parse_reflog_new_sha(line) != Some(creation_sha) {
+                continue;
+            }
+            if from == "HEAD" || from == branch || is_hex_sha(&from) {
+                return None;
+            }
+            let short = self.strip_remote_prefix(&from).unwrap_or(from);
+            if short == branch {
+                return None;
+            }
+            // If the branch tip hasn't advanced since creation, a re-checkout
+            // writes an entry with the same SHA and timestamp would also match;
+            // the creation entry appears first in the append-only log, so it is
+            // the one returned. If the tip has advanced, the re-checkout entry's
+            // SHA differs and it is skipped here.
+            return Some(short);
+        }
+        None
+    }
+
+    /// If `name` is of the form `<remote>/<branch>` where `<remote>` is a
+    /// known remote, return `<branch>`. Otherwise return `None`.
+    fn strip_remote_prefix(&self, name: &str) -> Option<String> {
+        let (prefix, branch) = name.split_once('/')?;
+        if branch.is_empty() {
+            return None;
+        }
+        let remote_names = self.repo.remote_names();
+        if remote_names.iter().any(|r| r.as_ref() == prefix) {
+            Some(branch.to_string())
+        } else {
+            None
+        }
+    }
+
     /// Resolve the base branch name using priority:
     /// 1. Explicit override (CLI flag or config value, pre-merged by caller)
-    /// 2. Auto-detect from origin/HEAD
-    /// 3. Fallback to origin/main, then origin/master
+    /// 2. Reflog fork parent of the current branch: its own "Created from X"
+    ///    line, else the HEAD reflog "checkout: moving from X" entry
+    /// 3. Auto-detect from origin/HEAD
+    /// 4. Fallback to origin/main, then origin/master
     pub fn resolve_base_branch(&self, explicit_base: Option<&str>) -> Option<String> {
         if let Some(base) = explicit_base {
             return Some(base.to_string());
         }
 
-        // Priority 2: resolve origin/HEAD symbolic ref to its target.
+        if let Ok(current) = self.branch_name() {
+            if current != "HEAD" {
+                // 2a: the branch's own reflog "Created from X" — set when an
+                // explicit start-point is given, and by `git branch` (which
+                // resolves HEAD to a branch name).
+                if let Some(parent) = self.reflog_first_created_from(&current) {
+                    return Some(parent);
+                }
+                // 2b: the HEAD reflog "checkout: moving from X to <branch>" entry —
+                // covers `git checkout -b` / `git switch -c`, which record only
+                // "Created from HEAD" in the branch reflog.
+                if let Some(parent) = self.head_reflog_parent(&current) {
+                    return Some(parent);
+                }
+            }
+        }
+
+        // Priority 3: resolve origin/HEAD symbolic ref to its target.
         // gix's symbolic ref API can be tricky, so read the file directly.
         let origin_head_path = self.repo.git_dir().join("refs/remotes/origin/HEAD");
         if let Ok(content) = std::fs::read_to_string(&origin_head_path) {
@@ -652,7 +875,7 @@ impl GitRepo {
             }
         }
 
-        // Priority 3: fallback
+        // Priority 4: fallback
         if self
             .resolve_ref_to_commit("refs/remotes/origin/main")
             .is_some()
@@ -1588,6 +1811,148 @@ mod tests {
             "expected at least 2 hunks, got {}: {:?}",
             diff.hunks.len(),
             diff.hunks.iter().map(|h| &h.header).collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn parse_created_from_plain_branch() {
+        let line = "0000000000000000000000000000000000000000 abc123 User <u@x> 1700000000 +0000\tbranch: Created from feature-a";
+        assert_eq!(parse_created_from(line), Some("feature-a".to_string()));
+    }
+
+    #[test]
+    fn parse_created_from_refs_heads_prefix() {
+        let line = "0 abc123 U <u@x> 0 +0000\tbranch: Created from refs/heads/feature-a";
+        assert_eq!(parse_created_from(line), Some("feature-a".to_string()));
+    }
+
+    #[test]
+    fn parse_created_from_remote_prefix() {
+        let line = "0 abc123 U <u@x> 0 +0000\tbranch: Created from refs/remotes/origin/develop";
+        assert_eq!(parse_created_from(line), Some("develop".to_string()));
+    }
+
+    #[test]
+    fn parse_created_from_head_sentinel() {
+        let line = "0 abc123 U <u@x> 0 +0000\tbranch: Created from HEAD";
+        assert_eq!(parse_created_from(line), None);
+    }
+
+    #[test]
+    fn parse_created_from_malformed_returns_none() {
+        assert_eq!(parse_created_from("not a reflog line"), None);
+        assert_eq!(parse_created_from(""), None);
+        assert_eq!(
+            parse_created_from("0 abc U <u@x> 0 +0000\tcheckout: moving from x to y"),
+            None
+        );
+    }
+
+    #[test]
+    fn parse_created_from_sha_source_returns_none() {
+        let line = "0 abc123 U <u@x> 0 +0000\tbranch: Created from a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6e7f8a9b0";
+        assert_eq!(parse_created_from(line), None);
+    }
+
+    #[test]
+    fn parse_created_from_empty_refs_heads_returns_none() {
+        let line = "0 abc U <u@x> 0 +0000\tbranch: Created from refs/heads/";
+        assert_eq!(parse_created_from(line), None);
+    }
+
+    #[test]
+    fn parse_created_from_empty_remote_branch_returns_none() {
+        let line = "0 abc U <u@x> 0 +0000\tbranch: Created from refs/remotes/origin/";
+        assert_eq!(parse_created_from(line), None);
+    }
+
+    #[test]
+    fn is_hex_sha_recognizes_shas() {
+        assert!(is_hex_sha("a1b2c3d"));
+        assert!(is_hex_sha("a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6e7f8a9b0"));
+        assert!(!is_hex_sha("abc")); // too short (< 7)
+        assert!(!is_hex_sha("abc1")); // 4 hex chars — too short
+        assert!(!is_hex_sha("feature-a")); // non-hex chars
+        assert!(!is_hex_sha(""));
+    }
+
+    #[test]
+    fn reflog_first_created_from_returns_none_for_main() {
+        // main is trunk — it was not created from another branch.
+        let repo = GitRepo::new(std::path::Path::new(".")).unwrap();
+        assert_eq!(repo.reflog_first_created_from("main"), None);
+    }
+
+    #[test]
+    fn strip_remote_prefix_rejects_unknown_remote() {
+        let repo = GitRepo::new(std::path::Path::new(".")).unwrap();
+        // A prefix that is not a configured remote is never stripped.
+        assert_eq!(repo.strip_remote_prefix("definitelynotaremote/x"), None);
+    }
+
+    #[test]
+    fn parse_checkout_target_extracts_from_and_to() {
+        let line = "abc def User <u@x> 1700000000 +0000\tcheckout: moving from b1 to b2";
+        assert_eq!(
+            parse_checkout_target(line),
+            Some(("b1".to_string(), "b2".to_string()))
+        );
+    }
+
+    #[test]
+    fn parse_checkout_target_handles_slashed_names() {
+        let line = "abc def U <u@x> 0 +0000\tcheckout: moving from main to feature/foo";
+        assert_eq!(
+            parse_checkout_target(line),
+            Some(("main".to_string(), "feature/foo".to_string()))
+        );
+    }
+
+    #[test]
+    fn parse_checkout_target_rejects_non_checkout_lines() {
+        assert_eq!(parse_checkout_target(""), None);
+        assert_eq!(parse_checkout_target("no tab here"), None);
+        assert_eq!(
+            parse_checkout_target("abc def U <u@x> 0 +0000\tcommit: did a thing"),
+            None
+        );
+        assert_eq!(
+            parse_checkout_target("abc def U <u@x> 0 +0000\tbranch: Created from main"),
+            None
+        );
+    }
+
+    #[test]
+    fn parse_reflog_timestamp_extracts_unix_time() {
+        let line = "abc def Jane Doe <j@x> 1700000000 +0000\tcheckout: moving from a to b";
+        assert_eq!(parse_reflog_timestamp(line), Some("1700000000"));
+    }
+
+    #[test]
+    fn parse_reflog_timestamp_handles_multiword_name() {
+        let line = "0 1 Mary Jane Watson Smith <m@x> 1699999999 -0400\tbranch: Created from HEAD";
+        assert_eq!(parse_reflog_timestamp(line), Some("1699999999"));
+    }
+
+    #[test]
+    fn parse_reflog_timestamp_rejects_malformed() {
+        assert_eq!(parse_reflog_timestamp(""), None);
+        assert_eq!(parse_reflog_timestamp("only one"), None);
+    }
+
+    #[test]
+    fn parse_reflog_new_sha_extracts_second_token() {
+        let line = "abc123 def456 Name <e@x> 0 +0000\tmsg";
+        assert_eq!(parse_reflog_new_sha(line), Some("def456"));
+        assert_eq!(parse_reflog_new_sha("only"), None);
+    }
+
+    #[test]
+    fn parse_checkout_target_handles_remote_tracking_from() {
+        let line = "abc def U <u@x> 0 +0000\tcheckout: moving from origin/main to feature/foo";
+        assert_eq!(
+            parse_checkout_target(line),
+            Some(("origin/main".to_string(), "feature/foo".to_string()))
         );
     }
 }

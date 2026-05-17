@@ -1,9 +1,9 @@
-use std::collections::{BTreeSet, HashMap};
+use std::collections::{BTreeSet, HashMap, HashSet};
 use std::time::{Duration, Instant};
 
-use crate::git::{FileDiff, FileEntry};
+use crate::git::{ChangeGroup, FileDiff, FileEntry};
 use crate::ui::switch_dialog::SwitchDialog;
-use crate::ui::tree::{build_visible_rows, RowId, VisibleRow};
+use crate::ui::tree::{build_expanded_rows, build_visible_rows, RowId, VisibleRow};
 
 /// State of the PR widget
 #[derive(Debug, Clone, Default)]
@@ -119,6 +119,9 @@ pub struct AppState {
     view_mode: ViewMode,
     /// Expanded directories while in tree mode
     expanded_dirs: BTreeSet<String>,
+    /// Collapsed status groups while in Expanded mode. Not persisted; reset
+    /// on launch and on worktree switch.
+    collapsed_groups: HashSet<ChangeGroup>,
     /// Stable identity for the selected row when one has been established
     selected_row_id: Option<RowId>,
     /// Number of times the file list has been refreshed
@@ -197,6 +200,7 @@ impl AppState {
             selected: 0,
             view_mode: ViewMode::Flat,
             expanded_dirs: BTreeSet::new(),
+            collapsed_groups: HashSet::new(),
             selected_row_id: None,
             refresh_count: 0,
             start_time: now,
@@ -241,6 +245,13 @@ impl AppState {
 
     pub fn view_mode(&self) -> ViewMode {
         self.view_mode
+    }
+
+    /// True once the first `update_files` call has completed. Used by the
+    /// Expanded renderer to avoid showing the no-base error before the first
+    /// git-status snapshot arrives.
+    pub fn initial_seed_done(&self) -> bool {
+        self.initial_seed_done
     }
 
     pub fn expanded_dirs(&self) -> &BTreeSet<String> {
@@ -623,6 +634,30 @@ impl AppState {
         true
     }
 
+    /// In Expanded mode, toggle the collapsed state of the status group whose
+    /// header is currently selected. Returns `true` if a header was toggled.
+    pub fn toggle_selected_group(&mut self) -> bool {
+        let rows = self.rebuild_visible_rows();
+        let Some(RowId::Group(group)) =
+            Self::selected_row_from_rows(&rows, self.selected).map(|row| row.id().clone())
+        else {
+            return false;
+        };
+
+        if !self.collapsed_groups.insert(group) {
+            self.collapsed_groups.remove(&group);
+        }
+
+        let rows = self.rebuild_visible_rows();
+        let selected_header = RowId::Group(group);
+        if let Some(index) = rows.iter().position(|row| row.id() == &selected_header) {
+            self.set_selection_from_rows(&rows, index);
+        } else {
+            self.set_selection_from_rows(&rows, self.selected);
+        }
+        true
+    }
+
     // -- State updates --
 
     /// Reset state for a worktree switch. Clears selection, expansion,
@@ -638,6 +673,7 @@ impl AppState {
         self.files = files;
         self.selected = 0;
         self.expanded_dirs.clear();
+        self.collapsed_groups.clear();
         self.selected_row_id = None;
         self.refresh_count = 0;
         self.last_refresh = Instant::now();
@@ -726,11 +762,9 @@ impl AppState {
     #[tracing::instrument(name = "state.rebuild_visible_rows", skip_all)]
     fn rebuild_visible_rows(&self) -> Vec<VisibleRow> {
         match self.view_mode {
-            // Expanded rendering is wired in a later task; fall back to flat for now.
-            ViewMode::Flat | ViewMode::Expanded => {
-                self.files.iter().map(flat_row_from_file).collect()
-            }
+            ViewMode::Flat => self.files.iter().map(flat_row_from_file).collect(),
             ViewMode::Tree => build_visible_rows(&self.files, &self.expanded_dirs),
+            ViewMode::Expanded => build_expanded_rows(&self.files, &self.collapsed_groups),
         }
     }
 
@@ -767,9 +801,9 @@ impl AppState {
 
     fn restore_selection(&mut self, selection: SelectionSnapshot) {
         match self.view_mode {
-            // Expanded rendering is wired in a later task; fall back to flat for now.
-            ViewMode::Flat | ViewMode::Expanded => self.restore_flat_selection(selection.file_path),
+            ViewMode::Flat => self.restore_flat_selection(selection.file_path),
             ViewMode::Tree => self.restore_tree_selection(selection),
+            ViewMode::Expanded => self.restore_expanded_selection(selection),
         }
     }
 
@@ -797,6 +831,27 @@ impl AppState {
     }
 
     fn restore_tree_selection(&mut self, selection: SelectionSnapshot) {
+        let rows = self.rebuild_visible_rows();
+
+        if let Some(selected_row_id) = selection.row_id.as_ref() {
+            if let Some(index) = rows.iter().position(|row| row.id() == selected_row_id) {
+                self.set_selection_from_rows(&rows, index);
+                return;
+            }
+        }
+
+        if let Some(selected_file_path) = selection.file_path.as_ref() {
+            let file_id = RowId::File(selected_file_path.clone());
+            if let Some(index) = rows.iter().position(|row| row.id() == &file_id) {
+                self.set_selection_from_rows(&rows, index);
+                return;
+            }
+        }
+
+        self.set_selection_from_rows(&rows, self.selected);
+    }
+
+    fn restore_expanded_selection(&mut self, selection: SelectionSnapshot) {
         let rows = self.rebuild_visible_rows();
 
         if let Some(selected_row_id) = selection.row_id.as_ref() {
@@ -858,6 +913,45 @@ mod tests {
             deletions: del,
             group: ChangeGroup::Changes,
         }
+    }
+
+    fn grouped_entry(path: &str, group: ChangeGroup) -> FileEntry {
+        FileEntry {
+            path: path.to_string(),
+            status: FileStatus::Modified,
+            insertions: 1,
+            deletions: 0,
+            group,
+        }
+    }
+
+    #[test]
+    fn expanded_mode_builds_header_rows() {
+        let files = vec![
+            grouped_entry("a.rs", ChangeGroup::Changes),
+            grouped_entry("b.rs", ChangeGroup::Committed),
+        ];
+        let mut state = AppState::new(files, Duration::from_millis(600), "main".to_string());
+        state.set_view_mode(ViewMode::Expanded);
+        let rows = state.visible_rows();
+        assert_eq!(rows.len(), 4); // 2 headers + 2 files
+        assert!(rows[0].is_header());
+    }
+
+    #[test]
+    fn toggle_selected_group_collapses_and_keeps_header_selected() {
+        let files = vec![grouped_entry("a.rs", ChangeGroup::Changes)];
+        let mut state = AppState::new(files, Duration::from_millis(600), "main".to_string());
+        state.set_view_mode(ViewMode::Expanded);
+        // Row 0 is the "Changes" header.
+        assert!(state.toggle_selected_group());
+        let rows = state.visible_rows();
+        assert_eq!(rows.len(), 1); // file hidden, header remains
+        assert_eq!(rows[0].header_collapsed(), Some(true));
+        assert_eq!(state.selected_index(), 0); // still on the header
+                                               // Toggling again expands it.
+        assert!(state.toggle_selected_group());
+        assert_eq!(state.visible_rows().len(), 2);
     }
 
     #[test]

@@ -1,5 +1,13 @@
 # Changelog
 
+## [1.4.0](https://github.com/upsertco/perch/compare/v1.3.0...v1.4.0) (2026-05-17)
+
+
+### Features
+
+* reflog-aware base resolution ([#83](https://github.com/upsertco/perch/issues/83)) ([5e8ff7d](https://github.com/upsertco/perch/commit/5e8ff7d0f71990ebf25b509f421deb3061ed3fa7))
+* rename git-rt to perch ([#81](https://github.com/upsertco/perch/issues/81)) ([7a97919](https://github.com/upsertco/perch/commit/7a979192055ed949d3b011e45b72cf9b687d888a))
+
 ## [1.3.0](https://github.com/upsertco/perch/compare/v1.2.0...v1.3.0) (2026-05-10)
 
 

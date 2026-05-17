@@ -8,6 +8,7 @@ repository = "https://github.com/upsertco/perch"
 readme = "README.md"
 keywords = ["git", "tui", "terminal", "dashboard", "developer-tools"]
 categories = ["command-line-utilities", "development-tools"]
+default-run = "perch"
 
 [[bin]]
 name = "perch"

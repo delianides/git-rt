@@ -82,8 +82,13 @@ Config lives at `~/.config/perch/config.toml`. All sections are optional; defaul
 ```toml
 theme = "catppuccin-mocha"   # built-in theme name or user theme file name
 debounce_ms = 200            # filesystem event debounce in ms
-base_branch = "main"         # base for branch-scoped diff (merge-base..worktree)
+base_branch = "main"         # optional override for branch-scoped diff base
 ```
+
+When `base_branch` is omitted, perch uses the repository-defined default branch
+from `origin/HEAD`. If no default branch is recorded locally, Flat and Tree
+views fall back to standard working-tree status instead of guessing `main`,
+`master`, or a branch parent; Expanded view shows its base-required message.
 
 ### `[display]`
 

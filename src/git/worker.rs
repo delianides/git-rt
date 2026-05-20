@@ -225,9 +225,8 @@ impl Worker {
 }
 
 /// Compute the status bundle for the current worktree. Resolves the diff
-/// base via `resolve_base_branch` (trunk-priority) and delegates to
-/// `compute_with_base`. Errors degrade to default fields rather than
-/// failing the whole bundle.
+/// base via strict default-branch resolution and delegates to `compute_with_base`.
+/// Errors degrade to default fields rather than failing the whole bundle.
 fn compute_status(
     git: &GitRepo,
     base_override: Option<&str>,
@@ -564,8 +563,72 @@ mod tests {
         let bundle = compute_status(&git, None, None);
         assert_eq!(
             bundle.base_branch, "main",
-            "expected trunk-priority base, got {:?}",
+            "expected strict default-branch base, got {:?}",
             bundle.base_branch
+        );
+    }
+
+    #[test]
+    fn compute_status_falls_back_to_plain_status_without_base() {
+        use std::process::Command;
+
+        let tmp = tempfile::tempdir().unwrap();
+        let work = tmp.path().join("work");
+        std::fs::create_dir_all(&work).unwrap();
+
+        let g = |args: &[&str]| {
+            let s = Command::new("git")
+                .args(args)
+                .current_dir(&work)
+                .env("GIT_AUTHOR_NAME", "t")
+                .env("GIT_AUTHOR_EMAIL", "t@t")
+                .env("GIT_COMMITTER_NAME", "t")
+                .env("GIT_COMMITTER_EMAIL", "t@t")
+                .env("GIT_CONFIG_COUNT", "1")
+                .env("GIT_CONFIG_KEY_0", "commit.gpgsign")
+                .env("GIT_CONFIG_VALUE_0", "false")
+                .status()
+                .unwrap();
+            assert!(s.success(), "git {args:?}");
+        };
+
+        g(&["init", "-q", "-b", "main"]);
+        std::fs::write(work.join("tracked.txt"), "one\n").unwrap();
+        g(&["add", "."]);
+        g(&["commit", "-q", "-m", "base"]);
+
+        std::fs::write(work.join("committed-only.txt"), "branch\n").unwrap();
+        g(&["add", "."]);
+        g(&["commit", "-q", "-m", "branch-only"]);
+
+        std::fs::write(work.join("tracked.txt"), "one\ntwo\n").unwrap();
+        std::fs::write(work.join("untracked.txt"), "new\n").unwrap();
+
+        let git = crate::git::GitRepo::new(&work).unwrap();
+        let bundle = compute_status(&git, None, None);
+
+        assert_eq!(bundle.base_branch, "");
+        assert!(bundle.merge_base.is_none());
+        assert!(
+            bundle.files.iter().any(|entry| entry.path == "tracked.txt"),
+            "tracked working-tree change should be present: {:?}",
+            bundle.files
+        );
+        assert!(
+            bundle
+                .files
+                .iter()
+                .any(|entry| entry.path == "untracked.txt"),
+            "untracked file should be present: {:?}",
+            bundle.files
+        );
+        assert!(
+            bundle
+                .files
+                .iter()
+                .all(|entry| entry.path != "committed-only.txt"),
+            "committed-only branch change should be absent without a base: {:?}",
+            bundle.files
         );
     }
 }

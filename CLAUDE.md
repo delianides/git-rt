@@ -80,7 +80,13 @@ When a filesystem event fires:
 - **Diff numstat**: `git diff --numstat -z <merge-base>` for branch view, `git diff --numstat -z` for the working-tree view.
 - **Cheap reads**: branch name, HEAD commit, merge-base, stash count, ahead/behind still use `gix` — sub-millisecond.
 - **Diff content**: rendered in an in-app overlay (see `src/ui/diff_overlay.rs`) — centered 85% panel with colored `+`/`-`/context lines and line numbers, scrollable with `j`/`k`.
-- **Base branch resolution**: the diff range's "base" is the branch's fork parent. Priority: explicit `--base` flag → `display.base_branch` config → the current branch's reflog `Created from` parent → the HEAD reflog `checkout: moving from` parent → `origin/HEAD` symbolic-ref target → `origin/main` → `origin/master`. The two reflog tiers read recorded fact (git's own reflog entries), not a heuristic, so a stacked branch resolves to its immediate parent branch and a branch on trunk falls through to the trunk chain. The branch reflog covers `git branch` and explicit-start-point creation (`git checkout -b foo base`); the HEAD reflog covers plain `git checkout -b` / `git switch -c`. A worktree branch created with `git worktree add -b foo` and no explicit base records neither and falls through to the trunk chain. Sibling local branches are never chosen.
+- **Base branch resolution**: the diff range's base is resolved strictly by
+  priority: explicit `--base` flag → top-level `base_branch` config → the
+  repository-defined default branch recorded by `origin/HEAD`. perch does not
+  infer a branch's fork parent from reflogs and does not guess `main` or
+  `master`. If no base can be resolved, branch-scoped data is unavailable:
+  Flat and Tree views use standard working-tree status, while Expanded shows
+  its base-required message.
 
 ### Filesystem Watching
 

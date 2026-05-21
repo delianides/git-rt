@@ -1,5 +1,5 @@
-//! Main pane title header — the compact `repo/branch ● N files ● -del/+ins ●
-//! ↑↓ ● stash ● <mode>` line that lives in the rounded top border via
+//! Main pane title header — the compact `repo ● branch → base ● N files ●
+//! -del/+ins ● ↑↓ ● stash ● <mode>` line that lives in the rounded top border via
 //! `Block::title`.
 //!
 //! When the pane is too narrow for the full title, long branch and repo
@@ -18,7 +18,7 @@ use crate::ui::fit;
 
 /// Minimum display width to keep after mid-ellipsizing a branch name.
 const BRANCH_FLOOR: usize = 12;
-/// Minimum display width for the `repo/` prefix (includes the trailing `/`).
+/// Minimum display width for the repo name.
 const REPO_PREFIX_FLOOR: usize = 9;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -33,7 +33,7 @@ enum SegmentKind {
 enum SegmentRole {
     /// A separator that belongs before a content segment.
     Separator,
-    /// The `<repo>/` prefix of the repo/branch pair.
+    /// The repo name in the leading repo/branch pair.
     RepoPrefix,
     /// The branch name.
     Branch,
@@ -113,16 +113,16 @@ fn build_segments(state: &AppState, repo: &str, branch: &str, theme: &Theme) -> 
 
     let mut out: Vec<Segment> = Vec::new();
 
-    // Leading "repo/branch" segment.
+    // Leading "repo ● branch" segments.
     match (repo.is_empty(), branch.is_empty()) {
         (false, false) => {
-            // "repo/" is droppable; the branch name itself is Fixed.
-            let repo_prefix = format!("{repo}/");
+            // Repo is droppable; the branch name itself is Fixed.
             out.push(Segment::new(
                 SegmentKind::Droppable(4),
                 SegmentRole::RepoPrefix,
-                vec![Span::styled(repo_prefix, text_style)],
+                vec![Span::styled(repo.to_string(), text_style)],
             ));
+            push_sep(&mut out, sep_span());
             out.push(Segment::new(
                 SegmentKind::Fixed,
                 SegmentRole::Branch,
@@ -151,11 +151,10 @@ fn build_segments(state: &AppState, repo: &str, branch: &str, theme: &Theme) -> 
     // Droppable(0) — the lowest priority number, so it is dropped first.
     let base = state.base_branch();
     if !base.is_empty() {
-        push_sep(&mut out, sep_span());
         out.push(Segment::new(
             SegmentKind::Droppable(0),
             SegmentRole::Content,
-            vec![Span::styled(format!("base {base}"), text_style)],
+            vec![Span::styled(format!(" \u{2192} {base}"), text_style)],
         ));
     }
 
@@ -259,7 +258,7 @@ fn fit_segments(mut segs: Vec<Segment>, max_width: usize, theme: &Theme) -> Vec<
         return segs;
     }
 
-    // Step 2: ellipsize "repo/" prefix down to REPO_PREFIX_FLOOR.
+    // Step 2: ellipsize repo name down to REPO_PREFIX_FLOOR.
     shrink_segment(
         &mut segs,
         SegmentRole::RepoPrefix,
@@ -333,6 +332,10 @@ fn drop_segment_with_priority(segs: &mut Vec<Segment>, priority: u8) {
     // Drop the preceding separator if present.
     if idx > 0 && segs[idx - 1].role == SegmentRole::Separator {
         segs.remove(idx - 1);
+    } else if idx < segs.len() && segs[idx].role == SegmentRole::Separator {
+        // If the leading repo segment drops, remove the separator that
+        // belonged between repo and branch.
+        segs.remove(idx);
     }
 }
 
@@ -364,7 +367,7 @@ mod tests {
     fn test_header_title_basic() {
         let s = fresh_state();
         let line = build_header_title(&s, &test_theme());
-        assert_eq!(line_text(&line), " perch/main ● 0 files ● flat ");
+        assert_eq!(line_text(&line), " perch ● main ● 0 files ● flat ");
     }
 
     #[test]
@@ -388,7 +391,7 @@ mod tests {
             },
         ]);
         let line = build_header_title(&s, &test_theme());
-        assert_eq!(line_text(&line), " perch/main ● 2 files ● -3/+16 ● flat ");
+        assert_eq!(line_text(&line), " perch ● main ● 2 files ● -3/+16 ● flat ");
     }
 
     #[test]
@@ -399,7 +402,7 @@ mod tests {
         let line = build_header_title(&s, &test_theme());
         assert_eq!(
             line_text(&line),
-            " perch/main ● 0 files ● ↑2 ↓1 ● 3 stash ● flat "
+            " perch ● main ● 0 files ● ↑2 ↓1 ● 3 stash ● flat "
         );
     }
 
@@ -408,7 +411,7 @@ mod tests {
         let mut s = fresh_state();
         s.set_ahead_behind(Some((0, 0)));
         let line = build_header_title(&s, &test_theme());
-        assert_eq!(line_text(&line), " perch/main ● 0 files ● flat ");
+        assert_eq!(line_text(&line), " perch ● main ● 0 files ● flat ");
     }
 
     #[test]
@@ -416,7 +419,7 @@ mod tests {
         let mut s = fresh_state();
         s.set_stash_count(0);
         let line = build_header_title(&s, &test_theme());
-        assert_eq!(line_text(&line), " perch/main ● 0 files ● flat ");
+        assert_eq!(line_text(&line), " perch ● main ● 0 files ● flat ");
     }
 
     #[test]
@@ -522,8 +525,13 @@ mod tests {
         s.set_merge_base(None, "main".to_string());
         let line = build_header_title_with_width(&s, &test_theme(), 200);
         assert!(
-            line_text(&line).contains("base main"),
-            "expected 'base main' in header, got: {:?}",
+            line_text(&line).contains("agent-work → main"),
+            "expected 'agent-work → main' in header, got: {:?}",
+            line_text(&line)
+        );
+        assert!(
+            !line_text(&line).contains("base "),
+            "expected no base label in header, got: {:?}",
             line_text(&line)
         );
     }
@@ -535,8 +543,8 @@ mod tests {
         // base_branch defaults to "" — no segment.
         let line = build_header_title_with_width(&s, &test_theme(), 200);
         assert!(
-            !line_text(&line).contains("base "),
-            "expected no base segment, got: {:?}",
+            !line_text(&line).contains('→'),
+            "expected no base arrow, got: {:?}",
             line_text(&line)
         );
     }
@@ -550,8 +558,8 @@ mod tests {
         let full_w = display_width(&line_text(&full));
         let narrow = build_header_title_with_width(&s, &test_theme(), full_w - 1);
         assert!(
-            !line_text(&narrow).contains("base main"),
-            "base segment should drop first, got: {:?}",
+            !line_text(&narrow).contains("→ main"),
+            "base arrow segment should drop first, got: {:?}",
             line_text(&narrow)
         );
         assert!(

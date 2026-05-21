@@ -1,5 +1,13 @@
 # Changelog
 
+## [1.5.1](https://github.com/upsertco/perch/compare/v1.5.0...v1.5.1) (2026-05-21)
+
+
+### Bug Fixes
+
+* clarify branch base header ([#88](https://github.com/upsertco/perch/issues/88)) ([6cd8476](https://github.com/upsertco/perch/commit/6cd84761e1a995f0095f76037193211d05ab0bc7))
+* Use strict default base branch resolution ([#86](https://github.com/upsertco/perch/issues/86)) ([c2216b2](https://github.com/upsertco/perch/commit/c2216b2bef4a64fa36a0f5a0f6a9a06b8ac8bb94))
+
 ## [1.5.0](https://github.com/upsertco/perch/compare/v1.4.0...v1.5.0) (2026-05-17)
 
 

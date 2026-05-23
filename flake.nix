@@ -1,5 +1,5 @@
 {
-  description = "git-rt — real-time terminal dashboard for git changes";
+  description = "perch — real-time terminal dashboard for git changes";
 
   inputs = {
     nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";
@@ -45,27 +45,27 @@
         cargoArtifacts = craneLib.buildDepsOnly commonArgs;
 
         # Build the full package
-        git-rt = craneLib.buildPackage (commonArgs // {
+        perch = craneLib.buildPackage (commonArgs // {
           inherit cargoArtifacts;
         });
       in
       {
         checks = {
-          inherit git-rt;
+          inherit perch;
 
-          git-rt-clippy = craneLib.cargoClippy (commonArgs // {
+          perch-clippy = craneLib.cargoClippy (commonArgs // {
             inherit cargoArtifacts;
             cargoClippyExtraArgs = "--all-targets -- --deny warnings";
           });
 
-          git-rt-fmt = craneLib.cargoFmt {
+          perch-fmt = craneLib.cargoFmt {
             inherit src;
           };
         };
 
         packages = {
-          default = git-rt;
-          inherit git-rt;
+          default = perch;
+          inherit perch;
         };
 
         devShells.default = craneLib.devShell {

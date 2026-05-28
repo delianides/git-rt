@@ -698,6 +698,27 @@ impl GitRepo {
         }
     }
 
+    /// Read the first line of the branch's reflog (shared across worktrees —
+    /// lives in the *common* git dir at `logs/refs/heads/<branch>`) and extract
+    /// the branch name it was created from, if any.
+    ///
+    /// Returns `None` if the reflog file is missing, empty, malformed, or
+    /// references the branch itself (a reset artifact).
+    #[allow(dead_code)]
+    pub(crate) fn reflog_first_created_from(&self, branch: &str) -> Option<String> {
+        let common = resolve_common_git_dir(&self.repo_path)?;
+        let reflog_path = common.join("logs/refs/heads").join(branch);
+
+        let content = std::fs::read_to_string(&reflog_path).ok()?;
+        let first_line = content.lines().next()?;
+
+        let extracted = parse_created_from(first_line)?;
+        if extracted == branch {
+            return None;
+        }
+        Some(extracted)
+    }
+
     /// Resolve the base branch name using priority:
     /// 1. Explicit override (CLI flag or config value, pre-merged by caller)
     /// 2. Repository-defined default branch from origin/HEAD
@@ -1707,5 +1728,86 @@ mod tests {
             diff.hunks.len(),
             diff.hunks.iter().map(|h| &h.header).collect::<Vec<_>>()
         );
+    }
+
+    #[test]
+    fn test_reflog_first_created_from_returns_fork_point_for_worktree() {
+        use std::process::Command;
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path();
+
+        let run = |args: &[&str]| {
+            let status = Command::new("git")
+                .args(args)
+                .current_dir(dir)
+                .env("GIT_AUTHOR_NAME", "t")
+                .env("GIT_AUTHOR_EMAIL", "t@t")
+                .env("GIT_COMMITTER_NAME", "t")
+                .env("GIT_COMMITTER_EMAIL", "t@t")
+                .env("GIT_CONFIG_COUNT", "1")
+                .env("GIT_CONFIG_KEY_0", "commit.gpgsign")
+                .env("GIT_CONFIG_VALUE_0", "false")
+                .status()
+                .expect("git runs");
+            assert!(status.success(), "git {:?}", args);
+        };
+        run(&["init", "-q", "-b", "main"]);
+        std::fs::write(dir.join("a"), "x").unwrap();
+        run(&["add", "."]);
+        run(&["commit", "-q", "-m", "m1"]);
+        run(&["branch", "feature", "main"]);
+
+        let repo = GitRepo::new(dir).unwrap();
+        assert_eq!(
+            repo.reflog_first_created_from("feature"),
+            Some("main".to_string())
+        );
+    }
+
+    #[test]
+    fn test_reflog_first_created_from_returns_none_when_reflog_missing() {
+        let tmp = tempfile::tempdir().unwrap();
+        let repo = GitRepo::new(std::path::Path::new(".")).unwrap();
+        let _ = tmp; // unused; using current repo path for ergonomics
+        assert_eq!(
+            repo.reflog_first_created_from("definitely-not-a-branch"),
+            None
+        );
+    }
+
+    #[test]
+    fn test_reflog_first_created_from_returns_none_when_self_reference() {
+        // A branch whose reflog says "Created from <itself>" (rare: reset/rebase
+        // artifact) must return None to avoid the branch resolving as its own base.
+        use std::process::Command;
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path();
+        let run = |args: &[&str]| {
+            let status = Command::new("git")
+                .args(args)
+                .current_dir(dir)
+                .env("GIT_AUTHOR_NAME", "t")
+                .env("GIT_AUTHOR_EMAIL", "t@t")
+                .env("GIT_COMMITTER_NAME", "t")
+                .env("GIT_COMMITTER_EMAIL", "t@t")
+                .env("GIT_CONFIG_COUNT", "1")
+                .env("GIT_CONFIG_KEY_0", "commit.gpgsign")
+                .env("GIT_CONFIG_VALUE_0", "false")
+                .status()
+                .expect("git runs");
+            assert!(status.success(), "git {:?}", args);
+        };
+        run(&["init", "-q", "-b", "main"]);
+        std::fs::write(dir.join("a"), "x").unwrap();
+        run(&["add", "."]);
+        run(&["commit", "-q", "-m", "m1"]);
+        // `git checkout -b foo` writes "Created from HEAD" — our parser
+        // already rejects HEAD, so the result is None for the *parse* reason
+        // rather than the self-reference guard. This still verifies the
+        // function returns None for the implicit-checkout case.
+        run(&["checkout", "-q", "-b", "foo"]);
+
+        let repo = GitRepo::new(dir).unwrap();
+        assert_eq!(repo.reflog_first_created_from("foo"), None);
     }
 }

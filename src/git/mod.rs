@@ -736,16 +736,39 @@ impl GitRepo {
 
     /// Resolve the base branch name using priority:
     /// 1. Explicit override (CLI flag or config value, pre-merged by caller)
-    /// 2. Repository-defined default branch from origin/HEAD
+    /// 2. Branch reflog fork point — the start-point recorded by
+    ///    `git branch <name> <start>` or `git worktree add -b <name> <start>`
+    /// 3. Main worktree HEAD branch — the trunk checked out in the primary
+    ///    worktree, when it differs from the current branch
+    /// 4. Repository-defined default branch from `origin/HEAD`
     ///
-    /// Returns `None` when no explicit base is provided and this clone does not
-    /// record a remote default branch. This intentionally avoids reflog parent
-    /// inference and main/master guessing.
+    /// Returns `None` when no tier yields a result. All tiers read recorded
+    /// git facts (reflog entries, HEAD ref contents) — no `main`/`master`
+    /// name guessing.
     pub fn resolve_base_branch(&self, explicit_base: Option<&str>) -> Option<String> {
         if let Some(base) = explicit_base {
             return Some(base.to_string());
         }
 
+        let current = self.branch_name().ok();
+
+        // Tier 2: branch reflog fork point.
+        if let Some(branch) = current.as_deref() {
+            if let Some(fork) = self.reflog_first_created_from(branch) {
+                if Some(fork.as_str()) != current.as_deref() {
+                    return Some(fork);
+                }
+            }
+        }
+
+        // Tier 3: main worktree HEAD branch, when distinct from current.
+        if let Some(main_head) = self.main_worktree_head_branch() {
+            if Some(main_head.as_str()) != current.as_deref() {
+                return Some(main_head);
+            }
+        }
+
+        // Tier 4: origin/HEAD symbolic ref.
         let common = resolve_common_git_dir(&self.repo_path)?;
         let origin_head_path = common.join("refs/remotes/origin/HEAD");
         let content = std::fs::read_to_string(origin_head_path).ok()?;

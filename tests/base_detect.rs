@@ -147,9 +147,10 @@ fn explicit_override_wins() {
 }
 
 /// Branch `b2` forked from `b1` which forked from `main`.
-/// Without origin/HEAD, strict resolution must not infer `b1` from reflog data.
+/// Without origin/HEAD, resolution should pick up `b1` from the branch reflog
+/// (the recorded fork point of `b2`).
 #[test]
-fn ignores_branch_reflog_parent_for_stacked_branch_without_origin_head() {
+fn resolves_branch_reflog_parent_for_stacked_branch() {
     let tmp = tempfile::tempdir().unwrap();
     let dir = tmp.path();
     git(dir, &["init", "-b", "main"]);
@@ -162,11 +163,15 @@ fn ignores_branch_reflog_parent_for_stacked_branch_without_origin_head() {
     git(dir, &["add", "."]);
     git(dir, &["commit", "-m", "b1 work"]);
 
-    git(dir, &["branch", "b2"]);
+    git(dir, &["branch", "b2", "b1"]);
     git(dir, &["checkout", "b2"]);
 
     let repo = GitRepo::new(dir).expect("repo opens");
-    assert_eq!(repo.resolve_base_branch(None), None);
+    assert_eq!(
+        repo.resolve_base_branch(None).as_deref(),
+        Some("b1"),
+        "expected fork point from branch reflog"
+    );
 }
 
 /// Branch `b2` created with implicit `git checkout -b b2` while on `b1`.
@@ -255,4 +260,88 @@ fn no_remote_returns_none() {
 
     let repo = GitRepo::new(&work).unwrap();
     assert_eq!(repo.resolve_base_branch(None), None);
+}
+
+/// Tier 3: in a linked worktree on a feature branch with no origin/HEAD,
+/// resolution falls back to the main worktree's HEAD branch.
+#[test]
+fn resolves_main_worktree_head_branch_when_origin_head_missing() {
+    let tmp = tempfile::tempdir().unwrap();
+    let work = tmp.path().join("work");
+    let linked = tmp.path().join("linked");
+    std::fs::create_dir_all(&work).unwrap();
+    git(&work, &["init", "-q", "-b", "trunk"]);
+    std::fs::write(work.join("a"), "x").unwrap();
+    git(&work, &["add", "."]);
+    git(&work, &["commit", "-q", "-m", "m1"]);
+    // No remote, no origin/HEAD.
+    // Create a linked worktree on a new branch.
+    git(
+        &work,
+        &[
+            "worktree",
+            "add",
+            "-q",
+            linked.to_str().unwrap(),
+            "-b",
+            "drew/feature",
+        ],
+    );
+
+    let repo = GitRepo::new(&linked).unwrap();
+    // Tier 2 fires first: branch reflog says `Created from HEAD` (no explicit
+    // start-point) -> None. Then tier 3 returns `trunk` (main worktree HEAD).
+    assert_eq!(repo.resolve_base_branch(None).as_deref(), Some("trunk"));
+}
+
+/// Tier 3 must self-skip when the candidate equals the current branch.
+/// On the main worktree on trunk, tier 3 would resolve to the current branch;
+/// it must instead fall through to tier 4 (origin/HEAD) — and with no
+/// origin/HEAD set, return None.
+#[test]
+fn main_worktree_head_branch_tier_self_skips_on_trunk() {
+    let tmp = tempfile::tempdir().unwrap();
+    let dir = tmp.path();
+    git(dir, &["init", "-q", "-b", "main"]);
+    std::fs::write(dir.join("a"), "x").unwrap();
+    git(dir, &["add", "."]);
+    git(dir, &["commit", "-q", "-m", "m1"]);
+    // Currently on main; tier 3 candidate would be "main" -> equals current
+    // -> skip. No origin/HEAD -> tier 4 returns None -> overall None.
+
+    let repo = GitRepo::new(dir).unwrap();
+    assert_eq!(repo.resolve_base_branch(None), None);
+}
+
+/// Priority order: when all tiers can produce different values, tier 1
+/// (explicit override) wins.
+#[test]
+fn priority_explicit_override_wins_over_all_tiers() {
+    let tmp = tempfile::tempdir().unwrap();
+    let upstream = tmp.path().join("upstream.git");
+    let work = tmp.path().join("work");
+    std::fs::create_dir_all(&work).unwrap();
+    Command::new("git")
+        .args(["init", "-q", "--bare", upstream.to_str().unwrap()])
+        .status()
+        .unwrap();
+    git(&work, &["init", "-q", "-b", "main"]);
+    std::fs::write(work.join("a"), "x").unwrap();
+    git(&work, &["add", "."]);
+    git(&work, &["commit", "-q", "-m", "m1"]);
+    git(
+        &work,
+        &["remote", "add", "origin", upstream.to_str().unwrap()],
+    );
+    git(&work, &["push", "-q", "-u", "origin", "main"]);
+    git(&work, &["remote", "set-head", "origin", "main"]);
+    git(&work, &["checkout", "-b", "feature", "main"]);
+
+    let repo = GitRepo::new(&work).unwrap();
+    // Override wins even though tier 2 (reflog fork) would say "main"
+    // and tier 4 (origin/HEAD) would also say "main".
+    assert_eq!(
+        repo.resolve_base_branch(Some("override-base")).as_deref(),
+        Some("override-base")
+    );
 }

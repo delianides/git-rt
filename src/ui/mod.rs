@@ -367,16 +367,6 @@ fn render_expanded_file_list(
 ) {
     let area = inset_file_list_area(area);
 
-    // The Expanded view is branch-scoped: it needs a resolved base branch to
-    // compute the Committed group. If none resolved (detached HEAD, no base),
-    // show an explanatory message instead of a partial view. The
-    // initial_seed_done() check defers this message until the first git-status
-    // snapshot has arrived, so it does not flash during startup.
-    if state.merge_base().is_none() && state.initial_seed_done() {
-        render_expanded_no_base(frame, theme, area);
-        return;
-    }
-
     let rows = state.visible_rows();
     if rows.is_empty() {
         render_empty_or_loading_state(frame, state, theme, area);
@@ -444,20 +434,6 @@ fn render_expanded_file_list(
     }
 
     render_list(frame, state, config, theme, area, items, rendered_selected);
-}
-
-/// Render the message shown when the Expanded view has no resolvable base
-/// branch and therefore cannot compute the Committed group.
-fn render_expanded_no_base(frame: &mut Frame, theme: &Theme, area: Rect) {
-    if area.height < 2 || area.width < 20 {
-        return;
-    }
-    let msg = Paragraph::new(
-        "Expanded view needs a base branch.\nPress m for Flat or Tree, or pass --base.",
-    )
-    .style(Style::default().fg(theme.file_path))
-    .alignment(Alignment::Center);
-    frame.render_widget(msg, area);
 }
 
 /// The theme color for a status-group header in the Expanded view.
@@ -1029,22 +1005,40 @@ mod tests {
     }
 
     #[test]
-    fn test_render_expanded_mode_shows_no_base_message() {
-        let mut state = AppState::new(vec![], Duration::from_millis(600), "main".to_string());
+    fn test_render_expanded_mode_renders_groups_without_base() {
+        // Without a resolved base, Expanded must still render the base-independent
+        // groups (Changes, New). The Committed group is silently absent.
+        let files = vec![
+            grouped_entry("src/ui/changed.rs", ChangeGroup::Changes),
+            grouped_entry("README.md", ChangeGroup::New),
+        ];
+        let mut state = AppState::new(files, Duration::from_millis(600), "main".to_string());
         state.set_view_mode(ViewMode::Expanded);
         // Seed the first snapshot so `initial_seed_done()` is true; leave
-        // `merge_base()` as `None` to trigger the no-base message.
-        state.update_files(vec![grouped_entry(
-            "src/ui/changed.rs",
-            ChangeGroup::Changes,
-        )]);
+        // `merge_base()` as `None`.
+        state.update_files(vec![
+            grouped_entry("src/ui/changed.rs", ChangeGroup::Changes),
+            grouped_entry("README.md", ChangeGroup::New),
+        ]);
         assert!(state.initial_seed_done());
         assert!(state.merge_base().is_none());
 
         let rendered = render_to_string(&mut state, &AppConfig::default(), 60, 14);
         assert!(
-            rendered.contains("needs a base branch"),
-            "expected no-base message, got: {rendered}"
+            rendered.contains("Changes (1)"),
+            "expected Changes header without a base, got: {rendered}"
+        );
+        assert!(
+            rendered.contains("New files (1)"),
+            "expected New files header without a base, got: {rendered}"
+        );
+        assert!(
+            !rendered.contains("Committed"),
+            "Committed group must be hidden when no base is resolved, got: {rendered}"
+        );
+        assert!(
+            !rendered.contains("needs a base branch"),
+            "no-base bail-out must be removed, got: {rendered}"
         );
     }
 }

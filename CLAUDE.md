@@ -80,13 +80,23 @@ When a filesystem event fires:
 - **Diff numstat**: `git diff --numstat -z <merge-base>` for branch view, `git diff --numstat -z` for the working-tree view.
 - **Cheap reads**: branch name, HEAD commit, merge-base, stash count, ahead/behind still use `gix` — sub-millisecond.
 - **Diff content**: rendered in an in-app overlay (see `src/ui/diff_overlay.rs`) — centered 85% panel with colored `+`/`-`/context lines and line numbers, scrollable with `j`/`k`.
-- **Base branch resolution**: the diff range's base is resolved strictly by
-  priority: explicit `--base` flag → top-level `base_branch` config → the
-  repository-defined default branch recorded by `origin/HEAD`. perch does not
-  infer a branch's fork parent from reflogs and does not guess `main` or
-  `master`. If no base can be resolved, branch-scoped data is unavailable:
-  Flat and Tree views use standard working-tree status, while Expanded shows
-  its base-required message.
+- **Base branch resolution**: the diff range's base is resolved through four
+  tiers, each reading a recorded git fact (not a name guess):
+  1. Explicit `--base` flag or top-level `base_branch` config
+  2. Branch reflog fork point — the start-point recorded by `git branch <name>
+     <start>` or `git worktree add -b <name> <start>` (`logs/refs/heads/<branch>`
+     in the common git dir). Implicit `git checkout -b foo` writes `Created from
+     HEAD` and falls through.
+  3. Main worktree HEAD branch — the trunk checked out in the primary worktree,
+     read from `<common-git-dir>/HEAD`. Self-skips when it equals the current
+     branch.
+  4. `origin/HEAD` symbolic-ref target.
+
+  Stacked branches resolve to their literal fork point — a branch created from
+  `feature1` diffs against `feature1`, not trunk. Pass `--base` to override.
+  If no tier resolves, branch-scoped data is unavailable: Flat and Tree fall
+  back to working-tree status, while Expanded renders the Changes and New
+  groups and hides the Committed group.
 
 ### Filesystem Watching
 

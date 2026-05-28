@@ -698,6 +698,21 @@ impl GitRepo {
         }
     }
 
+    /// Read the branch name of the main worktree's HEAD by parsing
+    /// `<common-git-dir>/HEAD`. Returns `Some(name)` for a symbolic ref
+    /// (`ref: refs/heads/<name>`), `None` for a detached HEAD or an
+    /// unreadable/missing HEAD file.
+    #[allow(dead_code)]
+    pub(crate) fn main_worktree_head_branch(&self) -> Option<String> {
+        let common = resolve_common_git_dir(&self.repo_path)?;
+        let content = std::fs::read_to_string(common.join("HEAD")).ok()?;
+        let target = content.strip_prefix("ref: refs/heads/")?.trim();
+        if target.is_empty() {
+            return None;
+        }
+        Some(target.to_string())
+    }
+
     /// Read the first line of the branch's reflog (shared across worktrees —
     /// lives in the *common* git dir at `logs/refs/heads/<branch>`) and extract
     /// the branch name it was created from, if any.
@@ -1809,5 +1824,112 @@ mod tests {
 
         let repo = GitRepo::new(dir).unwrap();
         assert_eq!(repo.reflog_first_created_from("foo"), None);
+    }
+
+    #[test]
+    fn test_main_worktree_head_branch_returns_symbolic_ref_target() {
+        use std::process::Command;
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path();
+        let run = |args: &[&str]| {
+            let status = Command::new("git")
+                .args(args)
+                .current_dir(dir)
+                .env("GIT_AUTHOR_NAME", "t")
+                .env("GIT_AUTHOR_EMAIL", "t@t")
+                .env("GIT_COMMITTER_NAME", "t")
+                .env("GIT_COMMITTER_EMAIL", "t@t")
+                .env("GIT_CONFIG_COUNT", "1")
+                .env("GIT_CONFIG_KEY_0", "commit.gpgsign")
+                .env("GIT_CONFIG_VALUE_0", "false")
+                .status()
+                .expect("git runs");
+            assert!(status.success(), "git {:?}", args);
+        };
+        run(&["init", "-q", "-b", "trunk"]);
+        std::fs::write(dir.join("a"), "x").unwrap();
+        run(&["add", "."]);
+        run(&["commit", "-q", "-m", "m1"]);
+
+        let repo = GitRepo::new(dir).unwrap();
+        assert_eq!(repo.main_worktree_head_branch(), Some("trunk".to_string()));
+    }
+
+    #[test]
+    fn test_main_worktree_head_branch_returns_none_for_detached_head() {
+        use std::process::Command;
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path();
+        let run = |args: &[&str]| {
+            let status = Command::new("git")
+                .args(args)
+                .current_dir(dir)
+                .env("GIT_AUTHOR_NAME", "t")
+                .env("GIT_AUTHOR_EMAIL", "t@t")
+                .env("GIT_COMMITTER_NAME", "t")
+                .env("GIT_COMMITTER_EMAIL", "t@t")
+                .env("GIT_CONFIG_COUNT", "1")
+                .env("GIT_CONFIG_KEY_0", "commit.gpgsign")
+                .env("GIT_CONFIG_VALUE_0", "false")
+                .status()
+                .expect("git runs");
+            assert!(status.success(), "git {:?}", args);
+        };
+        run(&["init", "-q", "-b", "main"]);
+        std::fs::write(dir.join("a"), "x").unwrap();
+        run(&["add", "."]);
+        run(&["commit", "-q", "-m", "m1"]);
+        // Detach HEAD by checking out the commit directly.
+        let head = Command::new("git")
+            .args(["rev-parse", "HEAD"])
+            .current_dir(dir)
+            .output()
+            .unwrap();
+        let sha = String::from_utf8(head.stdout).unwrap().trim().to_string();
+        run(&["checkout", "-q", &sha]);
+
+        let repo = GitRepo::new(dir).unwrap();
+        assert_eq!(repo.main_worktree_head_branch(), None);
+    }
+
+    #[test]
+    fn test_main_worktree_head_branch_reads_common_dir_from_linked_worktree() {
+        use std::process::Command;
+        let tmp = tempfile::tempdir().unwrap();
+        let work = tmp.path().join("main");
+        let linked = tmp.path().join("linked");
+        std::fs::create_dir_all(&work).unwrap();
+        let run = |args: &[&str]| {
+            let status = Command::new("git")
+                .args(args)
+                .current_dir(&work)
+                .env("GIT_AUTHOR_NAME", "t")
+                .env("GIT_AUTHOR_EMAIL", "t@t")
+                .env("GIT_COMMITTER_NAME", "t")
+                .env("GIT_COMMITTER_EMAIL", "t@t")
+                .env("GIT_CONFIG_COUNT", "1")
+                .env("GIT_CONFIG_KEY_0", "commit.gpgsign")
+                .env("GIT_CONFIG_VALUE_0", "false")
+                .status()
+                .expect("git runs");
+            assert!(status.success(), "git {:?}", args);
+        };
+        run(&["init", "-q", "-b", "trunk"]);
+        std::fs::write(work.join("a"), "x").unwrap();
+        run(&["add", "."]);
+        run(&["commit", "-q", "-m", "m1"]);
+        run(&[
+            "worktree",
+            "add",
+            "-q",
+            "-b",
+            "feature",
+            linked.to_str().unwrap(),
+            "trunk",
+        ]);
+
+        let repo = GitRepo::new(&linked).unwrap();
+        // Reading the *main* worktree's HEAD from inside a linked worktree.
+        assert_eq!(repo.main_worktree_head_branch(), Some("trunk".to_string()));
     }
 }

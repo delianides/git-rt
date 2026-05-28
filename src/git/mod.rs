@@ -37,7 +37,6 @@ impl GitFailure {
 ///
 /// Expected format (single line, tab-separated message field):
 ///   `<old-sha> <new-sha> <who> <time> <tz>\tbranch: Created from <ref>`
-#[allow(dead_code)]
 fn parse_created_from(line: &str) -> Option<String> {
     let (_, msg) = line.split_once('\t')?;
     let target = msg.strip_prefix("branch: Created from ")?.trim();
@@ -68,7 +67,6 @@ fn parse_created_from(line: &str) -> Option<String> {
 
 /// True if `s` looks like a full or abbreviated git object SHA (hex only,
 /// length 7..=40).
-#[allow(dead_code)]
 fn is_hex_sha(s: &str) -> bool {
     let len = s.len();
     (7..=40).contains(&len) && s.bytes().all(|b| b.is_ascii_hexdigit())
@@ -702,7 +700,6 @@ impl GitRepo {
     /// `<common-git-dir>/HEAD`. Returns `Some(name)` for a symbolic ref
     /// (`ref: refs/heads/<name>`), `None` for a detached HEAD or an
     /// unreadable/missing HEAD file.
-    #[allow(dead_code)]
     pub(crate) fn main_worktree_head_branch(&self) -> Option<String> {
         let common = resolve_common_git_dir(&self.repo_path)?;
         let content = std::fs::read_to_string(common.join("HEAD")).ok()?;
@@ -719,7 +716,6 @@ impl GitRepo {
     ///
     /// Returns `None` if the reflog file is missing, empty, malformed, or
     /// references the branch itself (a reset artifact).
-    #[allow(dead_code)]
     pub(crate) fn reflog_first_created_from(&self, branch: &str) -> Option<String> {
         let common = resolve_common_git_dir(&self.repo_path)?;
         let reflog_path = common.join("logs/refs/heads").join(branch);

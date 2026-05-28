@@ -50,8 +50,10 @@ fn resolves_origin_head() {
     assert_eq!(repo.resolve_base_branch(None).as_deref(), Some("main"));
 }
 
-/// Linked worktrees store remote refs in the common git dir; strict resolution
-/// must still find origin/HEAD there.
+/// Linked worktree on `feature` branched from `main`. The branch reflog
+/// records `Created from main`, so tier 2 (reflog fork point) resolves
+/// to `main` directly. (`origin/HEAD` would also point to `main`, but
+/// tier 2 fires first.)
 #[test]
 fn resolves_origin_head_from_linked_worktree() {
     let tmp = tempfile::tempdir().unwrap();

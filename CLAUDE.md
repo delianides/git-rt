@@ -48,8 +48,9 @@ perch has three view modes, cycled with `m` (`Expanded → Flat → Tree → Exp
 - **Expanded** (default) — files split into collapsible status groups:
   **Changes** (staged/unstaged edits), **New files** (untracked), and
   **Committed** (committed on the branch, no pending edits). Empty groups are
-  hidden. `Enter`/`Space` on a group header collapses it. Requires a resolved
-  base branch; with none it shows an explanatory message.
+  hidden. `Enter`/`Space` on a group header collapses it. The Committed group
+  needs a resolved base branch; with none, Changes and New still render and
+  Committed is silently hidden.
 - **Flat** — a single flat list of changed file paths.
 - **Tree** — files arranged as a directory tree.
 

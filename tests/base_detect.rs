@@ -53,9 +53,11 @@ fn resolves_origin_head() {
 /// Linked worktree on `feature` branched from `main`. The branch reflog
 /// records `Created from main`, so tier 2 (reflog fork point) resolves
 /// to `main` directly. (`origin/HEAD` would also point to `main`, but
-/// tier 2 fires first.)
+/// tier 2 fires first.) Tier 4 from a linked worktree is exercised by
+/// `resolves_origin_head` indirectly — that path also uses the common
+/// git dir lookup.
 #[test]
-fn resolves_origin_head_from_linked_worktree() {
+fn resolves_fork_point_from_linked_worktree() {
     let tmp = tempfile::tempdir().unwrap();
     let upstream = tmp.path().join("upstream.git");
     let work = tmp.path().join("work");

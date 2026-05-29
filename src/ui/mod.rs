@@ -455,8 +455,8 @@ fn render_list(
     let max_selected_index = selected_index.min(items.len().saturating_sub(1));
 
     let highlight = if state.is_focused() {
-        // A gray bar with a bright fg so the row stays legible even where the
-        // text is itself gray; per-span colors go monochrome on this row only.
+        // A gray bar, background only — each span keeps its own color (status
+        // marker, +/- counts) on the selected row.
         colors::SELECTION
     } else {
         Style::default()

@@ -30,8 +30,9 @@ pub const STATUS_MODIFIED: Color = Color::Yellow;
 pub const STATUS_ADDED: Color = Color::Green;
 pub const STATUS_DELETED: Color = Color::Red;
 pub const STATUS_RENAMED: Color = Color::Cyan;
-/// Untracked files are de-emphasized.
-pub const STATUS_UNTRACKED: Color = Color::DarkGray;
+/// Untracked files are de-emphasized. Gray (not DarkGray) so the marker stays
+/// visible against the DarkGray selection bar.
+pub const STATUS_UNTRACKED: Color = Color::Gray;
 /// Staged shares green with added — both are "content entering the tree".
 pub const STATUS_STAGED: Color = Color::Green;
 /// LightRed (vs plain red for deletions) makes conflicts stand out as urgent.
@@ -40,7 +41,9 @@ pub const STATUS_CONFLICTED: Color = Color::LightRed;
 // ── Expanded-view section headers ─────────────────────────────────────────
 pub const SECTION_CHANGES: Color = Color::Yellow;
 pub const SECTION_NEW: Color = Color::Green;
-pub const SECTION_COMMITTED: Color = Color::DarkGray;
+/// De-emphasized, but Gray (not DarkGray) so the header stays visible against
+/// the DarkGray selection bar.
+pub const SECTION_COMMITTED: Color = Color::Gray;
 
 // ── Diff overlay ──────────────────────────────────────────────────────────
 // Diff add/del lines are colored by foreground only; ANSI terminals don't get
@@ -66,12 +69,11 @@ pub const FLASH_DEL_BG: Color = Color::Indexed(52);
 /// Border foreground while the pane border is flashing on a change.
 pub const FLASH_BORDER: Color = Color::Yellow;
 
-/// Style applied to the selected row: a gray background bar with a bright
-/// foreground. The foreground override makes the row legible even where the
-/// underlying text is itself gray (e.g. the Committed header, untracked files);
-/// the trade-off is that per-span colors (+/- counts, status chars) go
-/// monochrome on the selected row only.
-pub const SELECTION: Style = Style::new().bg(Color::DarkGray).fg(Color::White);
+/// Style applied to the selected row: a gray background bar only. No foreground
+/// is set, so each span keeps its own color (status marker, +/- counts) on the
+/// selected row. De-emphasized grays use [`Color::Gray`] (not `DarkGray`) so
+/// they stay legible against this bar rather than blending in.
+pub const SELECTION: Style = Style::new().bg(Color::DarkGray);
 
 #[cfg(test)]
 mod tests {
@@ -89,8 +91,9 @@ mod tests {
     }
 
     #[test]
-    fn selection_has_background_bar() {
+    fn selection_is_background_only() {
+        // bg-only so per-span foreground colors survive on the selected row.
         assert_eq!(SELECTION.bg, Some(Color::DarkGray));
-        assert_eq!(SELECTION.fg, Some(Color::White));
+        assert_eq!(SELECTION.fg, None);
     }
 }

@@ -760,7 +760,7 @@ impl App {
     }
 
     /// Activate the selected row. Tree directories toggle open/closed;
-    /// Expanded group headers toggle collapsed/expanded; file rows request
+    /// Normal group headers toggle collapsed/expanded; file rows request
     /// their diff.
     fn handle_activate(&mut self) -> Result<()> {
         if self.state.toggle_selected_directory() {

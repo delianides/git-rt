@@ -292,6 +292,47 @@ layout = "right"
     }
 
     #[test]
+    fn test_load_default_view_normal() {
+        let dir = std::env::temp_dir().join("perch-test-config-default-view-normal");
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("config.toml");
+        std::fs::write(&path, "[display]\ndefault_view = \"normal\"\n").unwrap();
+
+        let config = AppConfig::load(Some(&path)).unwrap();
+        assert_eq!(config.display.default_view, crate::state::ViewMode::Normal);
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn test_load_default_view_condensed() {
+        let dir = std::env::temp_dir().join("perch-test-config-default-view-condensed");
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("config.toml");
+        std::fs::write(&path, "[display]\ndefault_view = \"condensed\"\n").unwrap();
+
+        let config = AppConfig::load(Some(&path)).unwrap();
+        assert_eq!(
+            config.display.default_view,
+            crate::state::ViewMode::Condensed
+        );
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn test_load_rejects_old_view_names() {
+        let dir = std::env::temp_dir().join("perch-test-config-rejects-old-view-names");
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("config.toml");
+        std::fs::write(&path, "[display]\ndefault_view = \"expanded\"\n").unwrap();
+
+        assert!(AppConfig::load(Some(&path)).is_err());
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
     fn test_base_branch_config() {
         let dir = std::env::temp_dir().join("perch-test-config-base-branch");
         std::fs::create_dir_all(&dir).unwrap();

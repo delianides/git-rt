@@ -759,7 +759,7 @@ mod tests {
     }
 
     #[test]
-    fn test_flat_row_mid_ellipsizes_path_at_narrow_width() {
+    fn test_condensed_row_mid_ellipsizes_path_at_narrow_width() {
         let files = vec![FileEntry {
             path: "src/very/deeply/nested/path/long_filename.rs".to_string(),
             status: FileStatus::Modified,
@@ -776,7 +776,7 @@ mod tests {
     }
 
     #[test]
-    fn test_flat_row_drops_stats_below_floor() {
+    fn test_condensed_row_drops_stats_below_floor() {
         let files = vec![FileEntry {
             path: "src/a/b/c/d/really_long_filename.rs".to_string(),
             status: FileStatus::Modified,

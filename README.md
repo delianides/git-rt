@@ -85,10 +85,12 @@ debounce_ms = 200            # filesystem event debounce in ms
 base_branch = "main"         # optional override for branch-scoped diff base
 ```
 
-When `base_branch` is omitted, perch uses the repository-defined default branch
-from `origin/HEAD`. If no default branch is recorded locally, Flat and Tree
-views fall back to standard working-tree status instead of guessing `main`,
-`master`, or a branch parent; Expanded view shows its base-required message.
+When `base_branch` is omitted, perch resolves the base through four tiers:
+the branch's reflog fork point (recorded by `git branch <name> <start>` or
+`git worktree add -b <name> <start>`), the main worktree's HEAD branch, then
+`origin/HEAD`. All tiers read recorded git facts — perch never guesses `main`
+or `master` by name. If no tier resolves, Flat and Tree views fall back to
+working-tree status and Expanded hides the Committed group.
 
 ### `[display]`
 

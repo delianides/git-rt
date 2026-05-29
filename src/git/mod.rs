@@ -27,6 +27,51 @@ impl GitFailure {
     }
 }
 
+/// Parse a single reflog line and return the branch name the current branch
+/// was created from, if this line is a "branch: Created from X" entry.
+///
+/// Returns `None` for malformed lines, non-"Created from" entries, the
+/// `HEAD` sentinel, and SHA sources (no branch name to return).
+/// A branch whose name is entirely hex digits (length 7-40) is
+/// indistinguishable from an abbreviated SHA and is treated as one.
+///
+/// Expected format (single line, tab-separated message field):
+///   `<old-sha> <new-sha> <who> <time> <tz>\tbranch: Created from <ref>`
+fn parse_created_from(line: &str) -> Option<String> {
+    let (_, msg) = line.split_once('\t')?;
+    let target = msg.strip_prefix("branch: Created from ")?.trim();
+
+    if target == "HEAD" || target.is_empty() {
+        return None;
+    }
+    if is_hex_sha(target) {
+        return None;
+    }
+
+    if let Some(rest) = target.strip_prefix("refs/heads/") {
+        if rest.is_empty() {
+            return None;
+        }
+        return Some(rest.to_string());
+    }
+    if let Some(rest) = target.strip_prefix("refs/remotes/") {
+        let (_, branch) = rest.split_once('/')?;
+        if branch.is_empty() {
+            return None;
+        }
+        return Some(branch.to_string());
+    }
+
+    Some(target.to_string())
+}
+
+/// True if `s` looks like a full or abbreviated git object SHA (hex only,
+/// length 7..=40).
+fn is_hex_sha(s: &str) -> bool {
+    let len = s.len();
+    (7..=40).contains(&len) && s.bytes().all(|b| b.is_ascii_hexdigit())
+}
+
 /// Errors from `discover_worktree_root`.
 #[derive(Debug, Error)]
 pub enum DiscoverError {
@@ -651,18 +696,75 @@ impl GitRepo {
         }
     }
 
+    /// Read the branch name of the main worktree's HEAD by parsing
+    /// `<common-git-dir>/HEAD`. Returns `Some(name)` for a symbolic ref
+    /// (`ref: refs/heads/<name>`), `None` for a detached HEAD or an
+    /// unreadable/missing HEAD file.
+    pub(crate) fn main_worktree_head_branch(&self) -> Option<String> {
+        let common = resolve_common_git_dir(&self.repo_path)?;
+        let content = std::fs::read_to_string(common.join("HEAD")).ok()?;
+        let target = content.strip_prefix("ref: refs/heads/")?.trim();
+        if target.is_empty() {
+            return None;
+        }
+        Some(target.to_string())
+    }
+
+    /// Read the first line of the branch's reflog (shared across worktrees —
+    /// lives in the *common* git dir at `logs/refs/heads/<branch>`) and extract
+    /// the branch name it was created from, if any.
+    ///
+    /// Returns `None` if the reflog file is missing, empty, malformed, or
+    /// references the branch itself (a reset artifact).
+    pub(crate) fn reflog_first_created_from(&self, branch: &str) -> Option<String> {
+        let common = resolve_common_git_dir(&self.repo_path)?;
+        let reflog_path = common.join("logs/refs/heads").join(branch);
+
+        let content = std::fs::read_to_string(&reflog_path).ok()?;
+        let first_line = content.lines().next()?;
+
+        let extracted = parse_created_from(first_line)?;
+        if extracted == branch {
+            return None;
+        }
+        Some(extracted)
+    }
+
     /// Resolve the base branch name using priority:
     /// 1. Explicit override (CLI flag or config value, pre-merged by caller)
-    /// 2. Repository-defined default branch from origin/HEAD
+    /// 2. Branch reflog fork point — the start-point recorded by
+    ///    `git branch <name> <start>` or `git worktree add -b <name> <start>`
+    /// 3. Main worktree HEAD branch — the trunk checked out in the primary
+    ///    worktree, when it differs from the current branch
+    /// 4. Repository-defined default branch from `origin/HEAD`
     ///
-    /// Returns `None` when no explicit base is provided and this clone does not
-    /// record a remote default branch. This intentionally avoids reflog parent
-    /// inference and main/master guessing.
+    /// Returns `None` when no tier yields a result. All tiers read recorded
+    /// git facts (reflog entries, HEAD ref contents) — no `main`/`master`
+    /// name guessing.
     pub fn resolve_base_branch(&self, explicit_base: Option<&str>) -> Option<String> {
         if let Some(base) = explicit_base {
             return Some(base.to_string());
         }
 
+        let current = self.branch_name().ok();
+
+        // Tier 2: branch reflog fork point.
+        if let Some(branch) = current.as_deref() {
+            if let Some(fork) = self.reflog_first_created_from(branch) {
+                if Some(fork.as_str()) != current.as_deref() {
+                    return Some(fork);
+                }
+            }
+        }
+
+        // Tier 3: main worktree HEAD branch, when distinct from current.
+        if let Some(main_head) = self.main_worktree_head_branch() {
+            if Some(main_head.as_str()) != current.as_deref() {
+                return Some(main_head);
+            }
+        }
+
+        // Tier 4: origin/HEAD symbolic ref.
         let common = resolve_common_git_dir(&self.repo_path)?;
         let origin_head_path = common.join("refs/remotes/origin/HEAD");
         let content = std::fs::read_to_string(origin_head_path).ok()?;
@@ -1315,6 +1417,72 @@ mod tests {
     }
 
     #[test]
+    fn test_is_hex_sha_accepts_7_to_40_hex() {
+        assert!(is_hex_sha("abcdef1"));
+        assert!(is_hex_sha("0123456789abcdef0123456789abcdef01234567"));
+        assert!(is_hex_sha("DEADBEEFCAFE1234"));
+    }
+
+    #[test]
+    fn test_is_hex_sha_rejects_too_short_too_long_and_non_hex() {
+        assert!(!is_hex_sha("abc123"));
+        assert!(!is_hex_sha("0123456789abcdef0123456789abcdef012345670"));
+        assert!(!is_hex_sha("main"));
+        assert!(!is_hex_sha("ghijklm"));
+        assert!(!is_hex_sha(""));
+    }
+
+    #[test]
+    fn test_parse_created_from_accepts_simple_branch_name() {
+        let line = "0 1 a b 1 +0\tbranch: Created from main";
+        assert_eq!(parse_created_from(line), Some("main".to_string()));
+    }
+
+    #[test]
+    fn test_parse_created_from_strips_refs_heads_prefix() {
+        let line = "0 1 a b 1 +0\tbranch: Created from refs/heads/develop";
+        assert_eq!(parse_created_from(line), Some("develop".to_string()));
+    }
+
+    #[test]
+    fn test_parse_created_from_strips_refs_remotes_prefix() {
+        let line = "0 1 a b 1 +0\tbranch: Created from refs/remotes/origin/main";
+        assert_eq!(parse_created_from(line), Some("main".to_string()));
+    }
+
+    #[test]
+    fn test_parse_created_from_rejects_head_sentinel() {
+        let line = "0 1 a b 1 +0\tbranch: Created from HEAD";
+        assert_eq!(parse_created_from(line), None);
+    }
+
+    #[test]
+    fn test_parse_created_from_rejects_raw_sha() {
+        let line = "0 1 a b 1 +0\tbranch: Created from abcdef1234567890";
+        assert_eq!(parse_created_from(line), None);
+    }
+
+    #[test]
+    fn test_parse_created_from_rejects_unrelated_messages() {
+        let line = "0 1 a b 1 +0\tcommit (initial): hi";
+        assert_eq!(parse_created_from(line), None);
+        let line = "0 1 a b 1 +0\tcheckout: moving from main to feature";
+        assert_eq!(parse_created_from(line), None);
+    }
+
+    #[test]
+    fn test_parse_created_from_rejects_empty_target() {
+        let line = "0 1 a b 1 +0\tbranch: Created from ";
+        assert_eq!(parse_created_from(line), None);
+    }
+
+    #[test]
+    fn test_parse_created_from_rejects_missing_tab() {
+        let line = "no tab here, no message";
+        assert_eq!(parse_created_from(line), None);
+    }
+
+    #[test]
     fn test_resolve_base_branch_none_when_no_remote() {
         let dir = std::env::temp_dir().join("perch-test-no-remote");
         std::fs::create_dir_all(&dir).ok();
@@ -1594,5 +1762,193 @@ mod tests {
             diff.hunks.len(),
             diff.hunks.iter().map(|h| &h.header).collect::<Vec<_>>()
         );
+    }
+
+    #[test]
+    fn test_reflog_first_created_from_returns_fork_point_for_worktree() {
+        use std::process::Command;
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path();
+
+        let run = |args: &[&str]| {
+            let status = Command::new("git")
+                .args(args)
+                .current_dir(dir)
+                .env("GIT_AUTHOR_NAME", "t")
+                .env("GIT_AUTHOR_EMAIL", "t@t")
+                .env("GIT_COMMITTER_NAME", "t")
+                .env("GIT_COMMITTER_EMAIL", "t@t")
+                .env("GIT_CONFIG_COUNT", "1")
+                .env("GIT_CONFIG_KEY_0", "commit.gpgsign")
+                .env("GIT_CONFIG_VALUE_0", "false")
+                .status()
+                .expect("git runs");
+            assert!(status.success(), "git {:?}", args);
+        };
+        run(&["init", "-q", "-b", "main"]);
+        std::fs::write(dir.join("a"), "x").unwrap();
+        run(&["add", "."]);
+        run(&["commit", "-q", "-m", "m1"]);
+        run(&["branch", "feature", "main"]);
+
+        let repo = GitRepo::new(dir).unwrap();
+        assert_eq!(
+            repo.reflog_first_created_from("feature"),
+            Some("main".to_string())
+        );
+    }
+
+    #[test]
+    fn test_reflog_first_created_from_returns_none_when_reflog_missing() {
+        let tmp = tempfile::tempdir().unwrap();
+        let repo = GitRepo::new(std::path::Path::new(".")).unwrap();
+        let _ = tmp; // unused; using current repo path for ergonomics
+        assert_eq!(
+            repo.reflog_first_created_from("definitely-not-a-branch"),
+            None
+        );
+    }
+
+    #[test]
+    fn test_reflog_first_created_from_returns_none_when_self_reference() {
+        // A branch whose reflog says "Created from <itself>" (rare: reset/rebase
+        // artifact) must return None to avoid the branch resolving as its own base.
+        use std::process::Command;
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path();
+        let run = |args: &[&str]| {
+            let status = Command::new("git")
+                .args(args)
+                .current_dir(dir)
+                .env("GIT_AUTHOR_NAME", "t")
+                .env("GIT_AUTHOR_EMAIL", "t@t")
+                .env("GIT_COMMITTER_NAME", "t")
+                .env("GIT_COMMITTER_EMAIL", "t@t")
+                .env("GIT_CONFIG_COUNT", "1")
+                .env("GIT_CONFIG_KEY_0", "commit.gpgsign")
+                .env("GIT_CONFIG_VALUE_0", "false")
+                .status()
+                .expect("git runs");
+            assert!(status.success(), "git {:?}", args);
+        };
+        run(&["init", "-q", "-b", "main"]);
+        std::fs::write(dir.join("a"), "x").unwrap();
+        run(&["add", "."]);
+        run(&["commit", "-q", "-m", "m1"]);
+        // `git checkout -b foo` writes "Created from HEAD" — our parser
+        // already rejects HEAD, so the result is None for the *parse* reason
+        // rather than the self-reference guard. This still verifies the
+        // function returns None for the implicit-checkout case.
+        run(&["checkout", "-q", "-b", "foo"]);
+
+        let repo = GitRepo::new(dir).unwrap();
+        assert_eq!(repo.reflog_first_created_from("foo"), None);
+    }
+
+    #[test]
+    fn test_main_worktree_head_branch_returns_symbolic_ref_target() {
+        use std::process::Command;
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path();
+        let run = |args: &[&str]| {
+            let status = Command::new("git")
+                .args(args)
+                .current_dir(dir)
+                .env("GIT_AUTHOR_NAME", "t")
+                .env("GIT_AUTHOR_EMAIL", "t@t")
+                .env("GIT_COMMITTER_NAME", "t")
+                .env("GIT_COMMITTER_EMAIL", "t@t")
+                .env("GIT_CONFIG_COUNT", "1")
+                .env("GIT_CONFIG_KEY_0", "commit.gpgsign")
+                .env("GIT_CONFIG_VALUE_0", "false")
+                .status()
+                .expect("git runs");
+            assert!(status.success(), "git {:?}", args);
+        };
+        run(&["init", "-q", "-b", "trunk"]);
+        std::fs::write(dir.join("a"), "x").unwrap();
+        run(&["add", "."]);
+        run(&["commit", "-q", "-m", "m1"]);
+
+        let repo = GitRepo::new(dir).unwrap();
+        assert_eq!(repo.main_worktree_head_branch(), Some("trunk".to_string()));
+    }
+
+    #[test]
+    fn test_main_worktree_head_branch_returns_none_for_detached_head() {
+        use std::process::Command;
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path();
+        let run = |args: &[&str]| {
+            let status = Command::new("git")
+                .args(args)
+                .current_dir(dir)
+                .env("GIT_AUTHOR_NAME", "t")
+                .env("GIT_AUTHOR_EMAIL", "t@t")
+                .env("GIT_COMMITTER_NAME", "t")
+                .env("GIT_COMMITTER_EMAIL", "t@t")
+                .env("GIT_CONFIG_COUNT", "1")
+                .env("GIT_CONFIG_KEY_0", "commit.gpgsign")
+                .env("GIT_CONFIG_VALUE_0", "false")
+                .status()
+                .expect("git runs");
+            assert!(status.success(), "git {:?}", args);
+        };
+        run(&["init", "-q", "-b", "main"]);
+        std::fs::write(dir.join("a"), "x").unwrap();
+        run(&["add", "."]);
+        run(&["commit", "-q", "-m", "m1"]);
+        // Detach HEAD by checking out the commit directly.
+        let head = Command::new("git")
+            .args(["rev-parse", "HEAD"])
+            .current_dir(dir)
+            .output()
+            .unwrap();
+        let sha = String::from_utf8(head.stdout).unwrap().trim().to_string();
+        run(&["checkout", "-q", &sha]);
+
+        let repo = GitRepo::new(dir).unwrap();
+        assert_eq!(repo.main_worktree_head_branch(), None);
+    }
+
+    #[test]
+    fn test_main_worktree_head_branch_reads_common_dir_from_linked_worktree() {
+        use std::process::Command;
+        let tmp = tempfile::tempdir().unwrap();
+        let work = tmp.path().join("main");
+        let linked = tmp.path().join("linked");
+        std::fs::create_dir_all(&work).unwrap();
+        let run = |args: &[&str]| {
+            let status = Command::new("git")
+                .args(args)
+                .current_dir(&work)
+                .env("GIT_AUTHOR_NAME", "t")
+                .env("GIT_AUTHOR_EMAIL", "t@t")
+                .env("GIT_COMMITTER_NAME", "t")
+                .env("GIT_COMMITTER_EMAIL", "t@t")
+                .env("GIT_CONFIG_COUNT", "1")
+                .env("GIT_CONFIG_KEY_0", "commit.gpgsign")
+                .env("GIT_CONFIG_VALUE_0", "false")
+                .status()
+                .expect("git runs");
+            assert!(status.success(), "git {:?}", args);
+        };
+        run(&["init", "-q", "-b", "trunk"]);
+        std::fs::write(work.join("a"), "x").unwrap();
+        run(&["add", "."]);
+        run(&["commit", "-q", "-m", "m1"]);
+        run(&[
+            "worktree",
+            "add",
+            "-q",
+            "-b",
+            "feature",
+            linked.to_str().unwrap(),
+            "trunk",
+        ]);
+
+        let repo = GitRepo::new(&linked).unwrap();
+        // Reading the *main* worktree's HEAD from inside a linked worktree.
+        assert_eq!(repo.main_worktree_head_branch(), Some("trunk".to_string()));
     }
 }

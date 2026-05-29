@@ -173,6 +173,9 @@ pub struct AppState {
     /// Mutated in place by the widget during `render_stateful_widget` and
     /// read back by the render function.
     scroll_offset: usize,
+    /// Last-rendered height (rows) of the file-list viewport. Written by the
+    /// UI each frame; read by half/full-page navigation.
+    list_viewport_height: usize,
     /// False until the first `update_files` call completes. Prevents the
     /// initial git-status snapshot (startup or post-worktree-switch) from
     /// flashing every row, since there's nothing to meaningfully compare
@@ -224,6 +227,7 @@ impl AppState {
             merge_base: None,
             base_branch: String::new(),
             scroll_offset: 0,
+            list_viewport_height: 0,
             initial_seed_done: false,
             current_diff: None,
             diff_scroll: 0,
@@ -586,6 +590,40 @@ impl AppState {
     pub fn select_previous(&mut self) {
         let rows = self.rebuild_visible_rows();
         self.set_selection_from_rows(&rows, self.selected.saturating_sub(1));
+    }
+
+    /// Last-rendered file-list viewport height in rows (0 until first render).
+    pub fn list_viewport_height(&self) -> usize {
+        self.list_viewport_height
+    }
+
+    /// Record the file-list viewport height. Called by the UI each frame.
+    pub fn set_list_viewport_height(&mut self, height: usize) {
+        self.list_viewport_height = height;
+    }
+
+    /// Move the selection to the first visible row.
+    pub fn select_first(&mut self) {
+        let rows = self.rebuild_visible_rows();
+        self.set_selection_from_rows(&rows, 0);
+    }
+
+    /// Move the selection to the last visible row.
+    pub fn select_last(&mut self) {
+        let rows = self.rebuild_visible_rows();
+        let last = rows.len().saturating_sub(1);
+        self.set_selection_from_rows(&rows, last);
+    }
+
+    /// Move the selection by `delta` rows (negative = up), clamped to the
+    /// visible range. No-op on an empty list. Used for half/full-page jumps.
+    pub fn select_page(&mut self, delta: isize) {
+        let rows = self.rebuild_visible_rows();
+        if rows.is_empty() {
+            return;
+        }
+        let target = (self.selected as isize + delta).max(0) as usize;
+        self.set_selection_from_rows(&rows, target);
     }
 
     pub fn cycle_view_mode(&mut self) {
@@ -1655,5 +1693,52 @@ mod tests {
             before_token,
             "token should advance"
         );
+    }
+
+    #[test]
+    fn test_select_first_and_last() {
+        let files = vec![
+            make_entry("a.rs", 1, 0),
+            make_entry("b.rs", 2, 1),
+            make_entry("c.rs", 0, 3),
+        ];
+        let mut state = AppState::new(files, Duration::from_millis(600), "main".to_string());
+        state.select_last();
+        assert_eq!(state.selected_index(), 2);
+        state.select_first();
+        assert_eq!(state.selected_index(), 0);
+    }
+
+    #[test]
+    fn test_select_page_clamps_both_ends() {
+        let files = vec![
+            make_entry("a.rs", 1, 0),
+            make_entry("b.rs", 2, 1),
+            make_entry("c.rs", 0, 3),
+        ];
+        let mut state = AppState::new(files, Duration::from_millis(600), "main".to_string());
+        state.select_page(10); // past the end -> clamp to last
+        assert_eq!(state.selected_index(), 2);
+        state.select_page(-10); // past the start -> clamp to 0
+        assert_eq!(state.selected_index(), 0);
+        state.select_page(1);
+        assert_eq!(state.selected_index(), 1);
+    }
+
+    #[test]
+    fn test_select_page_empty_list_is_noop() {
+        let mut state = AppState::new(vec![], Duration::from_millis(600), "main".to_string());
+        state.select_page(5);
+        assert_eq!(state.selected_index(), 0);
+        state.select_last();
+        assert_eq!(state.selected_index(), 0);
+    }
+
+    #[test]
+    fn test_list_viewport_height_roundtrip() {
+        let mut state = AppState::new(vec![], Duration::from_millis(600), "main".to_string());
+        assert_eq!(state.list_viewport_height(), 0);
+        state.set_list_viewport_height(20);
+        assert_eq!(state.list_viewport_height(), 20);
     }
 }

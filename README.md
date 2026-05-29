@@ -6,7 +6,7 @@ A real-time terminal dashboard for git changes. Watch your working tree update l
 
 ## Overview
 
-Run `perch` in a terminal pane alongside your editor. It shows a live-updating list of changed files with insertion/deletion counts and — when the current branch has a PR open on GitHub — a compact PR status strip with review, check, and mergeability state. Press `m` to cycle between the flat file list and a tree view that groups changes by directory. Press `Enter` (or `d` / `Space` / `l` / `→`) on a file to open its full diff in a centered in-app overlay, or use those same keys to toggle directories in tree mode. Updates are event-driven via filesystem watches; there is no polling of the working tree.
+Run `perch` in a terminal pane alongside your editor. It shows a live-updating list of changed files with insertion/deletion counts and — when the current branch has a PR open on GitHub — a compact PR status strip with review, check, and mergeability state. Press `m` to cycle between the normal status-grouped view, a condensed flat file list, and a tree view that groups changes by directory. Press `Enter` (or `d` / `Space` / `l` / `→`) on a file to open its full diff in a centered in-app overlay, or use those same keys to toggle directories in tree mode. Updates are event-driven via filesystem watches; there is no polling of the working tree.
 
 ## Install
 
@@ -56,7 +56,7 @@ perch can be launched from any directory inside a git working tree — the repos
 | --------------------- | ----------------------------------------------------- |
 | `j` / `↓`             | Select next file                                      |
 | `k` / `↑`             | Select previous file                                  |
-| `m`                   | Cycle view mode (`flat` / `tree`)                     |
+| `m`                   | Cycle view mode (`normal` / `condensed` / `tree`)     |
 | `Enter` / `l` / `→` / `Space` / `d` | Open diff for files, toggle directories in tree mode |
 | `r`                   | Refresh                                               |
 | `?`                   | Show the help popup                                   |
@@ -89,8 +89,8 @@ When `base_branch` is omitted, perch resolves the base through four tiers:
 the branch's reflog fork point (recorded by `git branch <name> <start>` or
 `git worktree add -b <name> <start>`), the main worktree's HEAD branch, then
 `origin/HEAD`. All tiers read recorded git facts — perch never guesses `main`
-or `master` by name. If no tier resolves, Flat and Tree views fall back to
-working-tree status and Expanded hides the Committed group.
+or `master` by name. If no tier resolves, Condensed and Tree views fall back to
+working-tree status and Normal hides the Committed group.
 
 ### `[display]`
 

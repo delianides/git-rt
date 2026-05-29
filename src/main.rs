@@ -6,7 +6,6 @@ mod fuzzy;
 mod git;
 mod github;
 mod state;
-mod theme;
 mod ui;
 mod watcher;
 

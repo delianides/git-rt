@@ -30,8 +30,11 @@ pub const STATUS_MODIFIED: Color = Color::Yellow;
 pub const STATUS_ADDED: Color = Color::Green;
 pub const STATUS_DELETED: Color = Color::Red;
 pub const STATUS_RENAMED: Color = Color::Cyan;
+/// Untracked files are de-emphasized.
 pub const STATUS_UNTRACKED: Color = Color::DarkGray;
+/// Staged shares green with added — both are "content entering the tree".
 pub const STATUS_STAGED: Color = Color::Green;
+/// LightRed (vs plain red for deletions) makes conflicts stand out as urgent.
 pub const STATUS_CONFLICTED: Color = Color::LightRed;
 
 // ── Expanded-view section headers ─────────────────────────────────────────
@@ -40,6 +43,8 @@ pub const SECTION_NEW: Color = Color::Green;
 pub const SECTION_COMMITTED: Color = Color::DarkGray;
 
 // ── Diff overlay ──────────────────────────────────────────────────────────
+// Diff add/del lines are colored by foreground only; ANSI terminals don't get
+// tinted line backgrounds (bg stays the terminal default).
 pub const DIFF_ADD_FG: Color = Color::Green;
 pub const DIFF_DEL_FG: Color = Color::Red;
 pub const DIFF_CONTEXT: Color = Color::Reset;
@@ -55,9 +60,7 @@ pub const FLASH_BORDER: Color = Color::Yellow;
 
 /// Style applied to the selected row. REVERSED swaps fg/bg using the
 /// terminal's own colors, so selection reads correctly on any palette.
-pub fn selection_style() -> Style {
-    Style::default().add_modifier(Modifier::REVERSED)
-}
+pub const SELECTION: Style = Style::new().add_modifier(Modifier::REVERSED);
 
 #[cfg(test)]
 mod tests {
@@ -76,6 +79,6 @@ mod tests {
 
     #[test]
     fn selection_is_reversed() {
-        assert!(selection_style().add_modifier.contains(Modifier::REVERSED));
+        assert!(SELECTION.add_modifier.contains(Modifier::REVERSED));
     }
 }

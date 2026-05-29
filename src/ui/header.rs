@@ -13,7 +13,7 @@ use ratatui::{
 };
 
 use crate::state::{AppState, ViewMode};
-use crate::theme::Theme;
+use crate::ui::colors;
 use crate::ui::fit;
 
 /// Minimum display width to keep after mid-ellipsizing a branch name.
@@ -65,33 +65,32 @@ impl Segment {
 }
 
 /// Back-compat entry point for callers that don't know the available width.
-pub fn build_header_title(state: &AppState, theme: &Theme) -> Line<'static> {
-    build_header_title_with_width(state, theme, u16::MAX as usize)
+pub fn build_header_title(state: &AppState) -> Line<'static> {
+    build_header_title_with_width(state, u16::MAX as usize)
 }
 
 /// Width-aware builder. `max_width` is the inner budget available for
 /// the title content (caller should pass
 /// `main_area.width.saturating_sub(2)` to leave room for rounded-border
 /// decorations).
-pub fn build_header_title_with_width(
-    state: &AppState,
-    theme: &Theme,
-    max_width: usize,
-) -> Line<'static> {
+pub fn build_header_title_with_width(state: &AppState, max_width: usize) -> Line<'static> {
     if let Some(msg) = state.flash_message() {
         let inner_budget = max_width.saturating_sub(2);
         let clipped = fit::truncate_end(msg, inner_budget);
         return Line::from(vec![
             Span::raw(" "),
-            Span::styled(clipped.into_owned(), Style::default().fg(theme.header_text)),
+            Span::styled(
+                clipped.into_owned(),
+                Style::default().fg(colors::HEADER_TEXT),
+            ),
             Span::raw(" "),
         ]);
     }
 
     let repo = state.repo_name().to_string();
     let branch = state.branch().to_string();
-    let segments = build_segments(state, &repo, &branch, theme);
-    let fitted = fit_segments(segments, max_width, theme);
+    let segments = build_segments(state, &repo, &branch);
+    let fitted = fit_segments(segments, max_width);
 
     let mut spans: Vec<Span<'static>> = vec![Span::raw(" ")];
     for seg in fitted {
@@ -101,9 +100,9 @@ pub fn build_header_title_with_width(
     Line::from(spans)
 }
 
-fn build_segments(state: &AppState, repo: &str, branch: &str, theme: &Theme) -> Vec<Segment> {
-    let text_style = Style::default().fg(theme.header_text);
-    let sep_style = Style::default().fg(theme.header_separator);
+fn build_segments(state: &AppState, repo: &str, branch: &str) -> Vec<Segment> {
+    let text_style = Style::default().fg(colors::HEADER_TEXT);
+    let sep_style = Style::default().fg(colors::HEADER_SEPARATOR);
     let sep_span = || Span::styled(" ● ", sep_style);
 
     let files = state.files();
@@ -173,12 +172,12 @@ fn build_segments(state: &AppState, repo: &str, branch: &str, theme: &Theme) -> 
             vec![
                 Span::styled(
                     format!("-{total_del}"),
-                    Style::default().fg(theme.file_deletions),
+                    Style::default().fg(colors::DELETIONS),
                 ),
                 Span::styled("/", text_style),
                 Span::styled(
                     format!("+{total_ins}"),
-                    Style::default().fg(theme.file_insertions),
+                    Style::default().fg(colors::INSERTIONS),
                 ),
             ],
         ));
@@ -241,19 +240,13 @@ fn total_width(segs: &[Segment]) -> usize {
     segs.iter().map(|s| s.text_width).sum::<usize>() + 2 /* leading + trailing " " */
 }
 
-fn fit_segments(mut segs: Vec<Segment>, max_width: usize, theme: &Theme) -> Vec<Segment> {
+fn fit_segments(mut segs: Vec<Segment>, max_width: usize) -> Vec<Segment> {
     if total_width(&segs) <= max_width {
         return segs;
     }
 
     // Step 1: ellipsize branch down to BRANCH_FLOOR.
-    shrink_segment(
-        &mut segs,
-        SegmentRole::Branch,
-        max_width,
-        BRANCH_FLOOR,
-        theme,
-    );
+    shrink_segment(&mut segs, SegmentRole::Branch, max_width, BRANCH_FLOOR);
     if total_width(&segs) <= max_width {
         return segs;
     }
@@ -264,7 +257,6 @@ fn fit_segments(mut segs: Vec<Segment>, max_width: usize, theme: &Theme) -> Vec<
         SegmentRole::RepoPrefix,
         max_width,
         REPO_PREFIX_FLOOR,
-        theme,
     );
     if total_width(&segs) <= max_width {
         return segs;
@@ -281,13 +273,7 @@ fn fit_segments(mut segs: Vec<Segment>, max_width: usize, theme: &Theme) -> Vec<
     segs
 }
 
-fn shrink_segment(
-    segs: &mut [Segment],
-    role: SegmentRole,
-    max_width: usize,
-    floor: usize,
-    theme: &Theme,
-) {
+fn shrink_segment(segs: &mut [Segment], role: SegmentRole, max_width: usize, floor: usize) {
     let current_total = total_width(segs);
     if current_total <= max_width {
         return;
@@ -315,7 +301,7 @@ fn shrink_segment(
     }
     let new_text = ellipsized.into_owned();
     let new_width = fit::display_width(&new_text);
-    let style = Style::default().fg(theme.header_text);
+    let style = Style::default().fg(colors::HEADER_TEXT);
     segs[idx].spans = vec![Span::styled(new_text, style)];
     segs[idx].text_width = new_width;
 }
@@ -352,10 +338,6 @@ mod tests {
             .collect::<String>()
     }
 
-    fn test_theme() -> Theme {
-        crate::theme::load_theme(crate::theme::DEFAULT_THEME_NAME, None)
-    }
-
     fn fresh_state() -> AppState {
         let mut s = AppState::new(vec![], Duration::from_millis(600), "main".to_string());
         s.set_repo_name("perch".to_string());
@@ -366,7 +348,7 @@ mod tests {
     #[test]
     fn test_header_title_basic() {
         let s = fresh_state();
-        let line = build_header_title(&s, &test_theme());
+        let line = build_header_title(&s);
         assert_eq!(line_text(&line), " perch ● main ● 0 files ● condensed ");
     }
 
@@ -390,7 +372,7 @@ mod tests {
                 group: ChangeGroup::Changes,
             },
         ]);
-        let line = build_header_title(&s, &test_theme());
+        let line = build_header_title(&s);
         assert_eq!(
             line_text(&line),
             " perch ● main ● 2 files ● -3/+16 ● condensed "
@@ -402,7 +384,7 @@ mod tests {
         let mut s = fresh_state();
         s.set_ahead_behind(Some((2, 1)));
         s.set_stash_count(3);
-        let line = build_header_title(&s, &test_theme());
+        let line = build_header_title(&s);
         assert_eq!(
             line_text(&line),
             " perch ● main ● 0 files ● ↑2 ↓1 ● 3 stash ● condensed "
@@ -413,7 +395,7 @@ mod tests {
     fn test_header_title_hides_zero_ab() {
         let mut s = fresh_state();
         s.set_ahead_behind(Some((0, 0)));
-        let line = build_header_title(&s, &test_theme());
+        let line = build_header_title(&s);
         assert_eq!(line_text(&line), " perch ● main ● 0 files ● condensed ");
     }
 
@@ -421,7 +403,7 @@ mod tests {
     fn test_header_title_hides_zero_stash() {
         let mut s = fresh_state();
         s.set_stash_count(0);
-        let line = build_header_title(&s, &test_theme());
+        let line = build_header_title(&s);
         assert_eq!(line_text(&line), " perch ● main ● 0 files ● condensed ");
     }
 
@@ -429,14 +411,14 @@ mod tests {
     fn test_header_title_flash_message_replaces_content() {
         let mut s = fresh_state();
         s.set_flash_message("Switched to worktree: foo".to_string());
-        let line = build_header_title(&s, &test_theme());
+        let line = build_header_title(&s);
         assert_eq!(line_text(&line), " Switched to worktree: foo ");
     }
 
     #[test]
     fn test_header_title_empty_repo_name_shows_branch_only() {
         let s = AppState::new(vec![], Duration::from_millis(600), "main".to_string());
-        let line = build_header_title(&s, &test_theme());
+        let line = build_header_title(&s);
         assert_eq!(line_text(&line), " main ● 0 files ● condensed ");
     }
 
@@ -444,14 +426,14 @@ mod tests {
     fn test_header_title_detached_head_shows_repo_only() {
         let mut s = AppState::new(vec![], Duration::from_millis(600), String::new());
         s.set_repo_name("perch".to_string());
-        let line = build_header_title(&s, &test_theme());
+        let line = build_header_title(&s);
         assert_eq!(line_text(&line), " perch ● 0 files ● condensed ");
     }
 
     #[test]
     fn test_header_title_no_repo_no_branch_omits_segment() {
         let s = AppState::new(vec![], Duration::from_millis(600), String::new());
-        let line = build_header_title(&s, &test_theme());
+        let line = build_header_title(&s);
         assert_eq!(line_text(&line), " 0 files ● condensed ");
     }
 
@@ -459,7 +441,7 @@ mod tests {
     fn test_header_title_includes_view_mode_label() {
         let mut s = fresh_state();
         s.cycle_view_mode();
-        let line = build_header_title(&s, &test_theme());
+        let line = build_header_title(&s);
         assert!(line_text(&line).contains("tree"));
     }
 
@@ -468,9 +450,9 @@ mod tests {
         let mut s = fresh_state();
         s.set_ahead_behind(Some((2, 1)));
         s.set_stash_count(3);
-        let full = line_text(&build_header_title(&s, &test_theme()));
+        let full = line_text(&build_header_title(&s));
         let full_w = display_width(&full);
-        let line = build_header_title_with_width(&s, &test_theme(), full_w - 1);
+        let line = build_header_title_with_width(&s, full_w - 1);
         let text = line_text(&line);
         assert!(
             !text.contains("stash"),
@@ -487,7 +469,7 @@ mod tests {
         let mut s = fresh_state();
         s.set_ahead_behind(Some((2, 1)));
         s.set_stash_count(3);
-        let line = build_header_title_with_width(&s, &test_theme(), 30);
+        let line = build_header_title_with_width(&s, 30);
         let text = line_text(&line);
         assert!(!text.contains("stash"), "got: {text}");
         assert!(!text.contains('↑'), "got: {text}");
@@ -498,7 +480,7 @@ mod tests {
         let mut s = fresh_state();
         s.set_ahead_behind(Some((2, 1)));
         s.set_stash_count(3);
-        let line = build_header_title_with_width(&s, &test_theme(), 20);
+        let line = build_header_title_with_width(&s, 20);
         let text = line_text(&line);
         assert!(
             text.contains("condensed"),
@@ -510,7 +492,7 @@ mod tests {
     fn test_header_mid_ellipsizes_long_branch_at_narrow_width() {
         let mut s = fresh_state();
         s.set_branch("feat/very-long-branch-name-with-lots-of-words".to_string());
-        let line = build_header_title_with_width(&s, &test_theme(), 45);
+        let line = build_header_title_with_width(&s, 45);
         let text = line_text(&line);
         assert!(text.contains('\u{2026}'), "expected ellipsis, got: {text}");
         assert!(text.contains("perch"), "got: {text}");
@@ -526,7 +508,7 @@ mod tests {
         let mut s = fresh_state();
         s.set_branch("agent-work".to_string());
         s.set_merge_base(None, "main".to_string());
-        let line = build_header_title_with_width(&s, &test_theme(), 200);
+        let line = build_header_title_with_width(&s, 200);
         assert!(
             line_text(&line).contains("agent-work → main"),
             "expected 'agent-work → main' in header, got: {:?}",
@@ -544,7 +526,7 @@ mod tests {
         let mut s = fresh_state();
         s.set_branch("agent-work".to_string());
         // base_branch defaults to "" — no segment.
-        let line = build_header_title_with_width(&s, &test_theme(), 200);
+        let line = build_header_title_with_width(&s, 200);
         assert!(
             !line_text(&line).contains('→'),
             "expected no base arrow, got: {:?}",
@@ -557,9 +539,9 @@ mod tests {
         let mut s = fresh_state();
         s.set_branch("agent-work".to_string());
         s.set_merge_base(None, "main".to_string());
-        let full = build_header_title_with_width(&s, &test_theme(), 200);
+        let full = build_header_title_with_width(&s, 200);
         let full_w = display_width(&line_text(&full));
-        let narrow = build_header_title_with_width(&s, &test_theme(), full_w - 1);
+        let narrow = build_header_title_with_width(&s, full_w - 1);
         assert!(
             !line_text(&narrow).contains("→ main"),
             "base arrow segment should drop first, got: {:?}",

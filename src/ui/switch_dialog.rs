@@ -193,7 +193,8 @@ fn canonical_or_raw(path: &Path) -> PathBuf {
 ///
 /// Caller is responsible for rendering the main pane first; this function
 /// draws on top.
-pub fn render(frame: &mut ratatui::Frame, dialog: &SwitchDialog, theme: &crate::theme::Theme) {
+pub fn render(frame: &mut ratatui::Frame, dialog: &SwitchDialog) {
+    use crate::ui::colors;
     use ratatui::layout::{Constraint, Direction, Layout};
     use ratatui::style::{Modifier, Style};
     use ratatui::text::{Line, Span};
@@ -207,9 +208,9 @@ pub fn render(frame: &mut ratatui::Frame, dialog: &SwitchDialog, theme: &crate::
     let block = Block::default()
         .borders(Borders::ALL)
         .border_type(BorderType::Rounded)
-        .border_style(Style::default().fg(theme.border_focused))
+        .border_style(Style::default().fg(colors::BORDER_FOCUSED))
         .title(" Switch worktree ")
-        .title_style(Style::default().fg(theme.header_text));
+        .title_style(Style::default().fg(colors::HEADER_TEXT));
     let inner = block.inner(overlay);
     frame.render_widget(block, overlay);
 
@@ -221,7 +222,7 @@ pub fn render(frame: &mut ratatui::Frame, dialog: &SwitchDialog, theme: &crate::
 
     // Filter input.
     let filter_line = Line::from(vec![
-        Span::styled("> ", Style::default().fg(theme.diff_line_number)),
+        Span::styled("> ", Style::default().fg(colors::DIFF_LINE_NUMBER)),
         Span::raw(dialog.filter().to_string()),
         Span::styled("▍", Style::default().add_modifier(Modifier::SLOW_BLINK)),
     ]);
@@ -247,7 +248,7 @@ pub fn render(frame: &mut ratatui::Frame, dialog: &SwitchDialog, theme: &crate::
             let line = format!("{gutter}{}{lock}", row.label);
             let mut item = ListItem::new(Line::from(Span::styled(line, style)));
             if visible_idx == dialog.selected() {
-                item = item.style(Style::default().bg(theme.flash_bg));
+                item = item.style(Style::default().bg(colors::FLASH_BG));
             }
             item
         })

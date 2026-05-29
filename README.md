@@ -47,7 +47,6 @@ perch can be launched from any directory inside a git working tree — the repos
 | `-c, --config <FILE>`     | Path to config file                                                     |
 | `-d, --debounce <MS>`     | Filesystem debounce in ms (default `200`)                               |
 | `--log <LEVEL>`           | Logging level: `trace`, `debug`, `info`, `warn`, `error`                |
-| `--theme <NAME\|PATH>`    | Theme override (built-in name or path to a `.toml` theme file)          |
 | `--base <BRANCH>`         | Base branch for the branch-scoped diff range                            |
 
 ## Keybindings
@@ -80,7 +79,6 @@ Config lives at `~/.config/perch/config.toml`. All sections are optional; defaul
 ### Top-level
 
 ```toml
-theme = "catppuccin-mocha"   # built-in theme name or user theme file name
 debounce_ms = 200            # filesystem event debounce in ms
 base_branch = "main"         # optional override for branch-scoped diff base
 ```
@@ -130,7 +128,6 @@ The GitHub token is discovered from the `GITHUB_TOKEN` environment variable or y
 ### Full example
 
 ```toml
-theme = "catppuccin-mocha"
 debounce_ms = 200
 base_branch = "main"
 
@@ -144,27 +141,9 @@ enabled = true
 show_labels = false
 ```
 
-## Themes
+## Colors
 
-perch ships with 11 built-in themes:
-
-- `catppuccin-mocha` (default)
-- `catppuccin-latte`
-- `one-dark`
-- `dracula`
-- `gruvbox-dark`
-- `nord`
-- `tokyo-night`
-- `solarized-dark`
-- `rose-pine`
-- `kanagawa`
-- `everforest-dark`
-
-Select one via the `theme` config key or the `--theme` CLI flag.
-
-User themes live in `~/.config/perch/themes/` — drop a `<name>.toml` file there and reference it as `theme = "<name>"`. A theme can inherit from another via `extends = "<other-theme>"` and override only the colors it wants to change.
-
-Want a theme that isn't in the list? [PRs welcome](https://github.com/upsertco/perch/pulls) — add a `src/theme/builtin/<name>.toml` and register it in `src/theme/mod.rs`.
+perch renders with the terminal's own 16-color ANSI palette, so it automatically matches whatever color scheme your terminal uses. There is no theme configuration — to change perch's colors, change your terminal's palette.
 
 ## Development
 

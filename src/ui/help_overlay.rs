@@ -12,7 +12,7 @@ use ratatui::{
     Frame,
 };
 
-use crate::theme::Theme;
+use crate::ui::colors;
 
 /// Return a centred `Rect` that occupies `percent_x`% width and `percent_y`%
 /// height of `area`.
@@ -25,13 +25,13 @@ fn centered_rect(percent_x: u16, percent_y: u16, area: Rect) -> Rect {
 }
 
 /// Build the list of help lines (section headers + key/description rows).
-pub fn build_help_lines(theme: &Theme) -> Vec<Line<'static>> {
+pub fn build_help_lines() -> Vec<Line<'static>> {
     let key_style = Style::default()
-        .fg(theme.file_insertions)
+        .fg(colors::INSERTIONS)
         .add_modifier(Modifier::BOLD);
-    let desc_style = Style::default().fg(theme.header_text);
+    let desc_style = Style::default().fg(colors::HEADER_TEXT);
     let header_style = Style::default()
-        .fg(theme.header_text)
+        .fg(colors::HEADER_TEXT)
         .add_modifier(Modifier::BOLD);
 
     let entries: &[(&str, &[(&str, &str)])] = &[
@@ -97,7 +97,7 @@ pub fn build_help_lines(theme: &Theme) -> Vec<Line<'static>> {
 }
 
 /// Render the help overlay onto `frame`.
-pub fn render_help_overlay(frame: &mut Frame, theme: &Theme) {
+pub fn render_help_overlay(frame: &mut Frame) {
     let area = frame.area();
     let overlay_rect = centered_rect(85, 85, area);
 
@@ -106,14 +106,14 @@ pub fn render_help_overlay(frame: &mut Frame, theme: &Theme) {
     let block = Block::default()
         .borders(Borders::ALL)
         .border_type(BorderType::Rounded)
-        .border_style(Style::default().fg(theme.border_focused))
+        .border_style(Style::default().fg(colors::BORDER_FOCUSED))
         .title(" Keybindings ")
-        .title_style(Style::default().fg(theme.header_text));
+        .title_style(Style::default().fg(colors::HEADER_TEXT));
 
     let inner = block.inner(overlay_rect);
     frame.render_widget(block, overlay_rect);
 
-    let lines = build_help_lines(theme);
+    let lines = build_help_lines();
     let paragraph = Paragraph::new(lines).wrap(Wrap { trim: false });
     frame.render_widget(paragraph, inner);
 }
@@ -121,10 +121,6 @@ pub fn render_help_overlay(frame: &mut Frame, theme: &Theme) {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    fn test_theme() -> Theme {
-        crate::theme::load_theme(crate::theme::DEFAULT_THEME_NAME, None)
-    }
 
     fn line_text(line: &Line<'_>) -> String {
         line.spans
@@ -139,7 +135,7 @@ mod tests {
 
     #[test]
     fn test_help_lines_contain_all_sections() {
-        let lines = build_help_lines(&test_theme());
+        let lines = build_help_lines();
         let text = lines_text(&lines);
         assert!(text.contains("Navigation"), "missing Navigation section");
         assert!(text.contains("Diff"), "missing Diff section");
@@ -148,7 +144,7 @@ mod tests {
 
     #[test]
     fn test_help_lines_contain_key_entries() {
-        let lines = build_help_lines(&test_theme());
+        let lines = build_help_lines();
         let text = lines_text(&lines);
         assert!(text.contains("j / ↓"), "missing j/down key");
         assert!(text.contains("Enter"), "missing Enter key");
@@ -161,7 +157,7 @@ mod tests {
 
     #[test]
     fn test_help_lines_contain_descriptions() {
-        let lines = build_help_lines(&test_theme());
+        let lines = build_help_lines();
         let text = lines_text(&lines);
         assert!(text.contains("Select next file"));
         assert!(text.contains("Toggle diff"));
@@ -172,7 +168,7 @@ mod tests {
 
     #[test]
     fn test_help_lines_contain_mode_key() {
-        let lines = build_help_lines(&test_theme());
+        let lines = build_help_lines();
         assert!(lines.iter().any(|line| {
             let text = line_text(line);
             text.starts_with("    m") && text.contains("Cycle view mode")

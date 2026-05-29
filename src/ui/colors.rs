@@ -58,10 +58,12 @@ pub const FLASH_BG: Color = Color::DarkGray;
 /// Border foreground while the pane border is flashing on a change.
 pub const FLASH_BORDER: Color = Color::Yellow;
 
-/// Style applied to the selected row: a subtle gray background bar. Only the
-/// background changes, so per-span foreground colors (status chars, +/- counts)
-/// stay visible on the selected row.
-pub const SELECTION: Style = Style::new().bg(Color::DarkGray);
+/// Style applied to the selected row: a gray background bar with a bright
+/// foreground. The foreground override makes the row legible even where the
+/// underlying text is itself gray (e.g. the Committed header, untracked files);
+/// the trade-off is that per-span colors (+/- counts, status chars) go
+/// monochrome on the selected row only.
+pub const SELECTION: Style = Style::new().bg(Color::DarkGray).fg(Color::White);
 
 #[cfg(test)]
 mod tests {
@@ -81,5 +83,6 @@ mod tests {
     #[test]
     fn selection_has_background_bar() {
         assert_eq!(SELECTION.bg, Some(Color::DarkGray));
+        assert_eq!(SELECTION.fg, Some(Color::White));
     }
 }

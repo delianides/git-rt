@@ -1,5 +1,18 @@
 # Changelog
 
+## [1.6.0](https://github.com/upsertco/perch/compare/v1.5.1...v1.6.0) (2026-05-29)
+
+
+### Features
+
+* vim navigation keys for file list and diff view ([#92](https://github.com/upsertco/perch/issues/92)) ([1c231ce](https://github.com/upsertco/perch/commit/1c231cefb57535768263c2706edf5bf75a2c778b))
+
+
+### Bug Fixes
+
+* expanded view in fresh worktrees, four-tier base resolution ([#90](https://github.com/upsertco/perch/issues/90)) ([b387c4f](https://github.com/upsertco/perch/commit/b387c4fc7ea083325c2ff55b0a06d0a507d78c65))
+* **nix:** rename git-rt to perch in flake ([25d3f69](https://github.com/upsertco/perch/commit/25d3f699733bbd71073eb5a92a5dd6f9426d81b0))
+
 ## [1.5.1](https://github.com/upsertco/perch/compare/v1.5.0...v1.5.1) (2026-05-21)
 
 

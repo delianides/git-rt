@@ -116,6 +116,8 @@ pub struct App {
     worker_rx: Receiver<Response>,
     /// Join handle for the worker thread; stored so we can join on shutdown.
     worker_handle: Option<std::thread::JoinHandle<()>>,
+    /// True after a lone `g` press, awaiting a second `g` to form `gg`.
+    pending_g: bool,
 }
 
 /// The action the tick-level existence check or `Removed` handler should take.
@@ -212,7 +214,6 @@ enum MainAction {
     Help,
     CycleMode,
     OpenSwitcher,
-    Top,
     Bottom,
     PageUp,
     PageDown,
@@ -385,6 +386,7 @@ impl App {
             worker_tx,
             worker_rx,
             worker_handle: Some(worker_handle),
+            pending_g: false,
         })
     }
 
@@ -549,6 +551,7 @@ impl App {
     fn handle_key_event(&mut self, key: KeyEvent, terminal: Option<&mut Terminal>) -> Result<bool> {
         // Help overlay mode: intercept keys before anything else.
         if self.state.is_help_visible() {
+            self.pending_g = false;
             match (key.modifiers, key.code) {
                 (KeyModifiers::CONTROL, KeyCode::Char('c')) => return Ok(true),
                 (_, KeyCode::Esc)
@@ -562,8 +565,28 @@ impl App {
 
         // Diff overlay mode: intercept keys before normal handling.
         if self.state.is_diff_overlay_visible() {
+            let is_g =
+                key.code == KeyCode::Char('g') && !key.modifiers.contains(KeyModifiers::CONTROL);
+            if self.pending_g {
+                self.pending_g = false;
+                if is_g {
+                    self.state.scroll_diff_to_top();
+                    return Ok(false);
+                }
+            } else if is_g {
+                self.pending_g = true;
+                return Ok(false);
+            }
+
+            let full = self.state.diff_viewport_height().max(1) as isize;
+            let half = (self.state.diff_viewport_height() / 2).max(1) as isize;
             match (key.modifiers, key.code) {
                 (KeyModifiers::CONTROL, KeyCode::Char('c')) => return Ok(true),
+                (KeyModifiers::CONTROL, KeyCode::Char('d')) => self.state.scroll_diff_page(half),
+                (KeyModifiers::CONTROL, KeyCode::Char('u')) => self.state.scroll_diff_page(-half),
+                (KeyModifiers::CONTROL, KeyCode::Char('f')) => self.state.scroll_diff_page(full),
+                (KeyModifiers::CONTROL, KeyCode::Char('b')) => self.state.scroll_diff_page(-full),
+                (_, KeyCode::Char('G')) => self.state.scroll_diff_to_bottom(),
                 (_, KeyCode::Esc)
                 | (_, KeyCode::Char('q'))
                 | (_, KeyCode::Char('h'))
@@ -579,6 +602,7 @@ impl App {
 
         // Switch dialog mode: intercept keys before normal handling.
         if self.state.is_switch_dialog_visible() {
+            self.pending_g = false;
             // Ctrl-C still quits.
             if key.modifiers == KeyModifiers::CONTROL && key.code == KeyCode::Char('c') {
                 return Ok(true);
@@ -606,6 +630,20 @@ impl App {
             return Ok(false);
         }
 
+        // `gg` chord: a lone `g` arms; a second `g` jumps to the top. Any other
+        // key cancels the pending state and is processed normally below.
+        let is_g = key.code == KeyCode::Char('g') && !key.modifiers.contains(KeyModifiers::CONTROL);
+        if self.pending_g {
+            self.pending_g = false;
+            if is_g {
+                self.state.select_first();
+                return Ok(false);
+            }
+        } else if is_g {
+            self.pending_g = true;
+            return Ok(false);
+        }
+
         match interpret_main_key(key.modifiers, key.code) {
             MainAction::Quit => return Ok(true),
             MainAction::MoveDown => self.state.select_next(),
@@ -621,7 +659,6 @@ impl App {
             MainAction::Help => self.state.show_help(),
             MainAction::CycleMode => self.state.cycle_view_mode(),
             MainAction::OpenSwitcher => self.open_switch_dialog()?,
-            MainAction::Top => self.state.select_first(),
             MainAction::Bottom => self.state.select_last(),
             MainAction::PageDown => {
                 let step = self.state.list_viewport_height().max(1) as isize;
@@ -1222,6 +1259,7 @@ mod input_tests {
                 worker_tx,
                 worker_rx,
                 worker_handle: None,
+                pending_g: false,
             },
             worker_req_rx,
         )
@@ -1232,6 +1270,76 @@ mod input_tests {
             Request::Diff { path, token } => (path, token),
             other => panic!("expected diff request, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn test_gg_chord_jumps_to_top() {
+        let mut app = make_app(vec![
+            make_entry("a.rs"),
+            make_entry("b.rs"),
+            make_entry("c.rs"),
+        ]);
+        app.handle_key_event(KeyEvent::new(KeyCode::Char('G'), KeyModifiers::NONE), None)
+            .unwrap();
+        assert_eq!(app.state.selected_index(), 2, "G jumps to last row");
+        app.handle_key_event(KeyEvent::new(KeyCode::Char('g'), KeyModifiers::NONE), None)
+            .unwrap();
+        app.handle_key_event(KeyEvent::new(KeyCode::Char('g'), KeyModifiers::NONE), None)
+            .unwrap();
+        assert_eq!(app.state.selected_index(), 0, "gg returns to top");
+    }
+
+    #[test]
+    fn test_single_g_then_other_key_cancels_chord() {
+        let mut app = make_app(vec![
+            make_entry("a.rs"),
+            make_entry("b.rs"),
+            make_entry("c.rs"),
+        ]);
+        app.handle_key_event(KeyEvent::new(KeyCode::Char('g'), KeyModifiers::NONE), None)
+            .unwrap();
+        assert_eq!(
+            app.state.selected_index(),
+            0,
+            "single g should not move selection"
+        );
+        app.handle_key_event(KeyEvent::new(KeyCode::Char('j'), KeyModifiers::NONE), None)
+            .unwrap();
+        assert_eq!(app.state.selected_index(), 1, "j after lone g moves down");
+    }
+
+    #[test]
+    fn test_diff_overlay_gg_and_g_jump() {
+        use crate::git::{DiffHunk, DiffLine, DiffLineKind, FileDiff};
+        let mut app = make_app(vec![make_entry("a.rs")]);
+        // Build a diff with 19 content lines (+1 hunk header = 20 logical lines).
+        let lines = (0..19)
+            .map(|i| DiffLine {
+                kind: DiffLineKind::Context,
+                content: format!("line {i}"),
+            })
+            .collect();
+        let diff = FileDiff {
+            hunks: vec![DiffHunk {
+                header: "@@ -1,1 +1,1 @@".to_string(),
+                lines,
+            }],
+        };
+        app.state.set_expanded_diff("a.rs".to_string(), diff);
+        app.state.show_diff_overlay();
+        app.state.set_diff_viewport_height(5); // max scroll = 20 - 5 = 15
+
+        // G jumps to the bottom.
+        app.handle_key_event(KeyEvent::new(KeyCode::Char('G'), KeyModifiers::NONE), None)
+            .unwrap();
+        assert_eq!(app.state.diff_scroll(), 15, "G scrolls diff to bottom");
+
+        // gg jumps back to the top.
+        app.handle_key_event(KeyEvent::new(KeyCode::Char('g'), KeyModifiers::NONE), None)
+            .unwrap();
+        app.handle_key_event(KeyEvent::new(KeyCode::Char('g'), KeyModifiers::NONE), None)
+            .unwrap();
+        assert_eq!(app.state.diff_scroll(), 0, "gg scrolls diff to top");
     }
 
     #[test]

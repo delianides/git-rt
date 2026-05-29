@@ -1726,4 +1726,105 @@ mod input_tests {
             MainAction::Primary
         );
     }
+
+    #[test]
+    fn test_ctrl_d_and_ctrl_f_page_file_list() {
+        let files: Vec<_> = (0..20).map(|i| make_entry(&format!("f{i}.rs"))).collect();
+        let mut app = make_app(files);
+        // Viewport is normally recorded by the UI each frame; set it directly here.
+        app.state.set_list_viewport_height(10);
+
+        // Ctrl-d = half page = 10 / 2 = 5 rows down.
+        app.handle_key_event(
+            KeyEvent::new(KeyCode::Char('d'), KeyModifiers::CONTROL),
+            None,
+        )
+        .unwrap();
+        assert_eq!(
+            app.state.selected_index(),
+            5,
+            "Ctrl-d moves half a page down"
+        );
+
+        // Ctrl-f = full page = 10 rows down, clamped to the last row (index 19).
+        app.handle_key_event(
+            KeyEvent::new(KeyCode::Char('f'), KeyModifiers::CONTROL),
+            None,
+        )
+        .unwrap();
+        assert_eq!(
+            app.state.selected_index(),
+            15,
+            "Ctrl-f moves a full page down"
+        );
+
+        // Ctrl-u = half page up = 5 rows.
+        app.handle_key_event(
+            KeyEvent::new(KeyCode::Char('u'), KeyModifiers::CONTROL),
+            None,
+        )
+        .unwrap();
+        assert_eq!(
+            app.state.selected_index(),
+            10,
+            "Ctrl-u moves half a page up"
+        );
+    }
+
+    #[test]
+    fn test_ctrl_d_and_ctrl_f_page_diff_overlay() {
+        use crate::git::{DiffHunk, DiffLine, DiffLineKind, FileDiff};
+        let mut app = make_app(vec![make_entry("a.rs")]);
+        let lines = (0..29)
+            .map(|i| DiffLine {
+                kind: DiffLineKind::Context,
+                content: format!("line {i}"),
+            })
+            .collect();
+        let diff = FileDiff {
+            hunks: vec![DiffHunk {
+                header: "@@ -1,1 +1,1 @@".to_string(),
+                lines,
+            }],
+        };
+        app.state.set_expanded_diff("a.rs".to_string(), diff); // 30 logical lines
+        app.state.show_diff_overlay();
+        app.state.set_diff_viewport_height(10); // max scroll = 30 - 10 = 20
+
+        // Ctrl-d = half page = 5 lines.
+        app.handle_key_event(
+            KeyEvent::new(KeyCode::Char('d'), KeyModifiers::CONTROL),
+            None,
+        )
+        .unwrap();
+        assert_eq!(
+            app.state.diff_scroll(),
+            5,
+            "Ctrl-d scrolls diff half a page"
+        );
+
+        // Ctrl-f = full page = 10 lines.
+        app.handle_key_event(
+            KeyEvent::new(KeyCode::Char('f'), KeyModifiers::CONTROL),
+            None,
+        )
+        .unwrap();
+        assert_eq!(
+            app.state.diff_scroll(),
+            15,
+            "Ctrl-f scrolls diff a full page"
+        );
+
+        // Ctrl-b = full page up = 10 lines.
+        app.handle_key_event(
+            KeyEvent::new(KeyCode::Char('b'), KeyModifiers::CONTROL),
+            None,
+        )
+        .unwrap();
+        assert_eq!(
+            app.state.diff_scroll(),
+            5,
+            "Ctrl-b scrolls diff a full page up"
+        );
+    }
 }

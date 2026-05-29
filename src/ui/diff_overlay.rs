@@ -14,7 +14,7 @@ use ratatui::{
 };
 
 use crate::git::{DiffLineKind, FileDiff};
-use crate::theme::Theme;
+use crate::ui::colors;
 
 /// Parse a hunk header like `@@ -14,10 +14,2 @@` or `@@ -1 +1 @@`
 /// and return `(old_start, new_start)`.
@@ -65,7 +65,6 @@ pub fn render_diff_overlay(
     insertions: usize,
     deletions: usize,
     scroll: usize,
-    theme: &Theme,
 ) {
     let area = frame.area();
     let overlay_rect = centered_rect(85, 85, area);
@@ -79,9 +78,9 @@ pub fn render_diff_overlay(
     let block = Block::default()
         .borders(Borders::ALL)
         .border_type(BorderType::Rounded)
-        .border_style(Style::default().fg(theme.border_focused))
+        .border_style(Style::default().fg(colors::BORDER_FOCUSED))
         .title(title)
-        .title_style(Style::default().fg(theme.header_text));
+        .title_style(Style::default().fg(colors::HEADER_TEXT));
 
     let inner = block.inner(overlay_rect);
     frame.render_widget(block, overlay_rect);
@@ -92,11 +91,11 @@ pub fn render_diff_overlay(
     for hunk in &diff.hunks {
         // Hunk header line
         lines.push(Line::from(vec![
-            Span::styled("         ", Style::default().fg(theme.diff_line_number)),
+            Span::styled("         ", Style::default().fg(colors::DIFF_LINE_NUMBER)),
             Span::styled(
                 &hunk.header,
                 Style::default()
-                    .fg(theme.diff_hunk_header)
+                    .fg(colors::DIFF_HUNK_HEADER)
                     .add_modifier(Modifier::BOLD),
             ),
         ]));
@@ -108,28 +107,22 @@ pub fn render_diff_overlay(
                 DiffLineKind::Addition => {
                     let g = format!("{:>4}{:>4} ", "    ", new_line);
                     new_line += 1;
-                    (
-                        g,
-                        Style::default().fg(theme.diff_add_fg).bg(theme.diff_add_bg),
-                    )
+                    (g, Style::default().fg(colors::DIFF_ADD_FG))
                 }
                 DiffLineKind::Deletion => {
                     let g = format!("{:>4}{:>4} ", old_line, "    ");
                     old_line += 1;
-                    (
-                        g,
-                        Style::default().fg(theme.diff_del_fg).bg(theme.diff_del_bg),
-                    )
+                    (g, Style::default().fg(colors::DIFF_DEL_FG))
                 }
                 DiffLineKind::Context => {
                     let g = format!("{:>4}{:>4} ", old_line, new_line);
                     old_line += 1;
                     new_line += 1;
-                    (g, Style::default().fg(theme.diff_context))
+                    (g, Style::default().fg(colors::DIFF_CONTEXT))
                 }
                 DiffLineKind::HunkHeader => (
                     "         ".to_string(),
-                    Style::default().fg(theme.diff_hunk_header),
+                    Style::default().fg(colors::DIFF_HUNK_HEADER),
                 ),
             };
 
@@ -141,7 +134,7 @@ pub fn render_diff_overlay(
             };
 
             lines.push(Line::from(vec![
-                Span::styled(gutter, Style::default().fg(theme.diff_line_number)),
+                Span::styled(gutter, Style::default().fg(colors::DIFF_LINE_NUMBER)),
                 Span::styled(format!("{prefix} {}", diff_line.content), style),
             ]));
         }

@@ -34,7 +34,6 @@ use std::io;
 use crate::config::AppConfig;
 use crate::git::{ChangeGroup, FileStatus};
 use crate::state::{AppState, ViewMode};
-use crate::theme::Theme;
 use crate::ui::tree::{RowId, VisibleRow};
 
 /// Wrapper around the ratatui terminal.
@@ -65,10 +64,10 @@ impl Terminal {
         Ok(())
     }
 
-    /// Draw one frame using the new config/theme API.
-    pub fn draw(&mut self, state: &mut AppState, config: &AppConfig, theme: &Theme) -> Result<()> {
+    /// Draw one frame.
+    pub fn draw(&mut self, state: &mut AppState, config: &AppConfig) -> Result<()> {
         self.terminal.draw(|frame| {
-            render(frame, state, config, theme);
+            render(frame, state, config);
         })?;
         Ok(())
     }
@@ -84,7 +83,7 @@ impl Terminal {
 
 /// Top-level render function.
 #[tracing::instrument(name = "ui.render", skip_all)]
-fn render(frame: &mut Frame, state: &mut AppState, config: &AppConfig, theme: &Theme) {
+fn render(frame: &mut Frame, state: &mut AppState, config: &AppConfig) {
     let area = frame.area();
 
     let has_pr = pr_line::has_bottom_bar(state);
@@ -104,13 +103,13 @@ fn render(frame: &mut Frame, state: &mut AppState, config: &AppConfig, theme: &T
     // 1. Main pane. Border color reflects PR state when a PR is open,
     // otherwise the usual flash / focused / default progression.
     let border_color = if state.is_border_flashing() {
-        theme.flash_bg
+        colors::FLASH_BORDER
     } else if has_pr {
-        pr_border_color_from_state(state, theme)
+        pr_border_color_from_state(state)
     } else if state.is_focused() {
-        theme.border_focused
+        colors::BORDER_FOCUSED
     } else {
-        theme.border
+        colors::BORDER
     };
 
     let block = Block::default()
@@ -119,18 +118,17 @@ fn render(frame: &mut Frame, state: &mut AppState, config: &AppConfig, theme: &T
         .border_style(Style::default().fg(border_color))
         .title(header::build_header_title_with_width(
             state,
-            theme,
             (main_area.width as usize).saturating_sub(2),
         ));
 
     let inner = block.inner(main_area);
     frame.render_widget(block, main_area);
 
-    render_file_list(frame, state, config, theme, inner);
+    render_file_list(frame, state, config, inner);
 
     // 2. Bottom bar (only when a PR exists).
     if let Some(bottom) = bottom_bar_area {
-        pr_line::render_pr_line(frame, state, theme, bottom);
+        pr_line::render_pr_line(frame, state, bottom);
     }
 
     // 3. Diff overlay.
@@ -138,57 +136,43 @@ fn render(frame: &mut Frame, state: &mut AppState, config: &AppConfig, theme: &T
         state.set_diff_viewport_height(diff_overlay::inner_height(frame.area()));
         if let (Some(diff), Some(path)) = (state.expanded_diff(), state.expanded_diff_path()) {
             let (ins, del) = state.expanded_diff_stats().unwrap_or((0, 0));
-            diff_overlay::render_diff_overlay(
-                frame,
-                diff,
-                path,
-                ins,
-                del,
-                state.diff_scroll(),
-                theme,
-            );
+            diff_overlay::render_diff_overlay(frame, diff, path, ins, del, state.diff_scroll());
         }
     }
 
     // 4. Switch dialog (above diff, below help).
     if let Some(dialog) = state.switch_dialog() {
-        switch_dialog::render(frame, dialog, theme);
+        switch_dialog::render(frame, dialog);
     }
 
     // 5. Help overlay.
     if state.is_help_visible() {
-        help_overlay::render_help_overlay(frame, theme);
+        help_overlay::render_help_overlay(frame);
     }
 }
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
 
 /// Return the main pane border color derived from the current PR state.
-/// Falls back to the theme's default border color when no PR data exists
+/// Falls back to the default border color when no PR data exists
 /// (though the caller normally guards on `has_pr` first).
-fn pr_border_color_from_state(state: &AppState, theme: &Theme) -> ratatui::style::Color {
+fn pr_border_color_from_state(state: &AppState) -> ratatui::style::Color {
     state
         .pr_state()
         .info
         .as_ref()
         .map(|info| pr_line::pr_state_color(&info.state))
-        .unwrap_or(theme.border)
+        .unwrap_or(colors::BORDER)
 }
 
 // ── File list ────────────────────────────────────────────────────────────────
 
 /// Render the file list.
-fn render_file_list(
-    frame: &mut Frame,
-    state: &mut AppState,
-    config: &AppConfig,
-    theme: &Theme,
-    area: Rect,
-) {
+fn render_file_list(frame: &mut Frame, state: &mut AppState, config: &AppConfig, area: Rect) {
     match state.view_mode() {
-        ViewMode::Condensed => render_condensed_file_list(frame, state, config, theme, area),
-        ViewMode::Tree => render_tree_file_list(frame, state, config, theme, area),
-        ViewMode::Normal => render_normal_file_list(frame, state, config, theme, area),
+        ViewMode::Condensed => render_condensed_file_list(frame, state, config, area),
+        ViewMode::Tree => render_tree_file_list(frame, state, config, area),
+        ViewMode::Normal => render_normal_file_list(frame, state, config, area),
     }
 }
 
@@ -196,7 +180,6 @@ fn render_condensed_file_list(
     frame: &mut Frame,
     state: &mut AppState,
     config: &AppConfig,
-    theme: &Theme,
     area: Rect,
 ) {
     // Add a 1-row top padding inside the pane
@@ -205,7 +188,7 @@ fn render_condensed_file_list(
     let files = state.files();
 
     if files.is_empty() {
-        render_empty_or_loading_state(frame, state, theme, area);
+        render_empty_or_loading_state(frame, state, area);
         return;
     }
 
@@ -218,39 +201,24 @@ fn render_condensed_file_list(
             file.deletions,
             file.insertions,
             area.width as usize,
-            theme,
         );
 
         let mut item = ListItem::new(line);
         if config.display.flash_on_change && state.is_flashing(&file.path) {
-            item = item.style(Style::default().bg(theme.flash_bg));
+            item = item.style(Style::default().bg(colors::FLASH_BG));
         }
         items.push(item);
     }
 
-    render_list(
-        frame,
-        state,
-        config,
-        theme,
-        area,
-        items,
-        state.selected_index(),
-    );
+    render_list(frame, state, config, area, items, state.selected_index());
 }
 
-fn render_tree_file_list(
-    frame: &mut Frame,
-    state: &mut AppState,
-    config: &AppConfig,
-    theme: &Theme,
-    area: Rect,
-) {
+fn render_tree_file_list(frame: &mut Frame, state: &mut AppState, config: &AppConfig, area: Rect) {
     let area = inset_file_list_area(area);
     let rows = state.visible_rows();
 
     if rows.is_empty() {
-        render_empty_or_loading_state(frame, state, theme, area);
+        render_empty_or_loading_state(frame, state, area);
         return;
     }
 
@@ -276,9 +244,9 @@ fn render_tree_file_list(
                 Line::from(vec![
                     Span::raw(" "),
                     Span::raw(indent),
-                    Span::styled(arrow, Style::default().fg(theme.file_path)),
+                    Span::styled(arrow, Style::default().fg(colors::FILE_PATH)),
                     Span::raw(" "),
-                    Span::styled(label_display, Style::default().fg(theme.file_path)),
+                    Span::styled(label_display, Style::default().fg(colors::FILE_PATH)),
                 ])
             }
             VisibleRow::File {
@@ -286,7 +254,7 @@ fn render_tree_file_list(
             } => {
                 let indent_cols = 2 * depth;
                 let status_char = file_status_char(file.status.clone());
-                let status_color = file_status_color(file.status.clone(), theme);
+                let status_color = file_status_color(file.status.clone());
                 let stats_str = format!("-{}/+{}", file.deletions, file.insertions);
                 let stats_width = fit::display_width(&stats_str);
                 // leading space + indent + " " + " " + status + " "
@@ -321,18 +289,18 @@ fn render_tree_file_list(
                     Span::raw(" "),
                     Span::styled(status_char, Style::default().fg(status_color)),
                     Span::raw(" "),
-                    Span::styled(label_display, Style::default().fg(theme.file_path)),
+                    Span::styled(label_display, Style::default().fg(colors::FILE_PATH)),
                 ];
                 if include_stats {
                     spans.push(Span::raw(" "));
                     spans.push(Span::styled(
                         format!("-{}", file.deletions),
-                        Style::default().fg(theme.file_deletions),
+                        Style::default().fg(colors::DELETIONS),
                     ));
                     spans.push(Span::raw("/"));
                     spans.push(Span::styled(
                         format!("+{}", file.insertions),
-                        Style::default().fg(theme.file_insertions),
+                        Style::default().fg(colors::INSERTIONS),
                     ));
                 }
                 Line::from(spans)
@@ -343,35 +311,26 @@ fn render_tree_file_list(
         let mut item = ListItem::new(line);
         if let Some(file) = row.file() {
             if config.display.flash_on_change && state.is_flashing(&file.path) {
-                item = item.style(Style::default().bg(theme.flash_bg));
+                item = item.style(Style::default().bg(colors::FLASH_BG));
             }
         }
         items.push(item);
     }
 
-    render_list(
-        frame,
-        state,
-        config,
-        theme,
-        area,
-        items,
-        state.selected_index(),
-    );
+    render_list(frame, state, config, area, items, state.selected_index());
 }
 
 fn render_normal_file_list(
     frame: &mut Frame,
     state: &mut AppState,
     config: &AppConfig,
-    theme: &Theme,
     area: Rect,
 ) {
     let area = inset_file_list_area(area);
 
     let rows = state.visible_rows();
     if rows.is_empty() {
-        render_empty_or_loading_state(frame, state, theme, area);
+        render_empty_or_loading_state(frame, state, area);
         return;
     }
 
@@ -401,7 +360,7 @@ fn render_normal_file_list(
                     RowId::Group(g) => *g,
                     _ => unreachable!("normal header row must carry a group id"),
                 };
-                let color = section_header_color(group, theme);
+                let color = section_header_color(group);
                 let arrow = if *collapsed { "▶" } else { "▼" };
                 ListItem::new(Line::from(vec![
                     Span::raw(" "),
@@ -420,11 +379,10 @@ fn render_normal_file_list(
                     file.deletions,
                     file.insertions,
                     area.width as usize,
-                    theme,
                 );
                 let mut item = ListItem::new(line);
                 if config.display.flash_on_change && state.is_flashing(&file.path) {
-                    item = item.style(Style::default().bg(theme.flash_bg));
+                    item = item.style(Style::default().bg(colors::FLASH_BG));
                 }
                 item
             }
@@ -435,15 +393,15 @@ fn render_normal_file_list(
         items.push(item);
     }
 
-    render_list(frame, state, config, theme, area, items, rendered_selected);
+    render_list(frame, state, config, area, items, rendered_selected);
 }
 
-/// The theme color for a status-group header in the Normal view.
-fn section_header_color(group: ChangeGroup, theme: &Theme) -> ratatui::style::Color {
+/// The color for a status-group header in the Normal view.
+fn section_header_color(group: ChangeGroup) -> ratatui::style::Color {
     match group {
-        ChangeGroup::Changes => theme.section_changes,
-        ChangeGroup::New => theme.section_new,
-        ChangeGroup::Committed => theme.section_committed,
+        ChangeGroup::Changes => colors::SECTION_CHANGES,
+        ChangeGroup::New => colors::SECTION_NEW,
+        ChangeGroup::Committed => colors::SECTION_COMMITTED,
     }
 }
 
@@ -456,12 +414,7 @@ fn inset_file_list_area(area: Rect) -> Rect {
     }
 }
 
-fn render_empty_or_loading_state(
-    frame: &mut Frame,
-    state: &mut AppState,
-    theme: &Theme,
-    area: Rect,
-) {
+fn render_empty_or_loading_state(frame: &mut Frame, state: &mut AppState, area: Rect) {
     state.set_scroll_offset(0);
     if area.height < 2 || area.width < 20 {
         return;
@@ -474,7 +427,7 @@ fn render_empty_or_loading_state(
         return;
     }
     let msg = Paragraph::new("  No changes detected. Watching for file changes...")
-        .style(Style::default().fg(theme.empty_text));
+        .style(Style::default().fg(colors::EMPTY_TEXT));
     frame.render_widget(msg, area);
 }
 
@@ -482,7 +435,6 @@ fn render_list(
     frame: &mut Frame,
     state: &mut AppState,
     config: &AppConfig,
-    theme: &Theme,
     area: Rect,
     items: Vec<ListItem<'static>>,
     selected_index: usize,
@@ -490,9 +442,9 @@ fn render_list(
     let max_selected_index = selected_index.min(items.len().saturating_sub(1));
 
     let highlight = if state.is_focused() {
-        // Only change bg so per-span fg colors (diff counts, status chars)
-        // remain visible on the selected row.
-        Style::default().bg(theme.selection_bg)
+        // REVERSED swaps fg/bg using the terminal's own colors, so per-span
+        // fg colors (diff counts, status chars) still read on the selected row.
+        colors::SELECTION
     } else {
         Style::default()
     };
@@ -518,10 +470,9 @@ fn file_line(
     deletions: usize,
     insertions: usize,
     available_width: usize,
-    theme: &Theme,
 ) -> Line<'static> {
     let status_char = file_status_char(status.clone());
-    let status_color = file_status_color(status, theme);
+    let status_color = file_status_color(status);
 
     let stats_str = format!("-{deletions}/+{insertions}");
     let stats_width = fit::display_width(&stats_str);
@@ -554,19 +505,19 @@ fn file_line(
         Span::raw(" "),
         Span::styled(status_char, Style::default().fg(status_color)),
         Span::raw(" "),
-        Span::styled(path_display, Style::default().fg(theme.file_path)),
+        Span::styled(path_display, Style::default().fg(colors::FILE_PATH)),
     ];
 
     if include_stats {
         spans.push(Span::raw(" "));
         spans.push(Span::styled(
             format!("-{deletions}"),
-            Style::default().fg(theme.file_deletions),
+            Style::default().fg(colors::DELETIONS),
         ));
-        spans.push(Span::styled("/", Style::default().fg(theme.file_path)));
+        spans.push(Span::styled("/", Style::default().fg(colors::FILE_PATH)));
         spans.push(Span::styled(
             format!("+{insertions}"),
-            Style::default().fg(theme.file_insertions),
+            Style::default().fg(colors::INSERTIONS),
         ));
     }
 
@@ -585,15 +536,15 @@ fn file_status_char(status: FileStatus) -> &'static str {
     }
 }
 
-fn file_status_color(status: FileStatus, theme: &Theme) -> ratatui::style::Color {
+fn file_status_color(status: FileStatus) -> ratatui::style::Color {
     match status {
-        FileStatus::Modified => theme.status_modified,
-        FileStatus::Added => theme.status_added,
-        FileStatus::Deleted => theme.status_deleted,
-        FileStatus::Renamed => theme.status_renamed,
-        FileStatus::Untracked => theme.status_untracked,
-        FileStatus::Staged => theme.status_staged,
-        FileStatus::Conflicted => theme.status_conflicted,
+        FileStatus::Modified => colors::STATUS_MODIFIED,
+        FileStatus::Added => colors::STATUS_ADDED,
+        FileStatus::Deleted => colors::STATUS_DELETED,
+        FileStatus::Renamed => colors::STATUS_RENAMED,
+        FileStatus::Untracked => colors::STATUS_UNTRACKED,
+        FileStatus::Staged => colors::STATUS_STAGED,
+        FileStatus::Conflicted => colors::STATUS_CONFLICTED,
     }
 }
 
@@ -601,7 +552,6 @@ fn file_status_color(status: FileStatus, theme: &Theme) -> ratatui::style::Color
 mod tests {
     use super::*;
     use crate::git::{ChangeGroup, FileEntry, FileStatus};
-    use crate::theme::load_theme;
     use ratatui::backend::TestBackend;
     use std::time::Duration;
 
@@ -623,16 +573,7 @@ mod tests {
     ) -> String {
         let backend = TestBackend::new(width, height);
         let mut terminal = ratatui::Terminal::new(backend).unwrap();
-        terminal
-            .draw(|frame| {
-                render(
-                    frame,
-                    state,
-                    config,
-                    &load_theme(crate::theme::DEFAULT_THEME_NAME, None),
-                )
-            })
-            .unwrap();
+        terminal.draw(|frame| render(frame, state, config)).unwrap();
 
         terminal
             .backend()
@@ -652,16 +593,7 @@ mod tests {
     ) -> Vec<String> {
         let backend = TestBackend::new(width, height);
         let mut terminal = ratatui::Terminal::new(backend).unwrap();
-        terminal
-            .draw(|frame| {
-                render(
-                    frame,
-                    state,
-                    config,
-                    &load_theme(crate::theme::DEFAULT_THEME_NAME, None),
-                )
-            })
-            .unwrap();
+        terminal.draw(|frame| render(frame, state, config)).unwrap();
 
         let buf = terminal.backend().buffer().clone();
         (0..height)
@@ -710,14 +642,7 @@ mod tests {
                 let backend = TestBackend::new(width, 12);
                 let mut terminal = ratatui::Terminal::new(backend).unwrap();
                 terminal
-                    .draw(|frame| {
-                        render(
-                            frame,
-                            &mut state,
-                            &AppConfig::default(),
-                            &load_theme(crate::theme::DEFAULT_THEME_NAME, None),
-                        )
-                    })
+                    .draw(|frame| render(frame, &mut state, &AppConfig::default()))
                     .unwrap_or_else(|e| {
                         panic!("render must not panic at width {width} tree={tree}: {e}")
                     });
@@ -828,12 +753,11 @@ mod tests {
 
         let mut config = AppConfig::default();
         config.display.scroll_padding = 3;
-        let theme = load_theme(crate::theme::DEFAULT_THEME_NAME, None);
 
         let backend = TestBackend::new(40, 22);
         let mut terminal = ratatui::Terminal::new(backend).unwrap();
         terminal
-            .draw(|frame| render(frame, &mut state, &config, &theme))
+            .draw(|frame| render(frame, &mut state, &config))
             .unwrap();
 
         // Terminal: 22 rows. Block border: 2 rows. Top-pad inside

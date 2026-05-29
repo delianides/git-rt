@@ -23,7 +23,7 @@ use ratatui::{
 };
 
 use crate::state::{AppState, MergeableStatus, PrDisplayInfo, PrState, PrStatus};
-use crate::theme::Theme;
+use crate::ui::colors;
 use crate::ui::fit;
 
 /// The bottom bar is only rendered when a PR exists against the current
@@ -46,27 +46,23 @@ pub fn pr_state_color(status: &PrStatus) -> Color {
 ///
 /// Returns `None` when there is no PR data to render, in which case the
 /// caller should skip rendering the row entirely.
-pub fn build_pr_line(pr_state: &PrState, theme: &Theme) -> Option<Line<'static>> {
-    build_pr_line_fitted(pr_state, theme, u16::MAX as usize)
+pub fn build_pr_line(pr_state: &PrState) -> Option<Line<'static>> {
+    build_pr_line_fitted(pr_state, u16::MAX as usize)
 }
 
 /// Width-aware variant of [`build_pr_line`]. Tries progressively
 /// compact renditions until one fits `max_width`, falling back to the
 /// most compact form if none fits.
-pub fn build_pr_line_fitted(
-    pr_state: &PrState,
-    theme: &Theme,
-    max_width: usize,
-) -> Option<Line<'static>> {
+pub fn build_pr_line_fitted(pr_state: &PrState, max_width: usize) -> Option<Line<'static>> {
     let info = pr_state.info.as_ref()?;
     for tier in 0..=3u8 {
-        let line = render_tier(info, theme, tier);
+        let line = render_tier(info, tier);
         let w = line_width(&line);
         if w <= max_width {
             return Some(line);
         }
     }
-    Some(render_tier(info, theme, 3))
+    Some(render_tier(info, 3))
 }
 
 fn line_width(line: &Line<'_>) -> usize {
@@ -76,9 +72,9 @@ fn line_width(line: &Line<'_>) -> usize {
         .sum()
 }
 
-fn render_tier(info: &PrDisplayInfo, theme: &Theme, tier: u8) -> Line<'static> {
+fn render_tier(info: &PrDisplayInfo, tier: u8) -> Line<'static> {
     let state_color = pr_state_color(&info.state);
-    let sep_style = Style::default().fg(theme.header_separator);
+    let sep_style = Style::default().fg(colors::HEADER_SEPARATOR);
 
     let mut spans: Vec<Span<'static>> = Vec::new();
     spans.push(Span::raw(" "));
@@ -178,8 +174,8 @@ fn mergeable_indicator(status: &MergeableStatus) -> Option<(&'static str, &'stat
 ///
 /// Callers must only invoke this when `has_bottom_bar(state)` returns
 /// `true`. The row is a single left-aligned PR status line.
-pub fn render_pr_line(frame: &mut Frame, state: &AppState, theme: &Theme, area: Rect) {
-    if let Some(line) = build_pr_line_fitted(state.pr_state(), theme, area.width as usize) {
+pub fn render_pr_line(frame: &mut Frame, state: &AppState, area: Rect) {
+    if let Some(line) = build_pr_line_fitted(state.pr_state(), area.width as usize) {
         frame.render_widget(Paragraph::new(line), area);
     }
 }
@@ -196,10 +192,6 @@ mod tests {
             .iter()
             .map(|s| s.content.as_ref())
             .collect::<String>()
-    }
-
-    fn test_theme() -> Theme {
-        crate::theme::load_theme(crate::theme::DEFAULT_THEME_NAME, None)
     }
 
     fn make_info(
@@ -261,76 +253,76 @@ mod tests {
     #[test]
     fn test_build_pr_line_clean_with_passing_checks() {
         let info = make_info(MergeableStatus::Clean, 12, 0, 0);
-        let line = build_pr_line(&pr_state_with(info), &test_theme()).unwrap();
+        let line = build_pr_line(&pr_state_with(info)).unwrap();
         assert_eq!(line_text(&line), " PR #142  ✓ clean  ✓ 12/12");
     }
 
     #[test]
     fn test_build_pr_line_clean_with_mixed_checks() {
         let info = make_info(MergeableStatus::Clean, 12, 3, 0);
-        let line = build_pr_line(&pr_state_with(info), &test_theme()).unwrap();
+        let line = build_pr_line(&pr_state_with(info)).unwrap();
         assert_eq!(line_text(&line), " PR #142  ✓ clean  ✓ 12  ✗ 3");
     }
 
     #[test]
     fn test_build_pr_line_conflicts_with_failing_checks() {
         let info = make_info(MergeableStatus::Conflicts, 0, 5, 0);
-        let line = build_pr_line(&pr_state_with(info), &test_theme()).unwrap();
+        let line = build_pr_line(&pr_state_with(info)).unwrap();
         assert_eq!(line_text(&line), " PR #142  ✗ conflicts  ✗ 5");
     }
 
     #[test]
     fn test_build_pr_line_no_checks() {
         let info = make_info(MergeableStatus::Clean, 0, 0, 0);
-        let line = build_pr_line(&pr_state_with(info), &test_theme()).unwrap();
+        let line = build_pr_line(&pr_state_with(info)).unwrap();
         assert_eq!(line_text(&line), " PR #142  ✓ clean");
     }
 
     #[test]
     fn test_build_pr_line_unknown_mergeable_omits_segment() {
         let info = make_info(MergeableStatus::Unknown, 12, 0, 0);
-        let line = build_pr_line(&pr_state_with(info), &test_theme()).unwrap();
+        let line = build_pr_line(&pr_state_with(info)).unwrap();
         assert_eq!(line_text(&line), " PR #142  ✓ 12/12");
     }
 
     #[test]
     fn test_build_pr_line_behind_base() {
         let info = make_info(MergeableStatus::Behind, 12, 0, 0);
-        let line = build_pr_line(&pr_state_with(info), &test_theme()).unwrap();
+        let line = build_pr_line(&pr_state_with(info)).unwrap();
         assert_eq!(line_text(&line), " PR #142  ⚠ behind  ✓ 12/12");
     }
 
     #[test]
     fn test_build_pr_line_returns_none_without_info() {
         let pr = PrState::default();
-        assert!(build_pr_line(&pr, &test_theme()).is_none());
+        assert!(build_pr_line(&pr).is_none());
     }
 
     #[test]
     fn test_checks_all_pending_shows_fraction() {
         let info = make_info(MergeableStatus::Clean, 0, 0, 12);
-        let line = build_pr_line(&pr_state_with(info), &test_theme()).unwrap();
+        let line = build_pr_line(&pr_state_with(info)).unwrap();
         assert_eq!(line_text(&line), " PR #142  ✓ clean  ◐ 0/12");
     }
 
     #[test]
     fn test_checks_mixed_pending_no_failures_shows_fraction() {
         let info = make_info(MergeableStatus::Clean, 8, 0, 4);
-        let line = build_pr_line(&pr_state_with(info), &test_theme()).unwrap();
+        let line = build_pr_line(&pr_state_with(info)).unwrap();
         assert_eq!(line_text(&line), " PR #142  ✓ clean  ◐ 8/12");
     }
 
     #[test]
     fn test_checks_with_failures_shows_per_category() {
         let info = make_info(MergeableStatus::Clean, 9, 2, 1);
-        let line = build_pr_line(&pr_state_with(info), &test_theme()).unwrap();
+        let line = build_pr_line(&pr_state_with(info)).unwrap();
         assert_eq!(line_text(&line), " PR #142  ✓ clean  ✓ 9  ✗ 2  ◐ 1");
     }
 
     #[test]
     fn test_checks_all_passed_shows_green_fraction() {
         let info = make_info(MergeableStatus::Clean, 12, 0, 0);
-        let line = build_pr_line(&pr_state_with(info), &test_theme()).unwrap();
+        let line = build_pr_line(&pr_state_with(info)).unwrap();
         assert_eq!(line_text(&line), " PR #142  ✓ clean  ✓ 12/12");
     }
 
@@ -340,7 +332,7 @@ mod tests {
         let pr = pr_state_with(info);
         // Full tier-0 is quite wide. At 14 cols we should reach tier 2
         // (compact fraction) or beyond — breakdown must be gone.
-        let line = build_pr_line_fitted(&pr, &test_theme(), 14).unwrap();
+        let line = build_pr_line_fitted(&pr, 14).unwrap();
         let text = line_text(&line);
         assert!(!text.contains("✓ 9"), "got: {text}");
         assert!(!text.contains("✗ 2"), "got: {text}");
@@ -350,7 +342,7 @@ mod tests {
     fn test_pr_line_tier_3_drops_pr_prefix() {
         let info = make_info(MergeableStatus::Clean, 12, 0, 0);
         let pr = pr_state_with(info);
-        let line = build_pr_line_fitted(&pr, &test_theme(), 8).unwrap();
+        let line = build_pr_line_fitted(&pr, 8).unwrap();
         let text = line_text(&line);
         assert!(!text.contains("PR "), "got: {text}");
         assert!(text.contains("#142"), "got: {text}");
@@ -360,7 +352,7 @@ mod tests {
     fn test_pr_line_drops_mergeable_text_on_narrow_width() {
         let info = make_info(MergeableStatus::Clean, 12, 0, 0);
         let pr = pr_state_with(info);
-        let line = build_pr_line_fitted(&pr, &test_theme(), 20).unwrap();
+        let line = build_pr_line_fitted(&pr, 20).unwrap();
         let text = line_text(&line);
         assert!(!text.contains(" clean"), "got: {text}");
         assert!(text.contains('✓'), "icon should remain, got: {text}");

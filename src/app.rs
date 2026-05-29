@@ -86,7 +86,6 @@ pub struct App {
     /// completes. Cleared after installation.
     watcher_pending_rx: Option<Receiver<WatcherReady>>,
     config: AppConfig,
-    theme: crate::theme::Theme,
     tick_rate: Duration,
     /// The root repo path (for resolving worktrees)
     repo_path: PathBuf,
@@ -278,7 +277,6 @@ impl App {
         repo_path: PathBuf,
         config: AppConfig,
         debounce_ms: u64,
-        theme_override: Option<String>,
         base_override: Option<String>,
     ) -> Result<Self> {
         // Open the repo just long enough to read the branch name (sub-millisecond
@@ -298,15 +296,6 @@ impl App {
         let mut state = AppState::new(Vec::new(), flash_duration, branch.clone());
         state.set_view_mode(config.display.default_view);
         state.set_computing(true);
-
-        let t = Instant::now();
-        let user_themes_dir = crate::theme::default_user_themes_dir();
-        let theme_name_or_path = theme_override.as_deref().unwrap_or(&config.theme);
-        let theme = crate::theme::load_theme(theme_name_or_path, user_themes_dir.as_deref());
-        tracing::debug!(
-            elapsed_ms = t.elapsed().as_millis() as u64,
-            "App::new: theme load"
-        );
 
         // FsWatcher::new does a recursive walk of the working tree to seed
         // notify-debouncer-full's cache. On large monorepos that can take
@@ -374,7 +363,6 @@ impl App {
             fs_rx: None,
             watcher_pending_rx: Some(watcher_pending_rx),
             config,
-            theme,
             tick_rate: TICK_RATE,
             repo_path,
             watch_path,
@@ -414,7 +402,7 @@ impl App {
 
         loop {
             // Render current state
-            terminal.draw(&mut self.state, &self.config, &self.theme)?;
+            terminal.draw(&mut self.state, &self.config)?;
             if !first_draw_logged {
                 tracing::info!(
                     elapsed_ms = loop_t0.elapsed().as_millis() as u64,
@@ -1247,7 +1235,6 @@ mod input_tests {
                 fs_rx: None,
                 watcher_pending_rx: None,
                 config: AppConfig::default(),
-                theme: crate::theme::load_theme(crate::theme::DEFAULT_THEME_NAME, None),
                 tick_rate: TICK_RATE,
                 repo_path: PathBuf::new(),
                 watch_path: PathBuf::new(),

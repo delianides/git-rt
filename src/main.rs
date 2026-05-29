@@ -39,11 +39,6 @@ struct Cli {
     #[arg(long)]
     log: Option<String>,
 
-    /// Theme name or path to a theme file (TOML or JSON).
-    /// Overrides the theme set in the config file.
-    #[arg(long)]
-    theme: Option<String>,
-
     /// Base branch for branch-scoped diff (overrides config).
     /// Auto-detected from remote if omitted.
     #[arg(long)]
@@ -97,14 +92,7 @@ fn main() -> Result<()> {
     let watch_path = repo_path.clone();
 
     let t = std::time::Instant::now();
-    let mut app = app::App::new(
-        watch_path,
-        repo_path,
-        config,
-        cli.debounce,
-        cli.theme,
-        cli.base,
-    )?;
+    let mut app = app::App::new(watch_path, repo_path, config, cli.debounce, cli.base)?;
     tracing::debug!(
         elapsed_ms = t.elapsed().as_millis() as u64,
         "startup: App::new"

@@ -9,8 +9,6 @@ use crate::state::ViewMode;
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
 pub struct AppConfig {
-    /// Theme name (e.g. "catppuccin-mocha", "dracula", "nord")
-    pub theme: String,
     /// Debounce interval in milliseconds (can be overridden by CLI)
     pub debounce_ms: u64,
     /// Display settings
@@ -30,7 +28,6 @@ pub struct AppConfig {
 impl Default for AppConfig {
     fn default() -> Self {
         Self {
-            theme: "catppuccin-mocha".to_string(),
             debounce_ms: 500,
             display: DisplayConfig::default(),
             pr: PrConfig::default(),
@@ -165,7 +162,6 @@ mod tests {
     #[test]
     fn test_default_config() {
         let config = AppConfig::default();
-        assert_eq!(config.theme, "catppuccin-mocha");
         assert_eq!(config.debounce_ms, 500);
         assert_eq!(config.display.context_lines, 3);
         assert!(config.display.flash_on_change);
@@ -198,7 +194,6 @@ mod tests {
         assert!(config.is_ok());
         let config = config.unwrap();
         assert_eq!(config.debounce_ms, 500);
-        assert_eq!(config.theme, "catppuccin-mocha");
     }
 
     #[test]
@@ -209,8 +204,6 @@ mod tests {
         std::fs::write(
             &path,
             r#"
-theme = "dracula"
-
 [pr]
 enabled = false
 layout = "right"
@@ -219,7 +212,6 @@ layout = "right"
         .unwrap();
 
         let config = AppConfig::load(Some(&path)).unwrap();
-        assert_eq!(config.theme, "dracula");
         assert!(!config.pr.enabled);
         assert_eq!(config.pr.layout.as_deref(), Some("right"));
 
@@ -231,10 +223,10 @@ layout = "right"
         let dir = std::env::temp_dir().join("perch-test-config-partial-simplified");
         std::fs::create_dir_all(&dir).unwrap();
         let path = dir.join("config.toml");
-        std::fs::write(&path, "theme = \"nord\"\n").unwrap();
+        std::fs::write(&path, "edit_command = \"nvim\"\n").unwrap();
 
         let config = AppConfig::load(Some(&path)).unwrap();
-        assert_eq!(config.theme, "nord");
+        assert_eq!(config.edit_command.as_deref(), Some("nvim"));
         // Unspecified fields use defaults
         assert_eq!(config.debounce_ms, 500);
         assert_eq!(config.display.context_lines, 3);

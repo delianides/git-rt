@@ -184,13 +184,13 @@ fn render_file_list(
     area: Rect,
 ) {
     match state.view_mode() {
-        ViewMode::Flat => render_flat_file_list(frame, state, config, theme, area),
+        ViewMode::Condensed => render_condensed_file_list(frame, state, config, theme, area),
         ViewMode::Tree => render_tree_file_list(frame, state, config, theme, area),
-        ViewMode::Expanded => render_expanded_file_list(frame, state, config, theme, area),
+        ViewMode::Normal => render_normal_file_list(frame, state, config, theme, area),
     }
 }
 
-fn render_flat_file_list(
+fn render_condensed_file_list(
     frame: &mut Frame,
     state: &mut AppState,
     config: &AppConfig,
@@ -358,7 +358,7 @@ fn render_tree_file_list(
     );
 }
 
-fn render_expanded_file_list(
+fn render_normal_file_list(
     frame: &mut Frame,
     state: &mut AppState,
     config: &AppConfig,
@@ -397,7 +397,7 @@ fn render_expanded_file_list(
             } => {
                 let group = match id {
                     RowId::Group(g) => *g,
-                    _ => unreachable!("expanded header row must carry a group id"),
+                    _ => unreachable!("normal header row must carry a group id"),
                 };
                 let color = section_header_color(group, theme);
                 let arrow = if *collapsed { "▶" } else { "▼" };
@@ -427,7 +427,7 @@ fn render_expanded_file_list(
                 item
             }
             VisibleRow::Directory { .. } => {
-                unreachable!("expanded mode emits no directory rows")
+                unreachable!("normal mode emits no directory rows")
             }
         };
         items.push(item);
@@ -436,7 +436,7 @@ fn render_expanded_file_list(
     render_list(frame, state, config, theme, area, items, rendered_selected);
 }
 
-/// The theme color for a status-group header in the Expanded view.
+/// The theme color for a status-group header in the Normal view.
 fn section_header_color(group: ChangeGroup, theme: &Theme) -> ratatui::style::Color {
     match group {
         ChangeGroup::Changes => theme.section_changes,
@@ -759,7 +759,7 @@ mod tests {
     }
 
     #[test]
-    fn test_flat_row_mid_ellipsizes_path_at_narrow_width() {
+    fn test_condensed_row_mid_ellipsizes_path_at_narrow_width() {
         let files = vec![FileEntry {
             path: "src/very/deeply/nested/path/long_filename.rs".to_string(),
             status: FileStatus::Modified,
@@ -776,7 +776,7 @@ mod tests {
     }
 
     #[test]
-    fn test_flat_row_drops_stats_below_floor() {
+    fn test_condensed_row_drops_stats_below_floor() {
         let files = vec![FileEntry {
             path: "src/a/b/c/d/really_long_filename.rs".to_string(),
             status: FileStatus::Modified,
@@ -915,13 +915,13 @@ mod tests {
     }
 
     #[test]
-    fn test_render_expanded_mode_shows_group_headers_with_arrow_and_count() {
+    fn test_render_normal_mode_shows_group_headers_with_arrow_and_count() {
         let files = vec![
             grouped_entry("src/ui/changed.rs", ChangeGroup::Changes),
             grouped_entry("src/ui/committed.rs", ChangeGroup::Committed),
         ];
         let mut state = AppState::new(files, Duration::from_millis(600), "main".to_string());
-        state.set_view_mode(ViewMode::Expanded);
+        state.set_view_mode(ViewMode::Normal);
         // Resolve a base so the no-base guard is skipped.
         state.set_merge_base(
             Some(gix::ObjectId::empty_tree(gix::hash::Kind::Sha1)),
@@ -944,13 +944,13 @@ mod tests {
     }
 
     #[test]
-    fn test_render_expanded_mode_pads_between_groups() {
+    fn test_render_normal_mode_pads_between_groups() {
         let files = vec![
             grouped_entry("src/ui/changed.rs", ChangeGroup::Changes),
             grouped_entry("src/ui/committed.rs", ChangeGroup::Committed),
         ];
         let mut state = AppState::new(files, Duration::from_millis(600), "main".to_string());
-        state.set_view_mode(ViewMode::Expanded);
+        state.set_view_mode(ViewMode::Normal);
         state.set_merge_base(
             Some(gix::ObjectId::empty_tree(gix::hash::Kind::Sha1)),
             "main".to_string(),
@@ -978,10 +978,10 @@ mod tests {
     }
 
     #[test]
-    fn test_render_expanded_mode_collapsed_group_hides_its_files() {
+    fn test_render_normal_mode_collapsed_group_hides_its_files() {
         let files = vec![grouped_entry("src/ui/changed.rs", ChangeGroup::Changes)];
         let mut state = AppState::new(files, Duration::from_millis(600), "main".to_string());
-        state.set_view_mode(ViewMode::Expanded);
+        state.set_view_mode(ViewMode::Normal);
         state.set_merge_base(
             Some(gix::ObjectId::empty_tree(gix::hash::Kind::Sha1)),
             "main".to_string(),
@@ -1005,15 +1005,15 @@ mod tests {
     }
 
     #[test]
-    fn test_render_expanded_mode_renders_groups_without_base() {
-        // Without a resolved base, Expanded must still render the base-independent
+    fn test_render_normal_mode_renders_groups_without_base() {
+        // Without a resolved base, Normal must still render the base-independent
         // groups (Changes, New). The Committed group is silently absent.
         let files = vec![
             grouped_entry("src/ui/changed.rs", ChangeGroup::Changes),
             grouped_entry("README.md", ChangeGroup::New),
         ];
         let mut state = AppState::new(files, Duration::from_millis(600), "main".to_string());
-        state.set_view_mode(ViewMode::Expanded);
+        state.set_view_mode(ViewMode::Normal);
         // Seed the first snapshot so `initial_seed_done()` is true; leave
         // `merge_base()` as `None`.
         state.update_files(vec![

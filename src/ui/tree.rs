@@ -226,8 +226,8 @@ fn flatten_children(
     }
 }
 
-/// Group order for the Expanded view.
-const EXPANDED_GROUP_ORDER: [ChangeGroup; 3] = [
+/// Group order for the Normal view.
+const NORMAL_GROUP_ORDER: [ChangeGroup; 3] = [
     ChangeGroup::Changes,
     ChangeGroup::New,
     ChangeGroup::Committed,
@@ -242,15 +242,12 @@ fn group_label(group: ChangeGroup) -> &'static str {
     }
 }
 
-/// Build the visible rows for the Expanded view: a collapsible header per
+/// Build the visible rows for the Normal view: a collapsible header per
 /// non-empty status group, followed by that group's files (flat, sorted by
 /// path) unless the group is collapsed.
-pub fn build_expanded_rows(
-    files: &[FileEntry],
-    collapsed: &HashSet<ChangeGroup>,
-) -> Vec<VisibleRow> {
+pub fn build_normal_rows(files: &[FileEntry], collapsed: &HashSet<ChangeGroup>) -> Vec<VisibleRow> {
     let mut rows = Vec::new();
-    for group in EXPANDED_GROUP_ORDER {
+    for group in NORMAL_GROUP_ORDER {
         let mut group_files: Vec<&FileEntry> = files.iter().filter(|f| f.group == group).collect();
         if group_files.is_empty() {
             continue;
@@ -305,13 +302,13 @@ mod tests {
     }
 
     #[test]
-    fn expanded_rows_group_order_and_empty_group_hiding() {
+    fn normal_rows_group_order_and_empty_group_hiding() {
         let files = vec![
             grouped("b.rs", ChangeGroup::Committed),
             grouped("a.rs", ChangeGroup::Changes),
             grouped("c.rs", ChangeGroup::Changes),
         ];
-        let rows = build_expanded_rows(&files, &std::collections::HashSet::new());
+        let rows = build_normal_rows(&files, &std::collections::HashSet::new());
         // Changes group first (2 files, sorted), then Committed. No New group.
         assert_eq!(rows.len(), 5);
         assert!(rows[0].is_header());
@@ -324,10 +321,10 @@ mod tests {
     }
 
     #[test]
-    fn expanded_rows_collapsed_group_hides_files() {
+    fn normal_rows_collapsed_group_hides_files() {
         let files = vec![grouped("a.rs", ChangeGroup::Changes)];
         let collapsed = [ChangeGroup::Changes].into_iter().collect();
-        let rows = build_expanded_rows(&files, &collapsed);
+        let rows = build_normal_rows(&files, &collapsed);
         assert_eq!(rows.len(), 1);
         assert!(rows[0].is_header());
         assert_eq!(rows[0].header_collapsed(), Some(true));

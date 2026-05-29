@@ -43,19 +43,19 @@ src/
 
 ### View Modes
 
-perch has three view modes, cycled with `m` (`Expanded → Flat → Tree → Expanded`):
+perch has three view modes, cycled with `m` (`Normal → Condensed → Tree → Normal`):
 
-- **Expanded** (default) — files split into collapsible status groups:
+- **Normal** (default) — files split into collapsible status groups:
   **Changes** (staged/unstaged edits), **New files** (untracked), and
   **Committed** (committed on the branch, no pending edits). Empty groups are
   hidden. `Enter`/`Space` on a group header collapses it. The Committed group
   needs a resolved base branch; with none, Changes and New still render and
   Committed is silently hidden.
-- **Flat** — a single flat list of changed file paths.
+- **Condensed** — a single flat list of changed file paths.
 - **Tree** — files arranged as a directory tree.
 
-Set the startup mode with `display.default_view = "flat" | "tree" | "expanded"`
-in `config.toml` (default `"expanded"`).
+Set the startup mode with `display.default_view = "normal" | "condensed" | "tree"`
+in `config.toml` (default `"normal"`).
 
 ### Event Loop
 
@@ -95,8 +95,8 @@ When a filesystem event fires:
 
   Stacked branches resolve to their literal fork point — a branch created from
   `feature1` diffs against `feature1`, not trunk. Pass `--base` to override.
-  If no tier resolves, branch-scoped data is unavailable: Flat and Tree fall
-  back to working-tree status, while Expanded renders the Changes and New
+  If no tier resolves, branch-scoped data is unavailable: Condensed and Tree
+  fall back to working-tree status, while Normal renders the Changes and New
   groups and hides the Committed group.
 
 ### Filesystem Watching
@@ -154,7 +154,7 @@ RUST_LOG=debug cargo run       # Run with debug logging
 
 ## Current Status
 
-Core feature set is complete: live file-list with numstat, status-grouped Expanded view (plus Flat and Tree view modes), PR status strip, in-app diff overlay, filesystem watching, config file + keybindings, themes, multi-worktree support, and branch-scoped diff range.
+Core feature set is complete: live file-list with numstat, status-grouped Normal view (plus Condensed and Tree view modes), PR status strip, in-app diff overlay, filesystem watching, config file + keybindings, themes, multi-worktree support, and branch-scoped diff range.
 
 Remaining open items:
 

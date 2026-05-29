@@ -442,8 +442,8 @@ fn render_list(
     let max_selected_index = selected_index.min(items.len().saturating_sub(1));
 
     let highlight = if state.is_focused() {
-        // REVERSED swaps fg/bg using the terminal's own colors, so per-span
-        // fg colors (diff counts, status chars) still read on the selected row.
+        // A gray background bar; only the bg changes, so per-span fg colors
+        // (diff counts, status chars) still read on the selected row.
         colors::SELECTION
     } else {
         Style::default()

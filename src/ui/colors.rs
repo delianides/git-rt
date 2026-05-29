@@ -5,7 +5,7 @@
 //! every color the UI draws; semantic roles map to ANSI names here, and render
 //! code refers to the roles rather than picking colors inline.
 
-use ratatui::style::{Color, Modifier, Style};
+use ratatui::style::{Color, Style};
 
 // ── Foreground roles ──────────────────────────────────────────────────────
 /// Added/insertion counts and "added"/"staged" status.
@@ -58,9 +58,10 @@ pub const FLASH_BG: Color = Color::DarkGray;
 /// Border foreground while the pane border is flashing on a change.
 pub const FLASH_BORDER: Color = Color::Yellow;
 
-/// Style applied to the selected row. REVERSED swaps fg/bg using the
-/// terminal's own colors, so selection reads correctly on any palette.
-pub const SELECTION: Style = Style::new().add_modifier(Modifier::REVERSED);
+/// Style applied to the selected row: a subtle gray background bar. Only the
+/// background changes, so per-span foreground colors (status chars, +/- counts)
+/// stay visible on the selected row.
+pub const SELECTION: Style = Style::new().bg(Color::DarkGray);
 
 #[cfg(test)]
 mod tests {
@@ -78,7 +79,7 @@ mod tests {
     }
 
     #[test]
-    fn selection_is_reversed() {
-        assert!(SELECTION.add_modifier.contains(Modifier::REVERSED));
+    fn selection_has_background_bar() {
+        assert_eq!(SELECTION.bg, Some(Color::DarkGray));
     }
 }

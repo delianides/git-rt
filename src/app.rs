@@ -212,6 +212,12 @@ enum MainAction {
     Help,
     CycleMode,
     OpenSwitcher,
+    Top,
+    Bottom,
+    PageUp,
+    PageDown,
+    HalfPageUp,
+    HalfPageDown,
     None,
 }
 
@@ -219,6 +225,11 @@ fn interpret_main_key(modifiers: KeyModifiers, code: KeyCode) -> MainAction {
     match (modifiers, code) {
         (_, KeyCode::Char('q')) => MainAction::Quit,
         (KeyModifiers::CONTROL, KeyCode::Char('c')) => MainAction::Quit,
+        (KeyModifiers::CONTROL, KeyCode::Char('d')) => MainAction::HalfPageDown,
+        (KeyModifiers::CONTROL, KeyCode::Char('u')) => MainAction::HalfPageUp,
+        (KeyModifiers::CONTROL, KeyCode::Char('f')) => MainAction::PageDown,
+        (KeyModifiers::CONTROL, KeyCode::Char('b')) => MainAction::PageUp,
+        (_, KeyCode::Char('G')) => MainAction::Bottom,
         (_, KeyCode::Char('j')) | (_, KeyCode::Down) => MainAction::MoveDown,
         (_, KeyCode::Char('k')) | (_, KeyCode::Up) => MainAction::MoveUp,
         (_, KeyCode::Enter)
@@ -610,6 +621,24 @@ impl App {
             MainAction::Help => self.state.show_help(),
             MainAction::CycleMode => self.state.cycle_view_mode(),
             MainAction::OpenSwitcher => self.open_switch_dialog()?,
+            MainAction::Top => self.state.select_first(),
+            MainAction::Bottom => self.state.select_last(),
+            MainAction::PageDown => {
+                let step = self.state.list_viewport_height().max(1) as isize;
+                self.state.select_page(step);
+            }
+            MainAction::PageUp => {
+                let step = self.state.list_viewport_height().max(1) as isize;
+                self.state.select_page(-step);
+            }
+            MainAction::HalfPageDown => {
+                let step = (self.state.list_viewport_height() / 2).max(1) as isize;
+                self.state.select_page(step);
+            }
+            MainAction::HalfPageUp => {
+                let step = (self.state.list_viewport_height() / 2).max(1) as isize;
+                self.state.select_page(-step);
+            }
             MainAction::None => {}
         }
         Ok(false)
@@ -1554,6 +1583,39 @@ mod input_tests {
         assert!(
             app.state.flash_message().is_none(),
             "same-branch bundle should not refire rename flash"
+        );
+    }
+
+    #[test]
+    fn test_interpret_main_key_maps_page_and_jump_actions() {
+        assert_eq!(
+            interpret_main_key(KeyModifiers::NONE, KeyCode::Char('G')),
+            MainAction::Bottom
+        );
+        assert_eq!(
+            interpret_main_key(KeyModifiers::CONTROL, KeyCode::Char('d')),
+            MainAction::HalfPageDown
+        );
+        assert_eq!(
+            interpret_main_key(KeyModifiers::CONTROL, KeyCode::Char('u')),
+            MainAction::HalfPageUp
+        );
+        assert_eq!(
+            interpret_main_key(KeyModifiers::CONTROL, KeyCode::Char('f')),
+            MainAction::PageDown
+        );
+        assert_eq!(
+            interpret_main_key(KeyModifiers::CONTROL, KeyCode::Char('b')),
+            MainAction::PageUp
+        );
+    }
+
+    #[test]
+    fn test_plain_d_still_opens_diff() {
+        // Regression: only Ctrl-d is half-page; bare d remains Primary.
+        assert_eq!(
+            interpret_main_key(KeyModifiers::NONE, KeyCode::Char('d')),
+            MainAction::Primary
         );
     }
 }

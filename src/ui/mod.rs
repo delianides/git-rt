@@ -33,7 +33,7 @@ use std::io;
 
 use crate::config::AppConfig;
 use crate::git::{ChangeGroup, FileStatus};
-use crate::state::{AppState, ViewMode};
+use crate::state::{AppState, FlashKind, ViewMode};
 use crate::ui::tree::{RowId, VisibleRow};
 
 /// Wrapper around the ratatui terminal.
@@ -165,6 +165,19 @@ fn pr_border_color_from_state(state: &AppState) -> ratatui::style::Color {
         .unwrap_or(colors::BORDER)
 }
 
+/// The background color for a file row's change flash, or `None` when the row
+/// should not flash. The color reflects the direction of the change: green for
+/// a net addition (or no net change), red for a net deletion.
+fn flash_bg(state: &AppState, config: &AppConfig, path: &str) -> Option<ratatui::style::Color> {
+    if !config.display.flash_on_change {
+        return None;
+    }
+    state.flash_kind(path).map(|kind| match kind {
+        FlashKind::Added => colors::FLASH_ADD_BG,
+        FlashKind::Removed => colors::FLASH_DEL_BG,
+    })
+}
+
 // ── File list ────────────────────────────────────────────────────────────────
 
 /// Render the file list.
@@ -204,8 +217,8 @@ fn render_condensed_file_list(
         );
 
         let mut item = ListItem::new(line);
-        if config.display.flash_on_change && state.is_flashing(&file.path) {
-            item = item.style(Style::default().bg(colors::FLASH_BG));
+        if let Some(bg) = flash_bg(state, config, &file.path) {
+            item = item.style(Style::default().bg(bg));
         }
         items.push(item);
     }
@@ -310,8 +323,8 @@ fn render_tree_file_list(frame: &mut Frame, state: &mut AppState, config: &AppCo
 
         let mut item = ListItem::new(line);
         if let Some(file) = row.file() {
-            if config.display.flash_on_change && state.is_flashing(&file.path) {
-                item = item.style(Style::default().bg(colors::FLASH_BG));
+            if let Some(bg) = flash_bg(state, config, &file.path) {
+                item = item.style(Style::default().bg(bg));
             }
         }
         items.push(item);
@@ -381,8 +394,8 @@ fn render_normal_file_list(
                     area.width as usize,
                 );
                 let mut item = ListItem::new(line);
-                if config.display.flash_on_change && state.is_flashing(&file.path) {
-                    item = item.style(Style::default().bg(colors::FLASH_BG));
+                if let Some(bg) = flash_bg(state, config, &file.path) {
+                    item = item.style(Style::default().bg(bg));
                 }
                 item
             }

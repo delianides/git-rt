@@ -95,6 +95,17 @@ pub enum ViewMode {
     Normal,
 }
 
+/// The direction of the change that triggered a file-row flash, used to pick
+/// the flash color: a net gain in lines (or no net change) flashes as an
+/// addition, a net loss flashes as a deletion.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FlashKind {
+    /// The change added at least as many lines as it removed.
+    Added,
+    /// The change removed more lines than it added.
+    Removed,
+}
+
 #[derive(Debug, Clone)]
 struct SelectionSnapshot {
     row_id: Option<RowId>,
@@ -130,8 +141,9 @@ pub struct AppState {
     start_time: Instant,
     /// When the last refresh happened
     last_refresh: Instant,
-    /// Tracks when each file last changed (for flash effect)
-    flash_times: HashMap<String, Instant>,
+    /// Tracks when each file last changed (for the flash effect) and the
+    /// direction of that change (for the flash color).
+    flash_times: HashMap<String, (Instant, FlashKind)>,
     /// How long the flash lasts
     flash_duration: Duration,
     /// Whether the terminal window is currently focused
@@ -296,9 +308,16 @@ impl AppState {
 
     /// Returns true if the file at the given path is currently flashing
     pub fn is_flashing(&self, path: &str) -> bool {
+        self.flash_kind(path).is_some()
+    }
+
+    /// Returns the flash direction for the file at `path` if it is currently
+    /// flashing, or `None` if it is not flashing (or the flash has expired).
+    pub fn flash_kind(&self, path: &str) -> Option<FlashKind> {
         self.flash_times
             .get(path)
-            .is_some_and(|t| t.elapsed() < self.flash_duration)
+            .filter(|(t, _)| t.elapsed() < self.flash_duration)
+            .map(|(_, kind)| *kind)
     }
 
     pub fn is_focused(&self) -> bool {
@@ -804,22 +823,33 @@ impl AppState {
                 .map(|f| (f.path.as_str(), (f.insertions, f.deletions)))
                 .collect();
 
-            // Detect changed files and record flash times
+            // Detect changed files and record flash times. The flash color
+            // reflects the net line delta of the change: a file new to the
+            // list, or one whose net (insertions - deletions) grew or held
+            // steady, flashes as an addition; one whose net shrank flashes as
+            // a deletion.
             for file in &new_files {
+                let (old_ins, old_del) =
+                    old_stats.get(file.path.as_str()).copied().unwrap_or((0, 0));
                 let changed = match old_stats.get(file.path.as_str()) {
-                    Some(&(old_ins, old_del)) => {
-                        old_ins != file.insertions || old_del != file.deletions
-                    }
+                    Some(&(o_ins, o_del)) => o_ins != file.insertions || o_del != file.deletions,
                     None => true, // new file
                 };
                 if changed {
-                    self.flash_times.insert(file.path.clone(), now);
+                    let old_net = old_ins as isize - old_del as isize;
+                    let new_net = file.insertions as isize - file.deletions as isize;
+                    let kind = if new_net >= old_net {
+                        FlashKind::Added
+                    } else {
+                        FlashKind::Removed
+                    };
+                    self.flash_times.insert(file.path.clone(), (now, kind));
                 }
             }
 
             // Clean up expired flash times
             self.flash_times
-                .retain(|_, t| t.elapsed() < self.flash_duration);
+                .retain(|_, (t, _)| t.elapsed() < self.flash_duration);
         } else {
             // First populate after construction or worktree switch — treat
             // as baseline, not a set of changes. Future calls will flash
@@ -1529,6 +1559,37 @@ mod tests {
         ]);
         assert!(!state.is_flashing("a.rs"));
         assert!(state.is_flashing("b.rs"));
+    }
+
+    #[test]
+    fn flash_kind_reflects_net_line_delta() {
+        let mut state = AppState::new(vec![], Duration::from_millis(600), "main".to_string());
+        // Seed: a is +5, b is +5, c is +5.
+        state.update_files(vec![
+            make_entry("a.rs", 5, 0),
+            make_entry("b.rs", 5, 0),
+            make_entry("c.rs", 5, 0),
+        ]);
+        // a gains lines (net up), b loses lines (net down), c stays net-equal
+        // (added 2, removed 2), and d is brand new.
+        state.update_files(vec![
+            make_entry("a.rs", 8, 0), // net 5 -> 8: added
+            make_entry("b.rs", 5, 3), // net 5 -> 2: removed
+            make_entry("c.rs", 7, 2), // net 5 -> 5: tie -> added
+            make_entry("d.rs", 0, 4), // new file, net 0 - 4 vs 0: removed
+        ]);
+        assert_eq!(state.flash_kind("a.rs"), Some(FlashKind::Added));
+        assert_eq!(state.flash_kind("b.rs"), Some(FlashKind::Removed));
+        assert_eq!(state.flash_kind("c.rs"), Some(FlashKind::Added));
+        assert_eq!(state.flash_kind("d.rs"), Some(FlashKind::Removed));
+    }
+
+    #[test]
+    fn flash_kind_none_when_not_flashing() {
+        let mut state = AppState::new(vec![], Duration::from_millis(600), "main".to_string());
+        state.update_files(vec![make_entry("a.rs", 1, 0)]); // seed, no flash
+        assert_eq!(state.flash_kind("a.rs"), None);
+        assert_eq!(state.flash_kind("missing.rs"), None);
     }
 
     #[test]

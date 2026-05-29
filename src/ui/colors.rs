@@ -53,8 +53,13 @@ pub const DIFF_LINE_NUMBER: Color = Color::DarkGray;
 pub const DIFF_BORDER: Color = Color::DarkGray;
 
 // ── Highlights ────────────────────────────────────────────────────────────
-/// Background of a file row briefly flashed after a change.
+/// Background of a list item highlighted in the worktree-switch dialog.
 pub const FLASH_BG: Color = Color::DarkGray;
+/// Background of a file row flashed after a change that net-added lines (or
+/// left the line count unchanged).
+pub const FLASH_ADD_BG: Color = Color::Green;
+/// Background of a file row flashed after a change that net-removed lines.
+pub const FLASH_DEL_BG: Color = Color::Red;
 /// Border foreground while the pane border is flashing on a change.
 pub const FLASH_BORDER: Color = Color::Yellow;
 

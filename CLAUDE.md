@@ -135,7 +135,6 @@ Options:
   -c, --config <FILE>     Path to config file
   -d, --debounce <MS>     Debounce interval in milliseconds [default: 500]
       --log <LEVEL>       Enable logging (trace, debug, info, warn, error)
-      --theme <NAME|PATH> Theme override (built-in name or path to .toml theme file)
       --base <BRANCH>     Base branch for the branch-scoped diff range
   -h, --help              Print help
   -V, --version           Print version
@@ -154,7 +153,7 @@ RUST_LOG=debug cargo run       # Run with debug logging
 
 ## Current Status
 
-Core feature set is complete: live file-list with numstat, status-grouped Normal view (plus Condensed and Tree view modes), PR status strip, in-app diff overlay, filesystem watching, config file + keybindings, themes, multi-worktree support, and branch-scoped diff range.
+Core feature set is complete: live file-list with numstat, status-grouped Normal view (plus Condensed and Tree view modes), PR status strip, in-app diff overlay, filesystem watching, config file + keybindings, multi-worktree support, and branch-scoped diff range. Colors follow the terminal's ANSI palette (no theming).
 
 Remaining open items:
 

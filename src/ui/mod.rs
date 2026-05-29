@@ -134,6 +134,7 @@ fn render(frame: &mut Frame, state: &mut AppState, config: &AppConfig, theme: &T
 
     // 3. Diff overlay.
     if state.is_diff_overlay_visible() {
+        state.set_diff_viewport_height(diff_overlay::inner_height(frame.area()));
         if let (Some(diff), Some(path)) = (state.expanded_diff(), state.expanded_diff_path()) {
             let (ins, del) = state.expanded_diff_stats().unwrap_or((0, 0));
             diff_overlay::render_diff_overlay(
@@ -507,6 +508,7 @@ fn render_list(
     frame.render_stateful_widget(list, area, &mut list_state);
 
     state.set_scroll_offset(list_state.offset());
+    state.set_list_viewport_height(area.height as usize);
 }
 
 fn file_line(

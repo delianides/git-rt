@@ -40,6 +40,9 @@ pub fn build_help_lines(theme: &Theme) -> Vec<Line<'static>> {
             &[
                 ("j / ↓", "Select next file"),
                 ("k / ↑", "Select previous file"),
+                ("gg / G", "Jump to top / bottom"),
+                ("Ctrl+u / Ctrl+d", "Half-page up / down"),
+                ("Ctrl+b / Ctrl+f", "Full-page up / down"),
             ],
         ),
         (
@@ -53,6 +56,7 @@ pub fn build_help_lines(theme: &Theme) -> Vec<Line<'static>> {
                 ("Enter / Space", "Normal: collapse/expand group header"),
                 ("h / ←", "Close diff"),
                 ("j / k", "Scroll diff (inside modal)"),
+                ("gg / G / Ctrl+u/d/f/b", "Jump & page within diff"),
             ],
         ),
         (

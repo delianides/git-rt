@@ -116,6 +116,8 @@ pub struct App {
     worker_rx: Receiver<Response>,
     /// Join handle for the worker thread; stored so we can join on shutdown.
     worker_handle: Option<std::thread::JoinHandle<()>>,
+    /// True after a lone `g` press, awaiting a second `g` to form `gg`.
+    pending_g: bool,
 }
 
 /// The action the tick-level existence check or `Removed` handler should take.
@@ -212,6 +214,11 @@ enum MainAction {
     Help,
     CycleMode,
     OpenSwitcher,
+    Bottom,
+    PageUp,
+    PageDown,
+    HalfPageUp,
+    HalfPageDown,
     None,
 }
 
@@ -219,6 +226,11 @@ fn interpret_main_key(modifiers: KeyModifiers, code: KeyCode) -> MainAction {
     match (modifiers, code) {
         (_, KeyCode::Char('q')) => MainAction::Quit,
         (KeyModifiers::CONTROL, KeyCode::Char('c')) => MainAction::Quit,
+        (KeyModifiers::CONTROL, KeyCode::Char('d')) => MainAction::HalfPageDown,
+        (KeyModifiers::CONTROL, KeyCode::Char('u')) => MainAction::HalfPageUp,
+        (KeyModifiers::CONTROL, KeyCode::Char('f')) => MainAction::PageDown,
+        (KeyModifiers::CONTROL, KeyCode::Char('b')) => MainAction::PageUp,
+        (_, KeyCode::Char('G')) => MainAction::Bottom,
         (_, KeyCode::Char('j')) | (_, KeyCode::Down) => MainAction::MoveDown,
         (_, KeyCode::Char('k')) | (_, KeyCode::Up) => MainAction::MoveUp,
         (_, KeyCode::Enter)
@@ -374,6 +386,7 @@ impl App {
             worker_tx,
             worker_rx,
             worker_handle: Some(worker_handle),
+            pending_g: false,
         })
     }
 
@@ -538,6 +551,7 @@ impl App {
     fn handle_key_event(&mut self, key: KeyEvent, terminal: Option<&mut Terminal>) -> Result<bool> {
         // Help overlay mode: intercept keys before anything else.
         if self.state.is_help_visible() {
+            self.pending_g = false;
             match (key.modifiers, key.code) {
                 (KeyModifiers::CONTROL, KeyCode::Char('c')) => return Ok(true),
                 (_, KeyCode::Esc)
@@ -551,8 +565,28 @@ impl App {
 
         // Diff overlay mode: intercept keys before normal handling.
         if self.state.is_diff_overlay_visible() {
+            let is_g =
+                key.code == KeyCode::Char('g') && !key.modifiers.contains(KeyModifiers::CONTROL);
+            if self.pending_g {
+                self.pending_g = false;
+                if is_g {
+                    self.state.scroll_diff_to_top();
+                    return Ok(false);
+                }
+            } else if is_g {
+                self.pending_g = true;
+                return Ok(false);
+            }
+
+            let full = self.state.diff_viewport_height().max(1) as isize;
+            let half = (self.state.diff_viewport_height() / 2).max(1) as isize;
             match (key.modifiers, key.code) {
                 (KeyModifiers::CONTROL, KeyCode::Char('c')) => return Ok(true),
+                (KeyModifiers::CONTROL, KeyCode::Char('d')) => self.state.scroll_diff_page(half),
+                (KeyModifiers::CONTROL, KeyCode::Char('u')) => self.state.scroll_diff_page(-half),
+                (KeyModifiers::CONTROL, KeyCode::Char('f')) => self.state.scroll_diff_page(full),
+                (KeyModifiers::CONTROL, KeyCode::Char('b')) => self.state.scroll_diff_page(-full),
+                (_, KeyCode::Char('G')) => self.state.scroll_diff_to_bottom(),
                 (_, KeyCode::Esc)
                 | (_, KeyCode::Char('q'))
                 | (_, KeyCode::Char('h'))
@@ -568,6 +602,7 @@ impl App {
 
         // Switch dialog mode: intercept keys before normal handling.
         if self.state.is_switch_dialog_visible() {
+            self.pending_g = false;
             // Ctrl-C still quits.
             if key.modifiers == KeyModifiers::CONTROL && key.code == KeyCode::Char('c') {
                 return Ok(true);
@@ -595,6 +630,20 @@ impl App {
             return Ok(false);
         }
 
+        // `gg` chord: a lone `g` arms; a second `g` jumps to the top. Any other
+        // key cancels the pending state and is processed normally below.
+        let is_g = key.code == KeyCode::Char('g') && !key.modifiers.contains(KeyModifiers::CONTROL);
+        if self.pending_g {
+            self.pending_g = false;
+            if is_g {
+                self.state.select_first();
+                return Ok(false);
+            }
+        } else if is_g {
+            self.pending_g = true;
+            return Ok(false);
+        }
+
         match interpret_main_key(key.modifiers, key.code) {
             MainAction::Quit => return Ok(true),
             MainAction::MoveDown => self.state.select_next(),
@@ -610,6 +659,23 @@ impl App {
             MainAction::Help => self.state.show_help(),
             MainAction::CycleMode => self.state.cycle_view_mode(),
             MainAction::OpenSwitcher => self.open_switch_dialog()?,
+            MainAction::Bottom => self.state.select_last(),
+            MainAction::PageDown => {
+                let step = self.state.list_viewport_height().max(1) as isize;
+                self.state.select_page(step);
+            }
+            MainAction::PageUp => {
+                let step = self.state.list_viewport_height().max(1) as isize;
+                self.state.select_page(-step);
+            }
+            MainAction::HalfPageDown => {
+                let step = (self.state.list_viewport_height() / 2).max(1) as isize;
+                self.state.select_page(step);
+            }
+            MainAction::HalfPageUp => {
+                let step = (self.state.list_viewport_height() / 2).max(1) as isize;
+                self.state.select_page(-step);
+            }
             MainAction::None => {}
         }
         Ok(false)
@@ -1193,6 +1259,7 @@ mod input_tests {
                 worker_tx,
                 worker_rx,
                 worker_handle: None,
+                pending_g: false,
             },
             worker_req_rx,
         )
@@ -1203,6 +1270,76 @@ mod input_tests {
             Request::Diff { path, token } => (path, token),
             other => panic!("expected diff request, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn test_gg_chord_jumps_to_top() {
+        let mut app = make_app(vec![
+            make_entry("a.rs"),
+            make_entry("b.rs"),
+            make_entry("c.rs"),
+        ]);
+        app.handle_key_event(KeyEvent::new(KeyCode::Char('G'), KeyModifiers::NONE), None)
+            .unwrap();
+        assert_eq!(app.state.selected_index(), 2, "G jumps to last row");
+        app.handle_key_event(KeyEvent::new(KeyCode::Char('g'), KeyModifiers::NONE), None)
+            .unwrap();
+        app.handle_key_event(KeyEvent::new(KeyCode::Char('g'), KeyModifiers::NONE), None)
+            .unwrap();
+        assert_eq!(app.state.selected_index(), 0, "gg returns to top");
+    }
+
+    #[test]
+    fn test_single_g_then_other_key_cancels_chord() {
+        let mut app = make_app(vec![
+            make_entry("a.rs"),
+            make_entry("b.rs"),
+            make_entry("c.rs"),
+        ]);
+        app.handle_key_event(KeyEvent::new(KeyCode::Char('g'), KeyModifiers::NONE), None)
+            .unwrap();
+        assert_eq!(
+            app.state.selected_index(),
+            0,
+            "single g should not move selection"
+        );
+        app.handle_key_event(KeyEvent::new(KeyCode::Char('j'), KeyModifiers::NONE), None)
+            .unwrap();
+        assert_eq!(app.state.selected_index(), 1, "j after lone g moves down");
+    }
+
+    #[test]
+    fn test_diff_overlay_gg_and_g_jump() {
+        use crate::git::{DiffHunk, DiffLine, DiffLineKind, FileDiff};
+        let mut app = make_app(vec![make_entry("a.rs")]);
+        // Build a diff with 19 content lines (+1 hunk header = 20 logical lines).
+        let lines = (0..19)
+            .map(|i| DiffLine {
+                kind: DiffLineKind::Context,
+                content: format!("line {i}"),
+            })
+            .collect();
+        let diff = FileDiff {
+            hunks: vec![DiffHunk {
+                header: "@@ -1,1 +1,1 @@".to_string(),
+                lines,
+            }],
+        };
+        app.state.set_expanded_diff("a.rs".to_string(), diff);
+        app.state.show_diff_overlay();
+        app.state.set_diff_viewport_height(5); // max scroll = 20 - 5 = 15
+
+        // G jumps to the bottom.
+        app.handle_key_event(KeyEvent::new(KeyCode::Char('G'), KeyModifiers::NONE), None)
+            .unwrap();
+        assert_eq!(app.state.diff_scroll(), 15, "G scrolls diff to bottom");
+
+        // gg jumps back to the top.
+        app.handle_key_event(KeyEvent::new(KeyCode::Char('g'), KeyModifiers::NONE), None)
+            .unwrap();
+        app.handle_key_event(KeyEvent::new(KeyCode::Char('g'), KeyModifiers::NONE), None)
+            .unwrap();
+        assert_eq!(app.state.diff_scroll(), 0, "gg scrolls diff to top");
     }
 
     #[test]
@@ -1554,6 +1691,140 @@ mod input_tests {
         assert!(
             app.state.flash_message().is_none(),
             "same-branch bundle should not refire rename flash"
+        );
+    }
+
+    #[test]
+    fn test_interpret_main_key_maps_page_and_jump_actions() {
+        assert_eq!(
+            interpret_main_key(KeyModifiers::NONE, KeyCode::Char('G')),
+            MainAction::Bottom
+        );
+        assert_eq!(
+            interpret_main_key(KeyModifiers::CONTROL, KeyCode::Char('d')),
+            MainAction::HalfPageDown
+        );
+        assert_eq!(
+            interpret_main_key(KeyModifiers::CONTROL, KeyCode::Char('u')),
+            MainAction::HalfPageUp
+        );
+        assert_eq!(
+            interpret_main_key(KeyModifiers::CONTROL, KeyCode::Char('f')),
+            MainAction::PageDown
+        );
+        assert_eq!(
+            interpret_main_key(KeyModifiers::CONTROL, KeyCode::Char('b')),
+            MainAction::PageUp
+        );
+    }
+
+    #[test]
+    fn test_plain_d_still_opens_diff() {
+        // Regression: only Ctrl-d is half-page; bare d remains Primary.
+        assert_eq!(
+            interpret_main_key(KeyModifiers::NONE, KeyCode::Char('d')),
+            MainAction::Primary
+        );
+    }
+
+    #[test]
+    fn test_ctrl_d_and_ctrl_f_page_file_list() {
+        let files: Vec<_> = (0..20).map(|i| make_entry(&format!("f{i}.rs"))).collect();
+        let mut app = make_app(files);
+        // Viewport is normally recorded by the UI each frame; set it directly here.
+        app.state.set_list_viewport_height(10);
+
+        // Ctrl-d = half page = 10 / 2 = 5 rows down.
+        app.handle_key_event(
+            KeyEvent::new(KeyCode::Char('d'), KeyModifiers::CONTROL),
+            None,
+        )
+        .unwrap();
+        assert_eq!(
+            app.state.selected_index(),
+            5,
+            "Ctrl-d moves half a page down"
+        );
+
+        // Ctrl-f = full page = 10 rows down, clamped to the last row (index 19).
+        app.handle_key_event(
+            KeyEvent::new(KeyCode::Char('f'), KeyModifiers::CONTROL),
+            None,
+        )
+        .unwrap();
+        assert_eq!(
+            app.state.selected_index(),
+            15,
+            "Ctrl-f moves a full page down"
+        );
+
+        // Ctrl-u = half page up = 5 rows.
+        app.handle_key_event(
+            KeyEvent::new(KeyCode::Char('u'), KeyModifiers::CONTROL),
+            None,
+        )
+        .unwrap();
+        assert_eq!(
+            app.state.selected_index(),
+            10,
+            "Ctrl-u moves half a page up"
+        );
+    }
+
+    #[test]
+    fn test_ctrl_d_and_ctrl_f_page_diff_overlay() {
+        use crate::git::{DiffHunk, DiffLine, DiffLineKind, FileDiff};
+        let mut app = make_app(vec![make_entry("a.rs")]);
+        let lines = (0..29)
+            .map(|i| DiffLine {
+                kind: DiffLineKind::Context,
+                content: format!("line {i}"),
+            })
+            .collect();
+        let diff = FileDiff {
+            hunks: vec![DiffHunk {
+                header: "@@ -1,1 +1,1 @@".to_string(),
+                lines,
+            }],
+        };
+        app.state.set_expanded_diff("a.rs".to_string(), diff); // 30 logical lines
+        app.state.show_diff_overlay();
+        app.state.set_diff_viewport_height(10); // max scroll = 30 - 10 = 20
+
+        // Ctrl-d = half page = 5 lines.
+        app.handle_key_event(
+            KeyEvent::new(KeyCode::Char('d'), KeyModifiers::CONTROL),
+            None,
+        )
+        .unwrap();
+        assert_eq!(
+            app.state.diff_scroll(),
+            5,
+            "Ctrl-d scrolls diff half a page"
+        );
+
+        // Ctrl-f = full page = 10 lines.
+        app.handle_key_event(
+            KeyEvent::new(KeyCode::Char('f'), KeyModifiers::CONTROL),
+            None,
+        )
+        .unwrap();
+        assert_eq!(
+            app.state.diff_scroll(),
+            15,
+            "Ctrl-f scrolls diff a full page"
+        );
+
+        // Ctrl-b = full page up = 10 lines.
+        app.handle_key_event(
+            KeyEvent::new(KeyCode::Char('b'), KeyModifiers::CONTROL),
+            None,
+        )
+        .unwrap();
+        assert_eq!(
+            app.state.diff_scroll(),
+            5,
+            "Ctrl-b scrolls diff a full page up"
         );
     }
 }

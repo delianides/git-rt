@@ -55,7 +55,7 @@ pub struct DisplayConfig {
     /// file list. 0 disables the feature. Clamped to `(viewport - 1) / 2` at
     /// runtime by ratatui.
     pub scroll_padding: usize,
-    /// The view mode perch starts in. One of `"flat"`, `"tree"`, `"expanded"`.
+    /// The view mode perch starts in. One of `"normal"`, `"condensed"`, `"tree"`.
     pub default_view: ViewMode,
 }
 
@@ -66,7 +66,7 @@ impl Default for DisplayConfig {
             flash_on_change: true,
             flash_duration_ms: 600,
             scroll_padding: 3,
-            default_view: ViewMode::Expanded,
+            default_view: ViewMode::Normal,
         }
     }
 }
@@ -273,12 +273,9 @@ layout = "right"
     }
 
     #[test]
-    fn test_default_view_defaults_to_expanded() {
+    fn test_default_view_defaults_to_normal() {
         let config = AppConfig::default();
-        assert_eq!(
-            config.display.default_view,
-            crate::state::ViewMode::Expanded
-        );
+        assert_eq!(config.display.default_view, crate::state::ViewMode::Normal);
     }
 
     #[test]

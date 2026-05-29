@@ -139,7 +139,7 @@ pub enum FileStatus {
     Conflicted,
 }
 
-/// Which status group a file belongs to in the Expanded view.
+/// Which status group a file belongs to in the Normal view.
 ///
 /// A file belongs to exactly one group. Precedence: a file with pending
 /// working-tree edits is `New` (if untracked) or `Changes`; otherwise a file
@@ -164,7 +164,7 @@ pub struct FileEntry {
     pub insertions: usize,
     /// Lines deleted (from numstat)
     pub deletions: usize,
-    /// Which Expanded-view status group this file belongs to.
+    /// Which Normal-view status group this file belongs to.
     pub group: ChangeGroup,
 }
 

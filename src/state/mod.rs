@@ -3,7 +3,7 @@ use std::time::{Duration, Instant};
 
 use crate::git::{ChangeGroup, FileDiff, FileEntry};
 use crate::ui::switch_dialog::SwitchDialog;
-use crate::ui::tree::{build_expanded_rows, build_visible_rows, RowId, VisibleRow};
+use crate::ui::tree::{build_normal_rows, build_visible_rows, RowId, VisibleRow};
 
 /// State of the PR widget
 #[derive(Debug, Clone, Default)]
@@ -87,12 +87,12 @@ pub enum MergeableStatus {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum ViewMode {
-    /// Flat list of every changed file.
-    Flat,
+    /// Single flat list of every changed file path.
+    Condensed,
     /// Files arranged as a directory tree.
     Tree,
     /// Files split into collapsible status-group sections.
-    Expanded,
+    Normal,
 }
 
 #[derive(Debug, Clone)]
@@ -119,7 +119,7 @@ pub struct AppState {
     view_mode: ViewMode,
     /// Expanded directories while in tree mode
     expanded_dirs: BTreeSet<String>,
-    /// Collapsed status groups while in Expanded mode. Not persisted; reset
+    /// Collapsed status groups while in Normal mode. Not persisted; reset
     /// on launch and on worktree switch.
     collapsed_groups: HashSet<ChangeGroup>,
     /// Stable identity for the selected row when one has been established
@@ -198,7 +198,7 @@ impl AppState {
         Self {
             files,
             selected: 0,
-            view_mode: ViewMode::Flat,
+            view_mode: ViewMode::Condensed,
             expanded_dirs: BTreeSet::new(),
             collapsed_groups: HashSet::new(),
             selected_row_id: None,
@@ -248,7 +248,7 @@ impl AppState {
     }
 
     /// True once the first `update_files` call has completed. Used by the
-    /// Expanded renderer to avoid showing the no-base error before the first
+    /// Normal renderer to avoid showing the no-base error before the first
     /// git-status snapshot arrives.
     pub fn initial_seed_done(&self) -> bool {
         self.initial_seed_done
@@ -592,9 +592,9 @@ impl AppState {
         let selection = self.selection_snapshot();
 
         self.view_mode = match self.view_mode {
-            ViewMode::Expanded => ViewMode::Flat,
-            ViewMode::Flat => ViewMode::Tree,
-            ViewMode::Tree => ViewMode::Expanded,
+            ViewMode::Normal => ViewMode::Condensed,
+            ViewMode::Condensed => ViewMode::Tree,
+            ViewMode::Tree => ViewMode::Normal,
         };
         self.scroll_offset = 0;
 
@@ -634,7 +634,7 @@ impl AppState {
         true
     }
 
-    /// In Expanded mode, toggle the collapsed state of the status group whose
+    /// In Normal mode, toggle the collapsed state of the status group whose
     /// header is currently selected. Returns `true` if a header was toggled.
     pub fn toggle_selected_group(&mut self) -> bool {
         let rows = self.rebuild_visible_rows();
@@ -762,9 +762,9 @@ impl AppState {
     #[tracing::instrument(name = "state.rebuild_visible_rows", skip_all)]
     fn rebuild_visible_rows(&self) -> Vec<VisibleRow> {
         match self.view_mode {
-            ViewMode::Flat => self.files.iter().map(flat_row_from_file).collect(),
+            ViewMode::Condensed => self.files.iter().map(condensed_row_from_file).collect(),
             ViewMode::Tree => build_visible_rows(&self.files, &self.expanded_dirs),
-            ViewMode::Expanded => build_expanded_rows(&self.files, &self.collapsed_groups),
+            ViewMode::Normal => build_normal_rows(&self.files, &self.collapsed_groups),
         }
     }
 
@@ -801,13 +801,13 @@ impl AppState {
 
     fn restore_selection(&mut self, selection: SelectionSnapshot) {
         match self.view_mode {
-            ViewMode::Flat => self.restore_flat_selection(selection.file_path),
+            ViewMode::Condensed => self.restore_condensed_selection(selection.file_path),
             ViewMode::Tree => self.restore_selection_by_id_or_path(selection),
-            ViewMode::Expanded => self.restore_selection_by_id_or_path(selection),
+            ViewMode::Normal => self.restore_selection_by_id_or_path(selection),
         }
     }
 
-    fn restore_flat_selection(&mut self, selected_file_path: Option<String>) {
+    fn restore_condensed_selection(&mut self, selected_file_path: Option<String>) {
         if self.files.is_empty() {
             self.selected = 0;
             self.selected_row_id = None;
@@ -830,7 +830,7 @@ impl AppState {
             .map(|file| RowId::File(file.path.clone()));
     }
 
-    /// Restore selection after a rebuild by stable row id, then by file path, then by clamped index. Shared by Tree and Expanded modes.
+    /// Restore selection after a rebuild by stable row id, then by file path, then by clamped index. Shared by Tree and Normal modes.
     fn restore_selection_by_id_or_path(&mut self, selection: SelectionSnapshot) {
         let rows = self.rebuild_visible_rows();
 
@@ -871,7 +871,7 @@ impl AppState {
     }
 }
 
-fn flat_row_from_file(file: &FileEntry) -> VisibleRow {
+fn condensed_row_from_file(file: &FileEntry) -> VisibleRow {
     VisibleRow::File {
         id: RowId::File(file.path.clone()),
         depth: 0,
@@ -906,13 +906,13 @@ mod tests {
     }
 
     #[test]
-    fn test_expanded_mode_builds_header_rows() {
+    fn test_normal_mode_builds_header_rows() {
         let files = vec![
             grouped_entry("a.rs", ChangeGroup::Changes),
             grouped_entry("b.rs", ChangeGroup::Committed),
         ];
         let mut state = AppState::new(files, Duration::from_millis(600), "main".to_string());
-        state.set_view_mode(ViewMode::Expanded);
+        state.set_view_mode(ViewMode::Normal);
         let rows = state.visible_rows();
         assert_eq!(rows.len(), 4); // 2 headers + 2 files
         assert!(rows[0].is_header());
@@ -922,7 +922,7 @@ mod tests {
     fn test_toggle_selected_group_collapses_and_keeps_header_selected() {
         let files = vec![grouped_entry("a.rs", ChangeGroup::Changes)];
         let mut state = AppState::new(files, Duration::from_millis(600), "main".to_string());
-        state.set_view_mode(ViewMode::Expanded);
+        state.set_view_mode(ViewMode::Normal);
         // Row 0 is the "Changes" header.
         assert!(state.toggle_selected_group());
         let rows = state.visible_rows();
@@ -976,26 +976,26 @@ mod tests {
     }
 
     #[test]
-    fn test_cycle_view_mode_flat_to_tree_to_expanded() {
+    fn test_cycle_view_mode_condensed_to_tree_to_normal() {
         let mut state = AppState::new(vec![], Duration::from_millis(600), "main".to_string());
-        assert_eq!(state.view_mode(), ViewMode::Flat);
+        assert_eq!(state.view_mode(), ViewMode::Condensed);
         state.cycle_view_mode();
         assert_eq!(state.view_mode(), ViewMode::Tree);
         state.cycle_view_mode();
-        assert_eq!(state.view_mode(), ViewMode::Expanded);
+        assert_eq!(state.view_mode(), ViewMode::Normal);
     }
 
     #[test]
     fn test_cycle_view_mode_three_way() {
         let mut state = AppState::new(vec![], Duration::from_millis(600), "main".to_string());
-        state.set_view_mode(ViewMode::Expanded);
-        assert_eq!(state.view_mode(), ViewMode::Expanded);
+        state.set_view_mode(ViewMode::Normal);
+        assert_eq!(state.view_mode(), ViewMode::Normal);
         state.cycle_view_mode();
-        assert_eq!(state.view_mode(), ViewMode::Flat);
+        assert_eq!(state.view_mode(), ViewMode::Condensed);
         state.cycle_view_mode();
         assert_eq!(state.view_mode(), ViewMode::Tree);
         state.cycle_view_mode();
-        assert_eq!(state.view_mode(), ViewMode::Expanded);
+        assert_eq!(state.view_mode(), ViewMode::Normal);
     }
 
     #[test]

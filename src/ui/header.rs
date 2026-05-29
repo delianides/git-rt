@@ -211,9 +211,9 @@ fn build_segments(state: &AppState, repo: &str, branch: &str, theme: &Theme) -> 
         SegmentRole::Content,
         vec![Span::styled(
             match state.view_mode() {
-                ViewMode::Flat => "flat",
+                ViewMode::Condensed => "condensed",
                 ViewMode::Tree => "tree",
-                ViewMode::Expanded => "expanded",
+                ViewMode::Normal => "normal",
             },
             text_style,
         )],
@@ -367,7 +367,7 @@ mod tests {
     fn test_header_title_basic() {
         let s = fresh_state();
         let line = build_header_title(&s, &test_theme());
-        assert_eq!(line_text(&line), " perch ● main ● 0 files ● flat ");
+        assert_eq!(line_text(&line), " perch ● main ● 0 files ● condensed ");
     }
 
     #[test]
@@ -391,7 +391,10 @@ mod tests {
             },
         ]);
         let line = build_header_title(&s, &test_theme());
-        assert_eq!(line_text(&line), " perch ● main ● 2 files ● -3/+16 ● flat ");
+        assert_eq!(
+            line_text(&line),
+            " perch ● main ● 2 files ● -3/+16 ● condensed "
+        );
     }
 
     #[test]
@@ -402,7 +405,7 @@ mod tests {
         let line = build_header_title(&s, &test_theme());
         assert_eq!(
             line_text(&line),
-            " perch ● main ● 0 files ● ↑2 ↓1 ● 3 stash ● flat "
+            " perch ● main ● 0 files ● ↑2 ↓1 ● 3 stash ● condensed "
         );
     }
 
@@ -411,7 +414,7 @@ mod tests {
         let mut s = fresh_state();
         s.set_ahead_behind(Some((0, 0)));
         let line = build_header_title(&s, &test_theme());
-        assert_eq!(line_text(&line), " perch ● main ● 0 files ● flat ");
+        assert_eq!(line_text(&line), " perch ● main ● 0 files ● condensed ");
     }
 
     #[test]
@@ -419,7 +422,7 @@ mod tests {
         let mut s = fresh_state();
         s.set_stash_count(0);
         let line = build_header_title(&s, &test_theme());
-        assert_eq!(line_text(&line), " perch ● main ● 0 files ● flat ");
+        assert_eq!(line_text(&line), " perch ● main ● 0 files ● condensed ");
     }
 
     #[test]
@@ -434,7 +437,7 @@ mod tests {
     fn test_header_title_empty_repo_name_shows_branch_only() {
         let s = AppState::new(vec![], Duration::from_millis(600), "main".to_string());
         let line = build_header_title(&s, &test_theme());
-        assert_eq!(line_text(&line), " main ● 0 files ● flat ");
+        assert_eq!(line_text(&line), " main ● 0 files ● condensed ");
     }
 
     #[test]
@@ -442,14 +445,14 @@ mod tests {
         let mut s = AppState::new(vec![], Duration::from_millis(600), String::new());
         s.set_repo_name("perch".to_string());
         let line = build_header_title(&s, &test_theme());
-        assert_eq!(line_text(&line), " perch ● 0 files ● flat ");
+        assert_eq!(line_text(&line), " perch ● 0 files ● condensed ");
     }
 
     #[test]
     fn test_header_title_no_repo_no_branch_omits_segment() {
         let s = AppState::new(vec![], Duration::from_millis(600), String::new());
         let line = build_header_title(&s, &test_theme());
-        assert_eq!(line_text(&line), " 0 files ● flat ");
+        assert_eq!(line_text(&line), " 0 files ● condensed ");
     }
 
     #[test]
@@ -498,7 +501,7 @@ mod tests {
         let line = build_header_title_with_width(&s, &test_theme(), 20);
         let text = line_text(&line);
         assert!(
-            text.contains("flat"),
+            text.contains("condensed"),
             "view-mode label must remain, got: {text}"
         );
     }
@@ -507,12 +510,12 @@ mod tests {
     fn test_header_mid_ellipsizes_long_branch_at_narrow_width() {
         let mut s = fresh_state();
         s.set_branch("feat/very-long-branch-name-with-lots-of-words".to_string());
-        let line = build_header_title_with_width(&s, &test_theme(), 40);
+        let line = build_header_title_with_width(&s, &test_theme(), 45);
         let text = line_text(&line);
         assert!(text.contains('\u{2026}'), "expected ellipsis, got: {text}");
         assert!(text.contains("perch"), "got: {text}");
         assert!(
-            display_width(&text) <= 40,
+            display_width(&text) <= 45,
             "got width {}: {text}",
             display_width(&text)
         );

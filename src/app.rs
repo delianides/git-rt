@@ -1227,7 +1227,7 @@ mod input_tests {
             group: ChangeGroup::Changes,
         }];
         let mut app = make_app(files);
-        app.state.set_view_mode(crate::state::ViewMode::Expanded);
+        app.state.set_view_mode(crate::state::ViewMode::Normal);
         // Row 0 is the "Changes" header; activate it.
         app.handle_activate().unwrap();
         assert_eq!(app.state.visible_rows().len(), 1); // file hidden
@@ -1407,7 +1407,7 @@ mod input_tests {
 
         assert!(!should_quit);
         assert!(app.state.is_help_visible());
-        assert_eq!(app.state.view_mode(), crate::state::ViewMode::Flat);
+        assert_eq!(app.state.view_mode(), crate::state::ViewMode::Condensed);
     }
 
     fn make_dialog() -> crate::ui::switch_dialog::SwitchDialog {

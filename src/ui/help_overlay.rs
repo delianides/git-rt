@@ -50,7 +50,7 @@ pub fn build_help_lines(theme: &Theme) -> Vec<Line<'static>> {
                 ("Space", "Toggle diff"),
                 ("l / →", "Open diff"),
                 ("Enter / l / →", "Tree: toggle dir, File: open diff"),
-                ("Enter / Space", "Expanded: collapse/expand group header"),
+                ("Enter / Space", "Normal: collapse/expand group header"),
                 ("h / ←", "Close diff"),
                 ("j / k", "Scroll diff (inside modal)"),
             ],

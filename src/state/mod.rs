@@ -185,6 +185,9 @@ pub struct AppState {
     current_diff: Option<ExpandedDiff>,
     /// Vertical scroll offset inside the diff overlay, in lines
     diff_scroll: usize,
+    /// Last-rendered height (rows) of the diff overlay viewport. Written by the
+    /// UI each frame; read by half/full-page scrolling and jump-to-bottom.
+    diff_viewport_height: usize,
     /// Whether the diff overlay is currently shown
     diff_overlay_visible: bool,
     /// Monotonically-increasing counter. Bumped on each `Request::Diff`
@@ -231,6 +234,7 @@ impl AppState {
             initial_seed_done: false,
             current_diff: None,
             diff_scroll: 0,
+            diff_viewport_height: 0,
             diff_overlay_visible: false,
             pending_diff_token: 0,
             switch_dialog: None,
@@ -505,6 +509,49 @@ impl AppState {
         self.diff_scroll = self.diff_scroll.saturating_sub(1);
     }
 
+    /// Last-rendered diff viewport height in rows (0 until first render).
+    pub fn diff_viewport_height(&self) -> usize {
+        self.diff_viewport_height
+    }
+
+    /// Record the diff viewport height. Called by the UI each frame.
+    pub fn set_diff_viewport_height(&mut self, height: usize) {
+        self.diff_viewport_height = height;
+    }
+
+    /// Logical line count of the current diff: one header line per hunk plus
+    /// each hunk's lines. Matches what the overlay renders before wrapping, so
+    /// jump-to-bottom is approximate when lines wrap. Zero when no diff is set.
+    pub fn diff_total_lines(&self) -> usize {
+        self.current_diff
+            .as_ref()
+            .map(|d| d.diff.hunks.iter().map(|h| 1 + h.lines.len()).sum())
+            .unwrap_or(0)
+    }
+
+    /// Maximum valid scroll offset: keeps at least one screen of content.
+    fn diff_max_scroll(&self) -> usize {
+        self.diff_total_lines()
+            .saturating_sub(self.diff_viewport_height)
+    }
+
+    /// Scroll the diff to the very top.
+    pub fn scroll_diff_to_top(&mut self) {
+        self.diff_scroll = 0;
+    }
+
+    /// Scroll the diff so the last lines are visible.
+    pub fn scroll_diff_to_bottom(&mut self) {
+        self.diff_scroll = self.diff_max_scroll();
+    }
+
+    /// Scroll the diff by `delta` lines (negative = up), clamped to
+    /// `[0, diff_max_scroll]`. Used for half/full-page scrolling.
+    pub fn scroll_diff_page(&mut self, delta: isize) {
+        let target = (self.diff_scroll as isize + delta).max(0) as usize;
+        self.diff_scroll = target.min(self.diff_max_scroll());
+    }
+
     /// Bump the pending-diff token and return the new value. Stamp this
     /// token on the outgoing `Request::Diff` so stale responses can be
     /// filtered out.
@@ -735,6 +782,7 @@ impl AppState {
         self.current_diff = None;
         self.diff_overlay_visible = false;
         self.diff_scroll = 0;
+        self.diff_viewport_height = 0;
         self.switch_dialog = None;
         self.pending_diff_token = self.pending_diff_token.wrapping_add(1);
     }
@@ -1564,6 +1612,12 @@ mod tests {
     }
 
     #[test]
+    fn test_diff_total_lines_no_diff_is_zero() {
+        let state = make_state();
+        assert_eq!(state.diff_total_lines(), 0);
+    }
+
+    #[test]
     fn test_overlay_show_hide() {
         let mut state = make_state();
         assert!(!state.is_diff_overlay_visible());
@@ -1740,5 +1794,63 @@ mod tests {
         assert_eq!(state.list_viewport_height(), 0);
         state.set_list_viewport_height(20);
         assert_eq!(state.list_viewport_height(), 20);
+    }
+
+    fn diff_with_lines(n: usize) -> crate::git::FileDiff {
+        use crate::git::{DiffHunk, DiffLine, DiffLineKind, FileDiff};
+        let lines = (0..n)
+            .map(|i| DiffLine {
+                kind: DiffLineKind::Context,
+                content: format!("line {i}"),
+            })
+            .collect();
+        FileDiff {
+            hunks: vec![DiffHunk {
+                header: "@@ -1,1 +1,1 @@".to_string(),
+                lines,
+            }],
+        }
+    }
+
+    #[test]
+    fn test_diff_total_lines_counts_header_plus_lines() {
+        let mut state = make_state();
+        state.set_expanded_diff("a.rs".to_string(), diff_with_lines(9));
+        // 1 hunk header + 9 content lines.
+        assert_eq!(state.diff_total_lines(), 10);
+    }
+
+    #[test]
+    fn test_scroll_diff_to_bottom_clamps_to_max() {
+        let mut state = make_state();
+        state.set_expanded_diff("a.rs".to_string(), diff_with_lines(19)); // 20 total
+        state.set_diff_viewport_height(5);
+        state.scroll_diff_to_bottom();
+        // max scroll = 20 - 5 = 15
+        assert_eq!(state.diff_scroll(), 15);
+        state.scroll_diff_to_top();
+        assert_eq!(state.diff_scroll(), 0);
+    }
+
+    #[test]
+    fn test_scroll_diff_page_clamps() {
+        let mut state = make_state();
+        state.set_expanded_diff("a.rs".to_string(), diff_with_lines(19)); // 20 total
+        state.set_diff_viewport_height(5); // max scroll = 15
+        state.scroll_diff_page(100);
+        assert_eq!(state.diff_scroll(), 15);
+        state.scroll_diff_page(-3);
+        assert_eq!(state.diff_scroll(), 12);
+        state.scroll_diff_page(-100);
+        assert_eq!(state.diff_scroll(), 0);
+    }
+
+    #[test]
+    fn test_scroll_diff_to_bottom_when_content_fits_stays_zero() {
+        let mut state = make_state();
+        state.set_expanded_diff("a.rs".to_string(), diff_with_lines(2)); // 3 total
+        state.set_diff_viewport_height(50); // viewport bigger than content
+        state.scroll_diff_to_bottom();
+        assert_eq!(state.diff_scroll(), 0);
     }
 }

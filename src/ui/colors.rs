@@ -15,7 +15,7 @@ pub const DELETIONS: Color = Color::Red;
 /// File paths — inherit the terminal's default foreground.
 pub const FILE_PATH: Color = Color::Reset;
 /// Header text (repo/branch and segment labels).
-pub const HEADER_TEXT: Color = Color::Magenta;
+pub const HEADER_TEXT: Color = Color::Gray;
 /// Separators between header segments.
 pub const HEADER_SEPARATOR: Color = Color::DarkGray;
 /// Default (unfocused) pane border.
@@ -56,10 +56,13 @@ pub const DIFF_BORDER: Color = Color::DarkGray;
 /// Background of a list item highlighted in the worktree-switch dialog.
 pub const FLASH_BG: Color = Color::DarkGray;
 /// Background of a file row flashed after a change that net-added lines (or
-/// left the line count unchanged).
-pub const FLASH_ADD_BG: Color = Color::Green;
+/// left the line count unchanged). A dim 256-color green — bright ANSI green as
+/// a full-row background is too harsh; the background can't be dimmed with a
+/// modifier, so a dark shade is used directly.
+pub const FLASH_ADD_BG: Color = Color::Indexed(22);
 /// Background of a file row flashed after a change that net-removed lines.
-pub const FLASH_DEL_BG: Color = Color::Red;
+/// A dim 256-color red, for the same reason as [`FLASH_ADD_BG`].
+pub const FLASH_DEL_BG: Color = Color::Indexed(52);
 /// Border foreground while the pane border is flashing on a change.
 pub const FLASH_BORDER: Color = Color::Yellow;
 

@@ -154,6 +154,18 @@ pub fn render_diff_overlay(
     frame.render_widget(paragraph, inner);
 }
 
+/// Height in rows of the diff overlay's scrollable inner area for a given
+/// frame `area`. Mirrors `render_diff_overlay`'s geometry: the centred 85%
+/// panel minus its top and bottom border rows.
+///
+/// This is a row count, not a logical-line count — diff lines that wrap span
+/// multiple rows, so page scrolling sized by this value can overshoot
+/// visually when lines wrap. See `AppState::diff_total_lines`.
+pub fn inner_height(area: Rect) -> usize {
+    let panel = centered_rect(85, 85, area);
+    panel.height.saturating_sub(2) as usize
+}
+
 /// Return a centred `Rect` that occupies `percent_x`% width and `percent_y`%
 /// height of `area`.
 fn centered_rect(percent_x: u16, percent_y: u16, area: Rect) -> Rect {
@@ -189,5 +201,12 @@ mod tests {
     #[test]
     fn test_parse_hunk_header_invalid() {
         assert_eq!(parse_hunk_header("not a header"), None);
+    }
+
+    #[test]
+    fn test_inner_height_subtracts_border() {
+        // 100-tall area -> 85% = 85 rows for the panel; minus top+bottom border = 83.
+        let area = Rect::new(0, 0, 100, 100);
+        assert_eq!(inner_height(area), 83);
     }
 }

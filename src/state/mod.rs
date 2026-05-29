@@ -644,7 +644,8 @@ impl AppState {
         self.list_viewport_height
     }
 
-    /// Record the file-list viewport height. Called by the UI each frame.
+    /// Record the file-list viewport height (drawable item rows, after the
+    /// pane inset is applied). Called by the UI each frame.
     pub fn set_list_viewport_height(&mut self, height: usize) {
         self.list_viewport_height = height;
     }

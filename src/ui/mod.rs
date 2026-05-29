@@ -6,6 +6,7 @@
 //! main pane only when a PR exists against the current branch; otherwise
 //! the main pane takes the full frame.
 
+pub mod colors;
 pub mod diff_overlay;
 pub mod fit;
 pub mod header;

@@ -69,6 +69,37 @@ fn format_gutter(kind: &DiffLineKind, old_line: usize, new_line: usize, w: usize
     }
 }
 
+/// Per-column digit width for a file's diff gutter: the digit count of the
+/// largest line number that will be displayed across both the old and new
+/// columns. Floored at 1 so empty/degenerate diffs still render a stable
+/// gutter. Sizing per-file keeps narrow files compact while guaranteeing
+/// 5+ digit line numbers never collide.
+fn gutter_width(diff: &FileDiff) -> usize {
+    let mut max_line = 0usize;
+    for hunk in &diff.hunks {
+        let (mut old_line, mut new_line) = parse_hunk_header(&hunk.header).unwrap_or((1, 1));
+        for diff_line in &hunk.lines {
+            match diff_line.kind {
+                DiffLineKind::Addition => {
+                    max_line = max_line.max(new_line);
+                    new_line += 1;
+                }
+                DiffLineKind::Deletion => {
+                    max_line = max_line.max(old_line);
+                    old_line += 1;
+                }
+                DiffLineKind::Context => {
+                    max_line = max_line.max(old_line).max(new_line);
+                    old_line += 1;
+                    new_line += 1;
+                }
+                DiffLineKind::HunkHeader => {}
+            }
+        }
+    }
+    max_line.to_string().len().max(1)
+}
+
 /// Render the diff overlay onto `frame`.
 ///
 /// The overlay is drawn as a centred, bordered panel on top of whatever is
@@ -253,5 +284,64 @@ mod tests {
         let g = format_gutter(&DiffLineKind::HunkHeader, 0, 0, 4);
         assert_eq!(g, " ".repeat(4 * 2 + 2));
         assert_eq!(g.len(), 10);
+    }
+
+    fn diff_with(hunks: Vec<(&str, Vec<(DiffLineKind, &str)>)>) -> FileDiff {
+        use crate::git::{DiffHunk, DiffLine};
+        FileDiff {
+            hunks: hunks
+                .into_iter()
+                .map(|(header, lines)| DiffHunk {
+                    header: header.to_string(),
+                    lines: lines
+                        .into_iter()
+                        .map(|(kind, content)| DiffLine {
+                            kind,
+                            content: content.to_string(),
+                        })
+                        .collect(),
+                })
+                .collect(),
+        }
+    }
+
+    #[test]
+    fn test_gutter_width_empty_diff_is_one() {
+        let diff = FileDiff::default();
+        assert_eq!(gutter_width(&diff), 1);
+    }
+
+    #[test]
+    fn test_gutter_width_small_numbers() {
+        // Lines run 1..=3 on each side -> 1 digit.
+        let diff = diff_with(vec![(
+            "@@ -1,3 +1,3 @@",
+            vec![
+                (DiffLineKind::Context, "a"),
+                (DiffLineKind::Context, "b"),
+                (DiffLineKind::Context, "c"),
+            ],
+        )]);
+        assert_eq!(gutter_width(&diff), 1);
+    }
+
+    #[test]
+    fn test_gutter_width_tracks_largest_across_hunks() {
+        // Second hunk starts at 9998 with 3 context lines -> reaches 10000 (5 digits).
+        let diff = diff_with(vec![
+            (
+                "@@ -1,2 +1,2 @@",
+                vec![(DiffLineKind::Context, "a"), (DiffLineKind::Context, "b")],
+            ),
+            (
+                "@@ -9998,3 +9998,3 @@",
+                vec![
+                    (DiffLineKind::Context, "x"),
+                    (DiffLineKind::Context, "y"),
+                    (DiffLineKind::Context, "z"),
+                ],
+            ),
+        ]);
+        assert_eq!(gutter_width(&diff), 5);
     }
 }

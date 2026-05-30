@@ -15,8 +15,6 @@ pub struct AppConfig {
     pub display: DisplayConfig,
     /// PR widget configuration
     pub pr: PrConfig,
-    /// Keybinding overrides
-    pub keys: KeyConfig,
     /// Shell command used to open a file for editing. Falls back to `$EDITOR`,
     /// then to `vim` when unset.
     pub edit_command: Option<String>,
@@ -31,7 +29,6 @@ impl Default for AppConfig {
             debounce_ms: 500,
             display: DisplayConfig::default(),
             pr: PrConfig::default(),
-            keys: KeyConfig::default(),
             edit_command: None,
             base_branch: None,
         }
@@ -42,8 +39,6 @@ impl Default for AppConfig {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
 pub struct DisplayConfig {
-    /// Number of diff context lines to show around changes
-    pub context_lines: usize,
     /// Flash the background of a file row when its diff stats change
     pub flash_on_change: bool,
     /// Duration in milliseconds for the flash effect
@@ -59,7 +54,6 @@ pub struct DisplayConfig {
 impl Default for DisplayConfig {
     fn default() -> Self {
         Self {
-            context_lines: 3,
             flash_on_change: true,
             flash_duration_ms: 600,
             scroll_padding: 3,
@@ -74,46 +68,11 @@ impl Default for DisplayConfig {
 pub struct PrConfig {
     /// Whether the PR tab / polling is enabled
     pub enabled: bool,
-    /// Whether to show PR labels
-    pub show_labels: bool,
-    /// **Deprecated**: retained so old config files parse cleanly. No longer
-    /// affects rendering since the PR widget is now a tab.
-    #[serde(default)]
-    pub layout: Option<String>,
 }
 
 impl Default for PrConfig {
     fn default() -> Self {
-        Self {
-            enabled: true,
-            show_labels: false,
-            layout: None,
-        }
-    }
-}
-
-/// Keybinding configuration
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(default)]
-pub struct KeyConfig {
-    pub quit: String,
-    pub up: String,
-    pub down: String,
-    pub expand: String,
-    pub collapse: String,
-    pub refresh: String,
-}
-
-impl Default for KeyConfig {
-    fn default() -> Self {
-        Self {
-            quit: "q".to_string(),
-            up: "k".to_string(),
-            down: "j".to_string(),
-            expand: "l".to_string(),
-            collapse: "h".to_string(),
-            refresh: "r".to_string(),
-        }
+        Self { enabled: true }
     }
 }
 
@@ -139,12 +98,6 @@ impl AppConfig {
                     .with_context(|| format!("Failed to parse config file: {}", p.display()))?;
                 tracing::info!(?p, "Loaded config");
 
-                if config.pr.layout.is_some() {
-                    tracing::warn!(
-                        "`pr.layout` is deprecated and ignored — the PR widget is now a tab."
-                    );
-                }
-
                 Ok(config)
             }
             _ => {
@@ -160,10 +113,44 @@ mod tests {
     use super::*;
 
     #[test]
+    fn test_removed_keys_are_ignored_gracefully() {
+        let dir = std::env::temp_dir().join("perch-test-config-removed-keys");
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("config.toml");
+        std::fs::write(
+            &path,
+            r#"
+debounce_ms = 250
+
+[display]
+context_lines = 9
+flash_on_change = false
+
+[pr]
+enabled = false
+show_labels = true
+layout = "right"
+
+[keys]
+quit = "x"
+up = "w"
+"#,
+        )
+        .unwrap();
+
+        // Removed keys are unknown to serde and silently ignored; known keys still apply.
+        let config = AppConfig::load(Some(&path)).unwrap();
+        assert_eq!(config.debounce_ms, 250);
+        assert!(!config.display.flash_on_change);
+        assert!(!config.pr.enabled);
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
     fn test_default_config() {
         let config = AppConfig::default();
         assert_eq!(config.debounce_ms, 500);
-        assert_eq!(config.display.context_lines, 3);
         assert!(config.display.flash_on_change);
         assert_eq!(config.display.flash_duration_ms, 600);
         assert_eq!(config.display.scroll_padding, 3);
@@ -173,19 +160,6 @@ mod tests {
     fn test_default_pr_config() {
         let pr = PrConfig::default();
         assert!(pr.enabled);
-        assert!(pr.layout.is_none());
-        assert!(!pr.show_labels);
-    }
-
-    #[test]
-    fn test_default_keys() {
-        let keys = KeyConfig::default();
-        assert_eq!(keys.quit, "q");
-        assert_eq!(keys.up, "k");
-        assert_eq!(keys.down, "j");
-        assert_eq!(keys.expand, "l");
-        assert_eq!(keys.collapse, "h");
-        assert_eq!(keys.refresh, "r");
     }
 
     #[test]
@@ -206,14 +180,12 @@ mod tests {
             r#"
 [pr]
 enabled = false
-layout = "right"
 "#,
         )
         .unwrap();
 
         let config = AppConfig::load(Some(&path)).unwrap();
         assert!(!config.pr.enabled);
-        assert_eq!(config.pr.layout.as_deref(), Some("right"));
 
         std::fs::remove_dir_all(&dir).ok();
     }
@@ -229,10 +201,8 @@ layout = "right"
         assert_eq!(config.edit_command.as_deref(), Some("nvim"));
         // Unspecified fields use defaults
         assert_eq!(config.debounce_ms, 500);
-        assert_eq!(config.display.context_lines, 3);
         assert!(config.display.flash_on_change);
         assert!(config.pr.enabled);
-        assert!(config.pr.layout.is_none());
         assert_eq!(config.display.scroll_padding, 3);
 
         std::fs::remove_dir_all(&dir).ok();
@@ -341,33 +311,6 @@ layout = "right"
     fn test_base_branch_default_none() {
         let config = AppConfig::default();
         assert!(config.base_branch.is_none());
-    }
-
-    #[test]
-    fn test_legacy_pr_layout_parses_without_error() {
-        let dir = std::env::temp_dir().join("perch-test-config-legacy-layout");
-        std::fs::create_dir_all(&dir).unwrap();
-        let path = dir.join("config.toml");
-        std::fs::write(
-            &path,
-            r#"
-[pr]
-enabled = true
-layout = "right"
-show_labels = false
-"#,
-        )
-        .unwrap();
-
-        // Legacy `layout` key should parse cleanly — accepted but deprecated.
-        let config = AppConfig::load(Some(&path)).unwrap();
-        assert!(config.pr.enabled);
-        assert!(!config.pr.show_labels);
-        // The deprecated field is still present in the struct but its value is
-        // irrelevant to runtime behavior.
-        assert_eq!(config.pr.layout.as_deref(), Some("right"));
-
-        std::fs::remove_dir_all(&dir).ok();
     }
 
     #[test]

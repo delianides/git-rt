@@ -53,6 +53,22 @@ pub fn parse_hunk_header(header: &str) -> Option<(usize, usize)> {
     Some((old_start, new_start))
 }
 
+/// Build the line-number gutter string for one diff line.
+///
+/// Both columns are right-aligned to `w` and separated by a single space, so
+/// the old and new numbers never collide regardless of magnitude. A trailing
+/// space separates the gutter from the line content. Additions blank the old
+/// column; deletions blank the new column; hunk headers are blank across the
+/// full `2 * w + 2` gutter width.
+fn format_gutter(kind: &DiffLineKind, old_line: usize, new_line: usize, w: usize) -> String {
+    match kind {
+        DiffLineKind::Addition => format!("{:>w$} {:>w$} ", "", new_line, w = w),
+        DiffLineKind::Deletion => format!("{:>w$} {:>w$} ", old_line, "", w = w),
+        DiffLineKind::Context => format!("{:>w$} {:>w$} ", old_line, new_line, w = w),
+        DiffLineKind::HunkHeader => " ".repeat(2 * w + 2),
+    }
+}
+
 /// Render the diff overlay onto `frame`.
 ///
 /// The overlay is drawn as a centred, bordered panel on top of whatever is
@@ -201,5 +217,41 @@ mod tests {
         // 100-tall area -> 85% = 85 rows for the panel; minus top+bottom border = 83.
         let area = Rect::new(0, 0, 100, 100);
         assert_eq!(inner_height(area), 83);
+    }
+
+    #[test]
+    fn test_format_gutter_context_separates_columns() {
+        // width 2, both columns present
+        let g = format_gutter(&DiffLineKind::Context, 12, 34, 2);
+        assert_eq!(g, "12 34 ");
+    }
+
+    #[test]
+    fn test_format_gutter_addition_blanks_old_column() {
+        let g = format_gutter(&DiffLineKind::Addition, 12, 34, 2);
+        assert_eq!(g, "   34 ");
+    }
+
+    #[test]
+    fn test_format_gutter_deletion_blanks_new_column() {
+        let g = format_gutter(&DiffLineKind::Deletion, 12, 34, 2);
+        assert_eq!(g, "12    ");
+    }
+
+    #[test]
+    fn test_format_gutter_five_digits_stay_separated() {
+        // The bug: 5-digit numbers used to collide. With width 5 they must
+        // be separated by at least one space.
+        let g = format_gutter(&DiffLineKind::Context, 12345, 12346, 5);
+        assert_eq!(g, "12345 12346 ");
+        assert!(g.contains("12345 12346"));
+    }
+
+    #[test]
+    fn test_format_gutter_hunk_header_is_blank_of_matching_width() {
+        // Blank gutter must span 2*w + 2 columns to align with number rows.
+        let g = format_gutter(&DiffLineKind::HunkHeader, 0, 0, 4);
+        assert_eq!(g, " ".repeat(4 * 2 + 2));
+        assert_eq!(g.len(), 10);
     }
 }

@@ -1,0 +1,2 @@
+[alias]
+dev-install = "run -p xtask --release -q -- install"

@@ -19,7 +19,7 @@ pub struct AppConfig {
     /// then to `vim` when unset.
     pub edit_command: Option<String>,
     /// Base branch for branch-scoped diff (e.g. "main", "develop").
-    /// Auto-detected from remote if omitted.
+    /// Auto-detected if omitted (see base resolution tiers).
     pub base_branch: Option<String>,
 }
 

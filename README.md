@@ -45,9 +45,17 @@ perch can be launched from any directory inside a git working tree — the repos
 | ------------------------- | ----------------------------------------------------------------------- |
 | `[PATH]`                  | Repository path (default `.`)                                           |
 | `-c, --config <FILE>`     | Path to config file                                                     |
-| `-d, --debounce <MS>`     | Filesystem debounce in ms (default `200`)                               |
-| `--log <LEVEL>`           | Logging level: `trace`, `debug`, `info`, `warn`, `error`                |
+| `-d, --debounce <MS>`     | Filesystem debounce in ms (default `500`)                               |
 | `--base <BRANCH>`         | Base branch for the branch-scoped diff range                            |
+| `--no-pr`                 | Disable the GitHub PR status strip                                      |
+| `--view <MODE>`           | Startup view: `normal`, `condensed`, `tree`                             |
+| `--no-flash`              | Disable the row flash on change                                         |
+| `--flash-duration <MS>`   | Flash duration in ms                                                    |
+| `--scroll-padding <N>`    | Rows kept visible above/below the selection                             |
+| `--edit-command <CMD>`    | Editor command for the `e` key                                          |
+| `--log <LEVEL>`           | Logging level: `trace`, `debug`, `info`, `warn`, `error`                |
+
+Any flag that mirrors a config setting overrides the config file. Precedence is **CLI flag > config file > built-in default**.
 
 ## Keybindings
 
@@ -79,7 +87,7 @@ Config lives at `~/.config/perch/config.toml`. All sections are optional; defaul
 ### Top-level
 
 ```toml
-debounce_ms = 200            # filesystem event debounce in ms
+debounce_ms = 500            # filesystem event debounce in ms
 base_branch = "main"         # optional override for branch-scoped diff base
 ```
 
@@ -94,23 +102,10 @@ working-tree status and Normal hides the Committed group.
 
 ```toml
 [display]
-context_lines = 3            # diff context lines
+default_view = "normal"      # startup view: normal | condensed | tree
 flash_on_change = true       # flash a file row when it changes
 flash_duration_ms = 600      # flash duration
-```
-
-### `[keys]`
-
-Rebindable single-character keys.
-
-```toml
-[keys]
-quit = "q"
-up = "k"
-down = "j"
-expand = "l"
-collapse = "h"
-refresh = "r"
+scroll_padding = 3           # rows kept visible around the selection (0 disables)
 ```
 
 ### `[pr]`
@@ -120,7 +115,6 @@ Controls the compact PR status strip that appears when the current branch has an
 ```toml
 [pr]
 enabled = true
-show_labels = false
 ```
 
 The GitHub token is discovered from the `GITHUB_TOKEN` environment variable or your `git config`. If no token is available the PR strip silently stays hidden.
@@ -128,17 +122,17 @@ The GitHub token is discovered from the `GITHUB_TOKEN` environment variable or y
 ### Full example
 
 ```toml
-debounce_ms = 200
+debounce_ms = 500
 base_branch = "main"
 
 [display]
-context_lines = 3
+default_view = "normal"
 flash_on_change = true
 flash_duration_ms = 600
+scroll_padding = 3
 
 [pr]
 enabled = true
-show_labels = false
 ```
 
 ## Colors

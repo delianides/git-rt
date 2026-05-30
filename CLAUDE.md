@@ -21,7 +21,7 @@ src/
 ├── ui/               # Rendering via ratatui
 │   └── mod.rs        # Layout, file list, status line, help overlay
 └── config/           # Configuration loading and defaults
-    └── mod.rs        # TOML parsing, XDG paths, default keybindings
+    └── mod.rs        # TOML parsing, XDG paths, CLI-flag overrides
 ```
 
 The repo is a Cargo workspace. The only non-root member is `xtask/` — dev tooling (`publish = false`, `dist = false`, never shipped in releases) that provides the `cargo dev-install` / `cargo run -p xtask -- uninstall` commands.
@@ -134,13 +134,21 @@ Arguments:
   [PATH]  Path to git repository or worktree (defaults to current directory)
 
 Options:
-  -c, --config <FILE>     Path to config file
-  -d, --debounce <MS>     Debounce interval in milliseconds [default: 500]
-      --log <LEVEL>       Enable logging (trace, debug, info, warn, error)
-      --base <BRANCH>     Base branch for the branch-scoped diff range
-  -h, --help              Print help
-  -V, --version           Print version
+  -c, --config <FILE>         Path to config file
+  -d, --debounce <MS>         Debounce interval in milliseconds [default: 500]
+      --log <LEVEL>           Enable logging (trace, debug, info, warn, error)
+      --base <BRANCH>         Base branch for the branch-scoped diff range
+      --no-pr                 Disable the GitHub PR status strip
+      --view <MODE>           Startup view (normal, condensed, tree)
+      --no-flash              Disable the row flash on change
+      --flash-duration <MS>   Flash duration in milliseconds
+      --scroll-padding <N>    Rows kept visible above/below the selection
+      --edit-command <CMD>    Editor command for the `e` key
+  -h, --help                  Print help
+  -V, --version               Print version
 ```
+
+Flags that mirror config keys override the config file (precedence: flag > config > default).
 
 ## Development Commands
 
@@ -156,7 +164,7 @@ cargo dev-install              # symlink the debug build into ~/.local/bin (xtas
 
 ## Current Status
 
-Core feature set is complete: live file-list with numstat, status-grouped Normal view (plus Condensed and Tree view modes), PR status strip, in-app diff overlay, filesystem watching, config file + keybindings, multi-worktree support, and branch-scoped diff range. Colors follow the terminal's ANSI palette (no theming).
+Core feature set is complete: live file-list with numstat, status-grouped Normal view (plus Condensed and Tree view modes), PR status strip, in-app diff overlay, filesystem watching, config file (with mirroring CLI flags), multi-worktree support, and branch-scoped diff range. Colors follow the terminal's ANSI palette (no theming).
 
 Remaining open items:
 

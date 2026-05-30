@@ -132,13 +132,19 @@ pub fn render_diff_overlay(
     let inner = block.inner(overlay_rect);
     frame.render_widget(block, overlay_rect);
 
+    // Size the line-number gutter to this file's largest line number.
+    let w = gutter_width(diff);
+
     // Build diff lines with line numbers and colours
     let mut lines: Vec<Line> = Vec::new();
 
     for hunk in &diff.hunks {
         // Hunk header line
         lines.push(Line::from(vec![
-            Span::styled("         ", Style::default().fg(colors::DIFF_LINE_NUMBER)),
+            Span::styled(
+                format_gutter(&DiffLineKind::HunkHeader, 0, 0, w),
+                Style::default().fg(colors::DIFF_LINE_NUMBER),
+            ),
             Span::styled(
                 &hunk.header,
                 Style::default()
@@ -150,27 +156,22 @@ pub fn render_diff_overlay(
         let (mut old_line, mut new_line) = parse_hunk_header(&hunk.header).unwrap_or((1, 1));
 
         for diff_line in &hunk.lines {
-            let (gutter, style) = match diff_line.kind {
+            let gutter = format_gutter(&diff_line.kind, old_line, new_line, w);
+            let style = match diff_line.kind {
                 DiffLineKind::Addition => {
-                    let g = format!("{:>4}{:>4} ", "    ", new_line);
                     new_line += 1;
-                    (g, Style::default().fg(colors::DIFF_ADD_FG))
+                    Style::default().fg(colors::DIFF_ADD_FG)
                 }
                 DiffLineKind::Deletion => {
-                    let g = format!("{:>4}{:>4} ", old_line, "    ");
                     old_line += 1;
-                    (g, Style::default().fg(colors::DIFF_DEL_FG))
+                    Style::default().fg(colors::DIFF_DEL_FG)
                 }
                 DiffLineKind::Context => {
-                    let g = format!("{:>4}{:>4} ", old_line, new_line);
                     old_line += 1;
                     new_line += 1;
-                    (g, Style::default().fg(colors::DIFF_CONTEXT))
+                    Style::default().fg(colors::DIFF_CONTEXT)
                 }
-                DiffLineKind::HunkHeader => (
-                    "         ".to_string(),
-                    Style::default().fg(colors::DIFF_HUNK_HEADER),
-                ),
+                DiffLineKind::HunkHeader => Style::default().fg(colors::DIFF_HUNK_HEADER),
             };
 
             let prefix = match diff_line.kind {

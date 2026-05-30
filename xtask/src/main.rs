@@ -31,10 +31,18 @@ fn workspace_root() -> PathBuf {
 }
 
 fn target_debug_dir() -> PathBuf {
-    match env::var("CARGO_TARGET_DIR") {
-        Ok(dir) => PathBuf::from(dir).join("debug"),
-        Err(_) => workspace_root().join("target").join("debug"),
-    }
+    let base = match env::var("CARGO_TARGET_DIR") {
+        Ok(dir) => {
+            let p = PathBuf::from(dir);
+            if p.is_absolute() {
+                p
+            } else {
+                workspace_root().join(p)
+            }
+        }
+        Err(_) => workspace_root().join("target"),
+    };
+    base.join("debug")
 }
 
 fn bin_dir() -> Result<PathBuf> {
@@ -55,6 +63,17 @@ fn install_cmd() -> Result<()> {
 
     let bin = bin_dir()?;
     let target = target_debug_dir();
+
+    for name in BINARIES {
+        let built = target.join(name);
+        if !built.exists() {
+            bail!(
+                "expected built binary {} not found after build",
+                built.display()
+            );
+        }
+    }
+
     link_binaries(&bin, &target, BINARIES)?;
 
     for name in BINARIES {

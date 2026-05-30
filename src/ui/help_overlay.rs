@@ -1,24 +1,48 @@
 //! Full-screen help overlay listing built-in keybindings.
 //!
-//! Shown when the user presses `?`. Displays a centred panel at ~85% of
-//! the terminal area with a two-column list: key on the left, description
-//! on the right. Dismissible with `?`, `Esc`, `q`, or `Space`.
+//! Shown when the user presses `?`. Displays a centred panel sized to fit its
+//! content, with a two-column list: key on the left, description on the right.
+//! Dismissible with `?`, `Esc`, `q`, or `Space`.
 
 use ratatui::{
     layout::Rect,
     style::{Modifier, Style},
     text::{Line, Span},
-    widgets::{Block, BorderType, Borders, Clear, Paragraph, Wrap},
+    widgets::{Block, BorderType, Borders, Clear, Padding, Paragraph, Wrap},
     Frame,
 };
 
 use crate::ui::colors;
+use crate::ui::fit;
 
-/// Return a centred `Rect` that occupies `percent_x`% width and `percent_y`%
-/// height of `area`.
-fn centered_rect(percent_x: u16, percent_y: u16, area: Rect) -> Rect {
-    let w = area.width * percent_x / 100;
-    let h = area.height * percent_y / 100;
+/// Horizontal padding (columns) inside the help overlay border, each side.
+const HELP_H_PAD: u16 = 2;
+
+/// Size the help overlay to its content: just large enough to show every help
+/// line, plus borders and `HELP_H_PAD` columns of breathing room on each side.
+/// Centred in `area` and never larger than `area` itself. Width is also floored
+/// to the title width so the " Keybindings " title never clips.
+fn help_overlay_rect(area: Rect) -> Rect {
+    let lines = build_help_lines();
+    let content_h = lines.len() as u16;
+    let title_w = fit::display_width(" Keybindings ") as u16;
+    let content_w = lines
+        .iter()
+        .map(|line| {
+            line.spans
+                .iter()
+                .map(|s| fit::display_width(s.content.as_ref()))
+                .sum::<usize>() as u16
+        })
+        .max()
+        .unwrap_or(0)
+        .max(title_w);
+
+    let desired_w = content_w + 2 * HELP_H_PAD + 2; // both-side padding + borders
+    let desired_h = content_h + 2; // top + bottom borders
+
+    let w = desired_w.min(area.width);
+    let h = desired_h.min(area.height);
     let x = area.x + (area.width.saturating_sub(w)) / 2;
     let y = area.y + (area.height.saturating_sub(h)) / 2;
     Rect::new(x, y, w, h)
@@ -77,13 +101,25 @@ pub fn build_help_lines() -> Vec<Line<'static>> {
     let mut lines: Vec<Line<'static>> = Vec::new();
     lines.push(Line::from(""));
 
+    // Width of the widest key across every section, plus a 2-column gap, so
+    // all descriptions line up regardless of key length. Measured by terminal
+    // display width (not char count) to stay correct with arrow glyphs.
+    let key_w = entries
+        .iter()
+        .flat_map(|(_, rows)| rows.iter())
+        .map(|(key, _)| fit::display_width(key))
+        .max()
+        .unwrap_or(0)
+        + 2;
+
     for (section, rows) in entries {
         lines.push(Line::from(vec![
             Span::raw("  "),
             Span::styled(section.to_string(), header_style),
         ]));
         for (key, desc) in *rows {
-            let key_padded = format!("{:<14}", key);
+            let pad = key_w.saturating_sub(fit::display_width(key));
+            let key_padded = format!("{key}{}", " ".repeat(pad));
             lines.push(Line::from(vec![
                 Span::raw("    "),
                 Span::styled(key_padded, key_style),
@@ -99,7 +135,7 @@ pub fn build_help_lines() -> Vec<Line<'static>> {
 /// Render the help overlay onto `frame`.
 pub fn render_help_overlay(frame: &mut Frame) {
     let area = frame.area();
-    let overlay_rect = centered_rect(85, 85, area);
+    let overlay_rect = help_overlay_rect(area);
 
     frame.render_widget(Clear, overlay_rect);
 
@@ -108,7 +144,8 @@ pub fn render_help_overlay(frame: &mut Frame) {
         .border_type(BorderType::Rounded)
         .border_style(Style::default().fg(colors::BORDER_FOCUSED))
         .title(" Keybindings ")
-        .title_style(Style::default().fg(colors::HEADER_TEXT));
+        .title_style(Style::default().fg(colors::HEADER_TEXT))
+        .padding(Padding::horizontal(HELP_H_PAD));
 
     let inner = block.inner(overlay_rect);
     frame.render_widget(block, overlay_rect);
@@ -121,6 +158,7 @@ pub fn render_help_overlay(frame: &mut Frame) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::ui::fit::display_width;
 
     fn line_text(line: &Line<'_>) -> String {
         line.spans
@@ -131,6 +169,43 @@ mod tests {
 
     fn lines_text(lines: &[Line<'_>]) -> String {
         lines.iter().map(line_text).collect::<Vec<_>>().join("\n")
+    }
+
+    /// Display width of a row's indent + padded-key (i.e. the column where the
+    /// description begins). Only meaningful for key/desc rows (3 spans).
+    fn desc_column(line: &Line<'_>) -> Option<usize> {
+        if line.spans.len() != 3 {
+            return None;
+        }
+        let prefix: String = line.spans[..2].iter().map(|s| s.content.as_ref()).collect();
+        Some(display_width(&prefix))
+    }
+
+    #[test]
+    fn test_help_descriptions_share_one_column() {
+        let lines = build_help_lines();
+        let columns: Vec<usize> = lines.iter().filter_map(desc_column).collect();
+        assert!(columns.len() > 5, "expected several key/desc rows");
+        let first = columns[0];
+        assert!(
+            columns.iter().all(|&c| c == first),
+            "all descriptions must start at the same column, got {columns:?}"
+        );
+    }
+
+    #[test]
+    fn test_help_longest_key_keeps_gap() {
+        // "gg / G / Ctrl+u/d/f/b" is the widest key; it must still leave a >=2
+        // space gap before its description rather than overflowing.
+        let lines = build_help_lines();
+        let row = lines
+            .iter()
+            .find(|l| line_text(l).contains("gg / G / Ctrl+u/d/f/b"))
+            .expect("missing longest-key row");
+        assert_eq!(row.spans.len(), 3);
+        let key_span = row.spans[1].content.as_ref();
+        let gap = display_width(key_span) - display_width("gg / G / Ctrl+u/d/f/b");
+        assert!(gap >= 2, "expected >=2 space gap, got {gap}");
     }
 
     #[test]
@@ -173,5 +248,59 @@ mod tests {
             let text = line_text(line);
             text.starts_with("    m") && text.contains("Cycle view mode")
         }));
+    }
+
+    #[test]
+    fn test_help_rect_fits_content_not_full_box() {
+        let area = Rect::new(0, 0, 200, 100);
+        let rect = help_overlay_rect(area);
+        let lines = build_help_lines();
+        // Height is exactly the content plus top+bottom borders.
+        assert_eq!(rect.height, lines.len() as u16 + 2);
+        // Much smaller than the old fixed 85% box in both dimensions.
+        assert!(rect.height < area.height * 85 / 100);
+        assert!(rect.width < area.width);
+    }
+
+    #[test]
+    fn test_help_rect_centered_in_area() {
+        let area = Rect::new(0, 0, 200, 100);
+        let rect = help_overlay_rect(area);
+        assert_eq!(rect.x, area.x + (area.width - rect.width) / 2);
+        assert_eq!(rect.y, area.y + (area.height - rect.height) / 2);
+    }
+
+    #[test]
+    fn test_help_rect_clamped_to_small_area() {
+        let area = Rect::new(0, 0, 20, 8);
+        let rect = help_overlay_rect(area);
+        assert!(
+            rect.width <= area.width,
+            "width {} exceeds area",
+            rect.width
+        );
+        assert!(
+            rect.height <= area.height,
+            "height {} exceeds area",
+            rect.height
+        );
+    }
+
+    #[test]
+    fn test_help_rect_width_accounts_for_content_and_padding() {
+        let area = Rect::new(0, 0, 200, 100);
+        let rect = help_overlay_rect(area);
+        let content_w = build_help_lines()
+            .iter()
+            .map(|l| {
+                l.spans
+                    .iter()
+                    .map(|s| fit::display_width(s.content.as_ref()))
+                    .sum::<usize>() as u16
+            })
+            .max()
+            .unwrap_or(0);
+        // borders (2) + horizontal padding on both sides + the widest line.
+        assert_eq!(rect.width, content_w + 2 * HELP_H_PAD + 2);
     }
 }

@@ -294,6 +294,43 @@ enabled = false
         std::fs::remove_dir_all(&dir).ok();
     }
 
+    /// `ViewMode` derives both serde (`rename_all = "lowercase"`, used here for
+    /// `display.default_view`) and `clap::ValueEnum` (used for the `--view`
+    /// flag). The two derives generate their string mappings independently, so
+    /// this guards that a given spelling resolves to the same variant through
+    /// both paths — a rename or `#[serde(rename = ...)]` on one derive only
+    /// would break this and silently diverge CLI from config.
+    #[test]
+    fn view_mode_cli_and_config_spellings_agree() {
+        use crate::state::ViewMode;
+        use clap::ValueEnum;
+
+        let dir = std::env::temp_dir().join("perch-test-config-view-parity");
+        std::fs::create_dir_all(&dir).unwrap();
+
+        for variant in ViewMode::value_variants() {
+            // The spelling clap accepts on the CLI for this variant.
+            let cli_name = variant
+                .to_possible_value()
+                .expect("ViewMode variants are not skipped");
+            let name = cli_name.get_name();
+
+            // The same spelling must parse through config TOML to the same variant.
+            let path = dir.join("config.toml");
+            std::fs::write(&path, format!("[display]\ndefault_view = \"{name}\"\n")).unwrap();
+            let config = AppConfig::load(Some(&path)).unwrap();
+
+            assert_eq!(
+                config.display.default_view, *variant,
+                "config spelling \"{name}\" must resolve to the same variant clap uses"
+            );
+            // And clap must round-trip its own spelling back to this variant.
+            assert_eq!(ViewMode::from_str(name, true).unwrap(), *variant);
+        }
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
     #[test]
     fn test_base_branch_config() {
         let dir = std::env::temp_dir().join("perch-test-config-base-branch");

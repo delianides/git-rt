@@ -28,7 +28,7 @@ const VERSION: &str = if cfg!(debug_assertions) {
     env!("CARGO_PKG_VERSION")
 };
 
-#[derive(Parser, Debug)]
+#[derive(Parser, Debug, Default)]
 #[command(
     name = "perch",
     version = VERSION,
@@ -190,32 +190,27 @@ mod tests {
 #[cfg(test)]
 mod merge_tests {
     use super::*;
-    use crate::config::AppConfig;
+    use crate::config::{AppConfig, DisplayConfig};
     use crate::state::ViewMode;
     use std::path::PathBuf;
 
     fn bare_cli() -> Cli {
         Cli {
             path: PathBuf::from("."),
-            config: None,
-            debounce: None,
-            log: None,
-            base: None,
-            no_pr: false,
-            view: None,
-            no_flash: false,
-            flash_duration: None,
-            scroll_padding: None,
-            edit_command: None,
+            ..Default::default()
         }
     }
 
     #[test]
-    #[allow(clippy::field_reassign_with_default)]
     fn absent_flags_keep_config_values() {
-        let mut config = AppConfig::default();
-        config.debounce_ms = 250;
-        config.display.default_view = ViewMode::Tree;
+        let config = AppConfig {
+            debounce_ms: 250,
+            display: DisplayConfig {
+                default_view: ViewMode::Tree,
+                ..Default::default()
+            },
+            ..Default::default()
+        };
         let merged = merge_cli_overrides(config, &bare_cli());
         assert_eq!(merged.debounce_ms, 250);
         assert_eq!(merged.display.default_view, ViewMode::Tree);

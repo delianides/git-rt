@@ -1,5 +1,17 @@
 # Changelog
 
+## [1.7.0](https://github.com/upsertco/perch/compare/v1.6.0...v1.7.0) (2026-05-30)
+
+
+### Features
+
+* cargo dev-install to symlink dev build into PATH ([#94](https://github.com/upsertco/perch/issues/94)) ([ae846d6](https://github.com/upsertco/perch/commit/ae846d636c817af648799fb6c9b5d90b87492501))
+
+
+### Bug Fixes
+
+* text-spacing in diff overlay and help menu ([#95](https://github.com/upsertco/perch/issues/95)) ([52f8cb2](https://github.com/upsertco/perch/commit/52f8cb25ac2f4e273e140631dcc0c9882b2555fa))
+
 ## [1.6.0](https://github.com/upsertco/perch/compare/v1.5.1...v1.6.0) (2026-05-29)
 
 

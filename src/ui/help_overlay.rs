@@ -13,6 +13,7 @@ use ratatui::{
 };
 
 use crate::ui::colors;
+use crate::ui::fit;
 
 /// Return a centred `Rect` that occupies `percent_x`% width and `percent_y`%
 /// height of `area`.
@@ -77,13 +78,25 @@ pub fn build_help_lines() -> Vec<Line<'static>> {
     let mut lines: Vec<Line<'static>> = Vec::new();
     lines.push(Line::from(""));
 
+    // Width of the widest key across every section, plus a 2-column gap, so
+    // all descriptions line up regardless of key length. Measured by terminal
+    // display width (not char count) to stay correct with arrow glyphs.
+    let key_w = entries
+        .iter()
+        .flat_map(|(_, rows)| rows.iter())
+        .map(|(key, _)| fit::display_width(key))
+        .max()
+        .unwrap_or(0)
+        + 2;
+
     for (section, rows) in entries {
         lines.push(Line::from(vec![
             Span::raw("  "),
             Span::styled(section.to_string(), header_style),
         ]));
         for (key, desc) in *rows {
-            let key_padded = format!("{:<14}", key);
+            let pad = key_w.saturating_sub(fit::display_width(key));
+            let key_padded = format!("{key}{}", " ".repeat(pad));
             lines.push(Line::from(vec![
                 Span::raw("    "),
                 Span::styled(key_padded, key_style),
@@ -121,6 +134,7 @@ pub fn render_help_overlay(frame: &mut Frame) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::ui::fit::display_width;
 
     fn line_text(line: &Line<'_>) -> String {
         line.spans
@@ -131,6 +145,43 @@ mod tests {
 
     fn lines_text(lines: &[Line<'_>]) -> String {
         lines.iter().map(line_text).collect::<Vec<_>>().join("\n")
+    }
+
+    /// Display width of a row's indent + padded-key (i.e. the column where the
+    /// description begins). Only meaningful for key/desc rows (3 spans).
+    fn desc_column(line: &Line<'_>) -> Option<usize> {
+        if line.spans.len() != 3 {
+            return None;
+        }
+        let prefix: String = line.spans[..2].iter().map(|s| s.content.as_ref()).collect();
+        Some(display_width(&prefix))
+    }
+
+    #[test]
+    fn test_help_descriptions_share_one_column() {
+        let lines = build_help_lines();
+        let columns: Vec<usize> = lines.iter().filter_map(desc_column).collect();
+        assert!(columns.len() > 5, "expected several key/desc rows");
+        let first = columns[0];
+        assert!(
+            columns.iter().all(|&c| c == first),
+            "all descriptions must start at the same column, got {columns:?}"
+        );
+    }
+
+    #[test]
+    fn test_help_longest_key_keeps_gap() {
+        // "gg / G / Ctrl+u/d/f/b" is the widest key; it must still leave a >=2
+        // space gap before its description rather than overflowing.
+        let lines = build_help_lines();
+        let row = lines
+            .iter()
+            .find(|l| line_text(l).contains("gg / G / Ctrl+u/d/f/b"))
+            .expect("missing longest-key row");
+        assert_eq!(row.spans.len(), 3);
+        let key_span = row.spans[1].content.as_ref();
+        let gap = display_width(key_span) - display_width("gg / G / Ctrl+u/d/f/b");
+        assert!(gap >= 2, "expected >=2 space gap, got {gap}");
     }
 
     #[test]

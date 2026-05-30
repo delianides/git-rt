@@ -24,6 +24,8 @@ src/
     └── mod.rs        # TOML parsing, XDG paths, default keybindings
 ```
 
+The repo is a Cargo workspace. The only non-root member is `xtask/` — dev tooling (`publish = false`, `dist = false`, never shipped in releases) that provides the `cargo dev-install` / `cargo run -p xtask -- uninstall` commands.
+
 ## Core Concepts
 
 ### File List (zero-config)
@@ -149,6 +151,7 @@ cargo test                     # Run tests
 cargo clippy                   # Lint
 cargo fmt                      # Format
 RUST_LOG=debug cargo run       # Run with debug logging
+cargo dev-install              # symlink the debug build into ~/.local/bin (xtask crate)
 ```
 
 ## Current Status

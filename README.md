@@ -170,6 +170,18 @@ cargo clippy          # lint
 cargo fmt             # format
 ```
 
+### Dev install (run your local build as `perch`)
+
+```bash
+cargo dev-install                 # build debug + symlink into ~/.local/bin
+cargo run -p xtask -- uninstall   # remove the symlink
+```
+
+This symlinks `target/debug/perch` into `~/.local/bin/perch`, so every later
+`cargo build` is instantly live. It does **not** touch a Homebrew-installed
+`perch` (that lives in the brew prefix); which one runs depends on PATH order —
+the command warns if `~/.local/bin` is missing from PATH or shadowed.
+
 ### Nix commands
 
 ```bash

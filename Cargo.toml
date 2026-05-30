@@ -10,6 +10,10 @@ keywords = ["git", "tui", "terminal", "dashboard", "developer-tools"]
 categories = ["command-line-utilities", "development-tools"]
 default-run = "perch"
 
+[workspace]
+members = ["xtask"]
+resolver = "2"
+
 [[bin]]
 name = "perch"
 path = "src/main.rs"

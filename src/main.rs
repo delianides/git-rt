@@ -28,11 +28,11 @@ const VERSION: &str = if cfg!(debug_assertions) {
     env!("CARGO_PKG_VERSION")
 };
 
-#[derive(Parser, Debug)]
+#[derive(Parser, Debug, Default)]
 #[command(
     name = "perch",
     version = VERSION,
-    about = "Real-time terminal dashboard for git changes"
+    about = "Tracking Real-Time Git Changes During Agentic Workflows"
 )]
 struct Cli {
     /// Path inside a git repository (defaults to current directory; repo root is discovered)
@@ -43,18 +43,72 @@ struct Cli {
     #[arg(short, long)]
     config: Option<PathBuf>,
 
-    /// Debounce interval in milliseconds
-    #[arg(short, long, default_value_t = 500)]
-    debounce: u64,
+    /// Debounce interval in milliseconds (overrides config)
+    #[arg(short, long)]
+    debounce: Option<u64>,
 
     /// Enable logging at the given level (trace, debug, info, warn, error)
     #[arg(long)]
     log: Option<String>,
 
     /// Base branch for branch-scoped diff (overrides config).
-    /// Auto-detected from remote if omitted.
+    /// Auto-detected if omitted.
     #[arg(long)]
     base: Option<String>,
+
+    /// Disable the GitHub PR status strip (overrides config)
+    #[arg(long)]
+    no_pr: bool,
+
+    /// Startup view mode (overrides config)
+    #[arg(long, value_enum)]
+    view: Option<crate::state::ViewMode>,
+
+    /// Disable the row flash on change (overrides config)
+    #[arg(long)]
+    no_flash: bool,
+
+    /// Flash duration in milliseconds (overrides config)
+    #[arg(long)]
+    flash_duration: Option<u64>,
+
+    /// Rows of context kept above/below the selection (overrides config)
+    #[arg(long)]
+    scroll_padding: Option<usize>,
+
+    /// Shell command used to open a file for editing (overrides config)
+    #[arg(long)]
+    edit_command: Option<String>,
+}
+
+/// Overlay CLI flags onto a loaded config. Precedence: CLI flag > config > default.
+/// Value flags override only when present; `--no-pr`/`--no-flash` only force off.
+fn merge_cli_overrides(mut config: config::AppConfig, cli: &Cli) -> config::AppConfig {
+    if let Some(d) = cli.debounce {
+        config.debounce_ms = d;
+    }
+    if let Some(b) = cli.base.clone() {
+        config.base_branch = Some(b);
+    }
+    if cli.no_pr {
+        config.pr.enabled = false;
+    }
+    if let Some(v) = cli.view {
+        config.display.default_view = v;
+    }
+    if cli.no_flash {
+        config.display.flash_on_change = false;
+    }
+    if let Some(ms) = cli.flash_duration {
+        config.display.flash_duration_ms = ms;
+    }
+    if let Some(n) = cli.scroll_padding {
+        config.display.scroll_padding = n;
+    }
+    if let Some(cmd) = cli.edit_command.clone() {
+        config.edit_command = Some(cmd);
+    }
+    config
 }
 
 fn main() -> Result<()> {
@@ -96,6 +150,7 @@ fn main() -> Result<()> {
 
     let t = std::time::Instant::now();
     let config = config::AppConfig::load(cli.config.as_deref())?;
+    let config = merge_cli_overrides(config, &cli);
     tracing::debug!(
         elapsed_ms = t.elapsed().as_millis() as u64,
         "startup: config load"
@@ -104,7 +159,7 @@ fn main() -> Result<()> {
     let watch_path = repo_path.clone();
 
     let t = std::time::Instant::now();
-    let mut app = app::App::new(watch_path, repo_path, config, cli.debounce, cli.base)?;
+    let mut app = app::App::new(watch_path, repo_path, config)?;
     tracing::debug!(
         elapsed_ms = t.elapsed().as_millis() as u64,
         "startup: App::new"
@@ -129,5 +184,71 @@ mod tests {
             "got {VERSION}"
         );
         assert!(VERSION.contains("-dev."), "got {VERSION}");
+    }
+}
+
+#[cfg(test)]
+mod merge_tests {
+    use super::*;
+    use crate::config::{AppConfig, DisplayConfig};
+    use crate::state::ViewMode;
+    use std::path::PathBuf;
+
+    fn bare_cli() -> Cli {
+        Cli {
+            path: PathBuf::from("."),
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn absent_flags_keep_config_values() {
+        let config = AppConfig {
+            debounce_ms: 250,
+            display: DisplayConfig {
+                default_view: ViewMode::Tree,
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        let merged = merge_cli_overrides(config, &bare_cli());
+        assert_eq!(merged.debounce_ms, 250);
+        assert_eq!(merged.display.default_view, ViewMode::Tree);
+        assert!(merged.pr.enabled);
+        assert!(merged.display.flash_on_change);
+    }
+
+    #[test]
+    fn value_flags_override_config() {
+        let config = AppConfig::default();
+        let cli = Cli {
+            debounce: Some(900),
+            base: Some("develop".to_string()),
+            view: Some(ViewMode::Condensed),
+            flash_duration: Some(123),
+            scroll_padding: Some(7),
+            edit_command: Some("nano".to_string()),
+            ..bare_cli()
+        };
+        let merged = merge_cli_overrides(config, &cli);
+        assert_eq!(merged.debounce_ms, 900);
+        assert_eq!(merged.base_branch.as_deref(), Some("develop"));
+        assert_eq!(merged.display.default_view, ViewMode::Condensed);
+        assert_eq!(merged.display.flash_duration_ms, 123);
+        assert_eq!(merged.display.scroll_padding, 7);
+        assert_eq!(merged.edit_command.as_deref(), Some("nano"));
+    }
+
+    #[test]
+    fn no_pr_and_no_flash_force_off() {
+        let config = AppConfig::default(); // both default true
+        let cli = Cli {
+            no_pr: true,
+            no_flash: true,
+            ..bare_cli()
+        };
+        let merged = merge_cli_overrides(config, &cli);
+        assert!(!merged.pr.enabled);
+        assert!(!merged.display.flash_on_change);
     }
 }

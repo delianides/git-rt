@@ -106,8 +106,6 @@ pub struct App {
     /// branch renames so the PR poller can be restarted and a flash message
     /// shown.
     last_seen_branch: Option<String>,
-    /// CLI override for base branch
-    base_override: Option<String>,
     /// Sender for worker requests. Bounded; drops on overflow are safe
     /// since FS-driven recomputes are idempotent.
     worker_tx: Sender<Request>,
@@ -272,13 +270,7 @@ impl Drop for TerminalGuard<'_> {
 }
 
 impl App {
-    pub fn new(
-        watch_path: PathBuf,
-        repo_path: PathBuf,
-        config: AppConfig,
-        debounce_ms: u64,
-        base_override: Option<String>,
-    ) -> Result<Self> {
+    pub fn new(watch_path: PathBuf, repo_path: PathBuf, config: AppConfig) -> Result<Self> {
         // Open the repo just long enough to read the branch name (sub-millisecond
         // — reads `.git/HEAD`). Everything else — file list, head_info, ahead/behind,
         // stash count, repo_state, merge_base — is deferred to the worker so
@@ -303,7 +295,7 @@ impl App {
         // the first draw) returns immediately. Live FS updates are disabled
         // until the watcher is installed; a catch-up Recompute fires then.
         let t = Instant::now();
-        let debounce = Duration::from_millis(debounce_ms);
+        let debounce = Duration::from_millis(config.debounce_ms);
         let watcher_pending_rx = spawn_watcher_init(watch_path.clone(), debounce);
         tracing::debug!(
             elapsed_ms = t.elapsed().as_millis() as u64,
@@ -340,7 +332,6 @@ impl App {
         let (worker_resp_tx, worker_rx) = bounded::<Response>(8);
         let worker_handle = Worker::spawn(
             watch_path.clone(),
-            base_override.clone(),
             config.base_branch.clone(),
             worker_req_rx,
             worker_resp_tx,
@@ -370,7 +361,6 @@ impl App {
             main_missing_warned: false,
             gh_rx,
             last_seen_branch: None,
-            base_override,
             worker_tx,
             worker_rx,
             worker_handle: Some(worker_handle),
@@ -1242,7 +1232,6 @@ mod input_tests {
                 main_missing_warned: false,
                 gh_rx: None,
                 last_seen_branch: None,
-                base_override: None,
                 worker_tx,
                 worker_rx,
                 worker_handle: None,

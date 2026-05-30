@@ -84,7 +84,9 @@ pub enum MergeableStatus {
     Unknown,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize, clap::ValueEnum,
+)]
 #[serde(rename_all = "lowercase")]
 pub enum ViewMode {
     /// Single flat list of every changed file path.
@@ -1914,5 +1916,20 @@ mod tests {
         state.set_diff_viewport_height(50); // viewport bigger than content
         state.scroll_diff_to_bottom();
         assert_eq!(state.diff_scroll(), 0);
+    }
+
+    #[test]
+    fn view_mode_parses_from_cli_value() {
+        use clap::ValueEnum;
+        assert_eq!(
+            ViewMode::from_str("normal", true).unwrap(),
+            ViewMode::Normal
+        );
+        assert_eq!(ViewMode::from_str("tree", true).unwrap(), ViewMode::Tree);
+        assert_eq!(
+            ViewMode::from_str("condensed", true).unwrap(),
+            ViewMode::Condensed
+        );
+        assert!(ViewMode::from_str("expanded", true).is_err());
     }
 }

@@ -137,15 +137,14 @@ impl Worker {
     /// dropped.
     pub fn spawn(
         repo_path: PathBuf,
-        base_override: Option<String>,
-        config_base: Option<String>,
+        base: Option<String>,
         req_rx: Receiver<Request>,
         resp_tx: Sender<Response>,
     ) -> JoinHandle<()> {
         thread::Builder::new()
             .name("git-worker".to_string())
             .spawn(move || {
-                Self::run(repo_path, base_override, config_base, req_rx, resp_tx);
+                Self::run(repo_path, base, req_rx, resp_tx);
             })
             .expect("failed to spawn git-worker thread")
     }
@@ -153,8 +152,7 @@ impl Worker {
     #[tracing::instrument(name = "git.worker.run", skip_all)]
     fn run(
         repo_path: PathBuf,
-        base_override: Option<String>,
-        config_base: Option<String>,
+        base: Option<String>,
         req_rx: Receiver<Request>,
         resp_tx: Sender<Response>,
     ) {
@@ -188,17 +186,11 @@ impl Worker {
             for req in queue {
                 match req {
                     Request::Recompute => {
-                        let bundle =
-                            compute_status(&git, base_override.as_deref(), config_base.as_deref());
+                        let bundle = compute_status(&git, base.as_deref());
                         let _ = resp_tx.send(Response::Status(Box::new(bundle)));
                     }
                     Request::Diff { path, token } => {
-                        match compute_diff(
-                            &git,
-                            &path,
-                            base_override.as_deref(),
-                            config_base.as_deref(),
-                        ) {
+                        match compute_diff(&git, &path, base.as_deref()) {
                             Ok(diff) => {
                                 let _ = resp_tx.send(Response::Diff { path, token, diff });
                             }
@@ -227,13 +219,9 @@ impl Worker {
 /// Compute the status bundle for the current worktree. Resolves the diff
 /// base via strict default-branch resolution and delegates to `compute_with_base`.
 /// Errors degrade to default fields rather than failing the whole bundle.
-fn compute_status(
-    git: &GitRepo,
-    base_override: Option<&str>,
-    config_base: Option<&str>,
-) -> StatusBundle {
+fn compute_status(git: &GitRepo, base: Option<&str>) -> StatusBundle {
     let current_branch = git.branch_name().unwrap_or_else(|_| "HEAD".to_string());
-    let resolved_base = git.resolve_base_branch(base_override.or(config_base));
+    let resolved_base = git.resolve_base_branch(base);
     compute_with_base(git, resolved_base, current_branch)
 }
 
@@ -272,10 +260,9 @@ fn compute_with_base(
 fn compute_diff(
     git: &GitRepo,
     path: &str,
-    base_override: Option<&str>,
-    config_base: Option<&str>,
+    base: Option<&str>,
 ) -> Result<FileDiff, crate::git::GitFailure> {
-    let resolved_base = git.resolve_base_branch(base_override.or(config_base));
+    let resolved_base = git.resolve_base_branch(base);
     if let Some(base_name) = resolved_base {
         if let Ok(Some(mb)) = git.merge_base(&base_name) {
             return git.branch_diff_file(path, mb);
@@ -405,7 +392,7 @@ mod tests {
         let (req_tx, req_rx) = bounded::<Request>(8);
         let (resp_tx, resp_rx) = bounded::<Response>(8);
 
-        let handle = Worker::spawn(repo_path.clone(), None, None, req_rx, resp_tx);
+        let handle = Worker::spawn(repo_path.clone(), None, req_rx, resp_tx);
 
         req_tx.send(Request::Recompute).unwrap();
         let resp = resp_rx
@@ -458,7 +445,7 @@ mod tests {
 
         let (req_tx, req_rx) = bounded::<Request>(8);
         let (resp_tx, resp_rx) = bounded::<Response>(8);
-        let handle = Worker::spawn(tmp_a.path().to_path_buf(), None, None, req_rx, resp_tx);
+        let handle = Worker::spawn(tmp_a.path().to_path_buf(), None, req_rx, resp_tx);
 
         // First recompute for repo A.
         req_tx.send(Request::Recompute).unwrap();
@@ -560,7 +547,7 @@ mod tests {
         g(&["commit", "-q", "-m", "s1"]);
         // Stay on the sibling and run compute_status
         let git = crate::git::GitRepo::new(&work).unwrap();
-        let bundle = compute_status(&git, None, None);
+        let bundle = compute_status(&git, None);
         assert_eq!(
             bundle.base_branch, "main",
             "expected strict default-branch base, got {:?}",
@@ -605,7 +592,7 @@ mod tests {
         std::fs::write(work.join("untracked.txt"), "new\n").unwrap();
 
         let git = crate::git::GitRepo::new(&work).unwrap();
-        let bundle = compute_status(&git, None, None);
+        let bundle = compute_status(&git, None);
 
         assert_eq!(bundle.base_branch, "");
         assert!(bundle.merge_base.is_none());

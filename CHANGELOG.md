@@ -1,5 +1,17 @@
 # Changelog
 
+## [Unreleased]
+
+
+### Features
+
+* CLI flags mirroring config settings — `--no-pr`, `--view`, `--no-flash`, `--flash-duration`, `--scroll-padding`, and `--edit-command`. Each overrides the config file (precedence: flag > config > default).
+
+
+### Removed
+
+* Dead config options `[keys]`, `display.context_lines`, `pr.show_labels`, and the deprecated `pr.layout`. Existing config files using these keys still load — the keys are silently ignored.
+
 ## [1.6.0](https://github.com/upsertco/perch/compare/v1.5.1...v1.6.0) (2026-05-29)
 
 

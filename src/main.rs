@@ -15,10 +15,23 @@ use anyhow::{Context, Result};
 use clap::Parser;
 use tracing_subscriber::EnvFilter;
 
+/// Version reported by `--version`. Debug builds append the git describe
+/// string (`-dev.<sha>[.dirty]`); release builds report the clean crate
+/// version. `PERCH_GIT_DESCRIBE` is set by build.rs.
+const VERSION: &str = if cfg!(debug_assertions) {
+    concat!(
+        env!("CARGO_PKG_VERSION"),
+        "-dev.",
+        env!("PERCH_GIT_DESCRIBE")
+    )
+} else {
+    env!("CARGO_PKG_VERSION")
+};
+
 #[derive(Parser, Debug)]
 #[command(
     name = "perch",
-    version,
+    version = VERSION,
     about = "Real-time terminal dashboard for git changes"
 )]
 struct Cli {
@@ -101,4 +114,20 @@ fn main() -> Result<()> {
         "startup: total before run()"
     );
     app.run()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::VERSION;
+
+    #[test]
+    fn version_has_dev_suffix_in_debug_builds() {
+        // `cargo test` compiles with debug_assertions enabled, so VERSION must
+        // carry the dev describe suffix and still start with the crate version.
+        assert!(
+            VERSION.starts_with(env!("CARGO_PKG_VERSION")),
+            "got {VERSION}"
+        );
+        assert!(VERSION.contains("-dev."), "got {VERSION}");
+    }
 }

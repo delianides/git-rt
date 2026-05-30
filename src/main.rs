@@ -32,7 +32,7 @@ const VERSION: &str = if cfg!(debug_assertions) {
 #[command(
     name = "perch",
     version = VERSION,
-    about = "Real-time terminal dashboard for git changes"
+    about = "Tracking Real-Time Git Changes During Agentic Workflows"
 )]
 struct Cli {
     /// Path inside a git repository (defaults to current directory; repo root is discovered)
